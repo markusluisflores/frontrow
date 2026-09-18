@@ -258,7 +258,12 @@ rather than dropping the caps. A cold review of that revision then found that a
 double-clicked confirm would have reported `hold_expired` for a successful
 purchase, and that concurrent idempotent retries were undefined. Both were fixed
 in revision 2.1 with a lock-then-decide confirm and an insert-first idempotency
-record. These are design findings; none of it has been implemented or tested yet.
+record. Three more rounds (2.2–2.4) found smaller protocol bugs:
+- a cancel racing a confirm, fixed with a global lock order;
+- a Hibernate flush-order trap in lazy expiry;
+- a release path whose outcome depended on the sweeper.
+
+These are design findings; none of it has been implemented or tested yet.
 
 ---
 
@@ -291,7 +296,7 @@ idempotent in-process sweeper). What an interviewer could still press on:
 | Date | Change | Accuracy-drift check |
 |---|---|---|
 | 2026-09-17 | Created at design stage from the spec and journal. No code, ADRs, retros, or PRs existed to read. | **DRIFT FOUND** — 2 real defects, 3 minor. Fixed inline; see below. |
-| 2026-09-18 | Synced to spec revision 2 and 2.1: claim-index predicate, transport and identity model, trim order, open questions, and the rev-1 self-review talking point (its "caps get dropped" claim no longer matches the spec). Still design-stage — no shipped claims added. | Cold reviewer flagged the stale talking point and version note; both fixed |
+| 2026-09-18 | Synced to spec revisions 2 through 2.4: claim-index predicate, transport and identity model, trim order, open questions, and the rev-1 self-review talking point (its "caps get dropped" claim no longer matches the spec). Still design-stage — no shipped claims added. | Cold reviewer flagged the stale talking point and version note; both fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
 the no-code claim (four documentation files, no `src/`, no `pom.xml`, not a git
