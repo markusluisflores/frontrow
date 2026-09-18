@@ -1,7 +1,7 @@
 # FrontRow — Design Spec
 
 **Date:** 2026-09-17 · **Revised:** 2026-09-18 (revision 2 — see §14)
-**Status:** Under user review. Not yet implemented — no code exists.
+**Status:** Reviewed by the user 2026-09-18. Not yet implemented — no code exists.
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
