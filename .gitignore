@@ -1,0 +1,28 @@
+# Build
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Claude Code local-only settings
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime logs (logs/example_run.txt is a committed evidence artifact)
+*.log
+logs/*
+!logs/example_run.txt

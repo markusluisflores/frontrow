@@ -1,0 +1,21 @@
+#!/bin/sh
+# 1. Block local device paths (both Windows and Git-Bash renderings, any drive-letter case).
+# 2. Secret scan staged changes with gitleaks.
+status=0
+
+paths=$(git diff --cached --name-only --diff-filter=ACM -z | xargs -0 -r grep -nIiE '[a-z]:\\{1,2}users\\{1,2}[^\\]+\\|/[a-z]/users/[^/]+/|[a-z]:/users/[^/]+/' -- 2>/dev/null \
+  | grep -v '^\.githooks/pre-commit:')
+if [ -n "$paths" ]; then
+  echo "pre-commit: local device path found in staged files:" >&2
+  echo "$paths" >&2
+  status=1
+fi
+
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --redact --no-banner || status=1
+else
+  echo "pre-commit: gitleaks not installed — secret scan skipped (install: choco install gitleaks)" >&2
+  status=1
+fi
+
+exit $status

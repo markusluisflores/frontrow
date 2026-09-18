@@ -1,0 +1,24 @@
+#!/bin/sh
+# Enforces the git commit standard: <type>(<scope>)?: <imperative subject, <=72 chars>
+msg_file="$1"
+subject=$(sed -n '/^[^#]/{p;q}' "$msg_file")
+
+case "$subject" in
+  Merge\ *|Revert\ *|fixup!\ *|squash!\ *) exit 0 ;;
+esac
+
+if ! printf '%s' "$subject" | grep -Eq '^(feat|fix|ci|refactor|test|docs|chore|perf|style|migration)(\([a-z0-9-]+\))?!?: [^ ].*[^.]$'; then
+  echo "commit-msg: subject must match '<type>(<scope>): <subject>' with no trailing period" >&2
+  echo "  got: $subject" >&2
+  exit 1
+fi
+
+if [ "${#subject}" -gt 72 ]; then
+  echo "commit-msg: subject is ${#subject} chars (max 72)" >&2
+  exit 1
+fi
+
+if printf '%s' "$subject" | grep -Eiq ': (update|wip|misc|changes|cleanup|fix stuff|fix bug|initial code)$'; then
+  echo "commit-msg: subject is on the prohibited list in git-commit-standard.md" >&2
+  exit 1
+fi
