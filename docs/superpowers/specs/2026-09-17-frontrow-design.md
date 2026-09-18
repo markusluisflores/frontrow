@@ -5,7 +5,7 @@
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
-**Revisions 2.1–2.4** (same day) apply four review rounds — see §14.
+**Revisions 2.1–2.5** (same day) apply five review rounds — see §14.
 
 ---
 
@@ -143,7 +143,10 @@ model with two credential types:
 | MCP `/mcp` | Bearer token issued to a user's agent | the same user |
 
 The two filter chains are disjoint: `/api/**` rejects bearer tokens, `/mcp`
-rejects Basic credentials. That separation is what makes the threat model in §6
+rejects Basic credentials. Spring's Basic filter silently ignores a `Bearer`
+header, so it doesn't do this rejection on its own. `/api/**` has an explicit
+filter that returns 401 for any request carrying `Authorization: Bearer`, on
+anonymous endpoints too. That separation is what makes the threat model in §6
 enforceable rather than aspirational — an agent token cannot reach the purchase
 endpoint at all. No tool parameter carries identity; the owner always comes from
 the authenticated principal.
@@ -206,7 +209,7 @@ is easy to defend in an interview.
 **Statuses:**
 
 - Hold: `ACTIVE`, `EXPIRED`, `RELEASED`, `CONVERTED`. Transitions are only
-  `ACTIVE → EXPIRED` (lazy expiry or sweeper), `ACTIVE → RELEASED` (owner
+  `ACTIVE → EXPIRED` (lazy expiry, sweeper, or release of a lapsed group), `ACTIVE → RELEASED` (owner
   releases, or the event is cancelled), `ACTIVE → CONVERTED` (owner confirms).
   Everything else is terminal. A group's rows can end up in mixed states: an
   overlapping hold lazily expires only the seats it overlaps.
@@ -275,8 +278,11 @@ Stated plainly, because overclaiming here is the easiest interview trap:
 ### Locking discipline
 
 All of §5 assumes Postgres's default **READ COMMITTED** isolation, set
-explicitly on these transactions. The protocols depend on it in three places:
-- a fresh snapshot per statement (the idempotent-replay re-read);
+explicitly on these transactions. Every check that runs after a lock wait depends on it, because the check must
+see what other transactions committed during that wait:
+- the idempotent-replay re-read;
+- the per-owner cap count after the advisory-lock wait;
+- cancel's confirmed-order check after the event-row wait;
 - rows re-checked after a `FOR UPDATE` wait;
 - the sweeper's predicate re-check.
 
@@ -308,9 +314,11 @@ so a deferred expiry would run after the new hold's insert and trip
 **Liveness.** Postgres grants a new `FOR SHARE` without making it wait when the
 only locks already on the row are share locks. It does this even while a
 `FOR UPDATE` is queued, so under steady hold traffic an event `PATCH` could
-wait indefinitely. The `PATCH` therefore runs with `lock_timeout` (default 5s)
+wait indefinitely. The `PATCH` therefore begins with `SET LOCAL lock_timeout = '5s'` (configurable)
 and maps a timeout to `contention_retry`. The organiser retries; nothing
-deadlocks.
+deadlocks. Hibernate's `jakarta.persistence.lock.timeout` hint is not a
+substitute: the PostgreSQL dialect ignores positive values, so the timeout
+would silently not apply.
 
 Every path that changes `seat_hold` rows **acquires every lock in ascending
 `event_seat_id` order**. That covers both row locks (`SELECT … ORDER BY
@@ -356,7 +364,11 @@ One transaction, all-or-nothing:
 5. Store the response in `hold_request.response_json` and commit.
 
 A unique violation is identified by SQLState `23505` **and** the constraint
-name, never by message text. Only `uq_claimed_seat` translates to `seat_taken`,
+name, never by message text. The name comes from the driver's structured error
+(`PSQLException.getServerErrorMessage().getConstraint()`). Hibernate's
+`ConstraintViolationException.getConstraintName()` parses the message instead,
+and returns null when Postgres reports errors in a language other than
+English. Only `uq_claimed_seat` translates to `seat_taken`,
 naming the seat whose insert failed. The transaction aborts at the first
 conflict, so other requested seats may also be taken, and the hint points to
 `check_availability`; any other `23505` is a bug and surfaces as
@@ -664,7 +676,7 @@ error codes exercised by tests. Tool success rate and p95 latency are Phase 2.
 | Domain unit tests | JUnit 5 + AssertJ, fixed `Clock` | Hold state transitions, expiry predicate, `Money` arithmetic, sales-window rules, caps |
 | Integration tests | Testcontainers + real Postgres | Repository behaviour, Flyway migrations apply cleanly, each schema constraint in §5 rejects a violating row, constraint violations surface as structured errors |
 | **Concurrency tests** | Testcontainers + executor pool | The races in §5 |
-| Security tests | Spring Security test + MockMvc | Bearer token rejected on `/api/**`; Basic rejected on `/mcp`; unauthenticated `/mcp` gets 401; owner-only release/confirm; per-owner caps; agent token cannot exercise `ORGANISER`/`ADMIN` powers |
+| Security tests | Spring Security test + MockMvc | Bearer token rejected on `/api/**`, on both an anonymous and an authenticated endpoint; Basic rejected on `/mcp`; unauthenticated `/mcp` gets 401; owner-only release/confirm; per-owner caps; agent token cannot exercise `ORGANISER`/`ADMIN` powers |
 | MCP contract tests | MCP client against the running app | `tools/list` output matches the checked-in `*.schema.json` files, so schema drift fails CI; each tool's error paths return structured errors |
 
 No mocking of the database. Testcontainers is the named differentiator and
@@ -795,3 +807,4 @@ redundant and should not be merged.
 | 2.2 | 2026-09-18 | Second review round. **Event-row lock** added to a single global lock order: `FOR SHARE` for hold/confirm, `FOR UPDATE` for cancel. This closes the cancel-vs-confirm race without deadlock (test 6). Defined: confirm precedence for mixed-state groups, idempotent release, "active group" for the cap, a half-open sales window, validation error codes, the REST `Idempotency-Key` header, MCP tokens limited to `BUYER` users with an `AGENT` authority, Phase 1 vs Phase 2 tool logging, and the `code` key for both adapters. The sweeper re-checks its predicate and purges in its own transaction. DoD extended (constraint tests, both chain directions, no raw tokens, architecture doc, ADRs) |
 | 2.3 | 2026-09-18 | Third review round. Confirm checks event status **before** hold state, so a cancelled event reports `sales_closed` rather than `hold_not_active`. Lazy expiry must be an immediate SQL `UPDATE` (Hibernate flushes inserts before updates), with a per-seat flush and a new sweeper-off test (7). Rows are read under the lock rather than from the persistence context. Every event `PATCH` takes `FOR UPDATE`, with a `lock_timeout` against share-lock starvation. Release precedence, duplicate seat ids, the `event` composite-FK key, and the unlocked `event_id` lookup are now specified |
 | 2.4 | 2026-09-18 | Fourth review round. Release expires lapsed rows instead of releasing them, so confirm outcomes never depend on the sweeper. READ COMMITTED stated as a requirement. `55P03` mapped to `contention_retry`. Confirm checks the full sales window. The concurrency tests specify distinct owners, keys and seats, so they exercise the intended race. `seat_taken` reports the first conflicting seat, which is all Postgres surfaces |
+| 2.5 | 2026-09-18 | Fifth review round: no blockers. Implementation traps pinned down: an explicit 401 filter for bearer tokens on `/api/**`, because Spring's Basic filter ignores them; `SET LOCAL lock_timeout`, because Hibernate's lock-timeout hint is ignored on Postgres; constraint names read from the driver's structured error. The READ COMMITTED dependency list is completed |
