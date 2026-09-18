@@ -5,7 +5,7 @@
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
-**Revisions 2.1–2.6** (same day) apply the review rounds — see §14.
+**Revisions 2.1–2.6.1** (same day) apply the review rounds — see §14.
 
 ---
 
@@ -323,8 +323,9 @@ deadlocks. The explicit `SET LOCAL` is preferred over Hibernate's
 the locking query it is attached to, but a cancel also locks seat rows later in
 the same transaction, and one statement at the top covers every lock. It also
 doesn't depend on how a given Hibernate version handles the hint: Hibernate 6
-ignored positive values on PostgreSQL, while 7.x sets `lock_timeout` on the
-connection.
+ignored positive values on PostgreSQL, while 7.4.5 (the version checked) wraps
+the one locking query in `SET LOCAL lock_timeout` and restores the previous
+value afterwards.
 
 Every path that changes `seat_hold` rows **acquires every lock in ascending
 `event_seat_id` order**. That covers both row locks (`SELECT … ORDER BY
@@ -819,3 +820,4 @@ redundant and should not be merged.
 | 2.4 | 2026-09-18 | Fourth review round. Release expires lapsed rows instead of releasing them, so confirm outcomes never depend on the sweeper. READ COMMITTED stated as a requirement. `55P03` mapped to `contention_retry`. Confirm checks the full sales window. The concurrency tests specify distinct owners, keys and seats, so they exercise the intended race. `seat_taken` reports the first conflicting seat, which is all Postgres surfaces |
 | 2.5 | 2026-09-18 | Fifth review round: no blockers. Implementation traps pinned down: an explicit 401 filter for bearer tokens on `/api/**`, because Spring's Basic filter ignores them; `SET LOCAL lock_timeout` at the top of the PATCH transaction; constraint names read from the driver's structured error. The READ COMMITTED dependency list is completed |
 | 2.6 | 2026-09-18 | Final review pass. Corrected a false claim from 2.5: Hibernate 7.x (7.4.5 under Spring Boot 4.1.1) *does* apply a positive lock timeout on PostgreSQL, via the connection. The source was checked. `SET LOCAL` is kept for a version-independent reason: it covers every lock in the transaction. Also added confirm's existing-order check to the READ COMMITTED list, and cause-chain / `BatchUpdateException` handling for the constraint lookup |
+| 2.6.1 | 2026-09-18 | Wording only: the Hibernate 7 lock-timeout note now describes only the checked 7.4.5 behaviour (a `SET LOCAL` around one query, then restored), not "7.x … on the connection". This was the closing review pair's deferred nit |
