@@ -213,6 +213,47 @@ concerns leak into business logic."
 
 ---
 
+### 7. One Global Lock Order Instead of Case-by-Case Locking
+
+**Simple version:** Picture several people who each need keys from the same
+rack. If everyone always takes keys left to right, nobody ends up holding a key
+someone else is waiting for while waiting for one of theirs. Once the order is
+fixed, gridlock can't happen.
+
+**The longer version:** The unique index guarantees correctness, but concurrent
+transactions still need locks, for two reasons: so confirm, release and expiry
+decide on current state, and so nothing deadlocks. The spec (§5 *Locking
+discipline*) fixes one order that every path follows, skipping the steps it
+doesn't need:
+
+1. the idempotency key;
+2. a per-owner advisory lock;
+3. the event row (`FOR SHARE` to hold or confirm, `FOR UPDATE` to change the
+   event);
+4. seat rows in ascending id.
+
+Two consequences took review rounds to find:
+- A cancellation has to lock the event row *before* any seat row. Otherwise a
+  cancel racing a confirm either deadlocks or leaves a cancelled event with a
+  sold order.
+- Hold creation must finish each seat (lock, lazily expire, insert, flush)
+  before starting the next. "Lock everything, then insert everything" breaks
+  the order across the two phases.
+
+Lazy expiry must also be an immediate SQL `UPDATE`, because Hibernate flushes
+inserts before updates. **All of this is design; none of it is implemented or
+tested yet.**
+
+**Interview talking point:** "The index guarantees no seat is ever claimed
+twice. The lock order keeps the other state transitions correct and
+deadlock-free: confirm, release, cancel and expiry all decide on current state. I wrote down one lock order that every transaction follows, so
+deadlock-freedom is a property I can argue from the order rather than hope for.
+The subtle part was that hold creation interleaves locks and inserts. Taking
+all the locks first and then inserting sounds safe, but it breaks the ordering
+across the two phases, so the design claims seats one at a time."
+
+---
+
 ## Engineering Process
 
 ### Scoping Under a Real Time Constraint
@@ -265,6 +306,26 @@ record. Three more rounds (2.2–2.4) found smaller protocol bugs:
 
 These are design findings; none of it has been implemented or tested yet.
 
+### Reviewing Until the Rule Is Met, and a Claim I Got Wrong
+
+Revision 2 went through seven review rounds before merging. After every fix
+pass, the reviewer that raised the findings resumed to verify them, and a fresh
+reviewer read cold. Blockers per round were 2, 1, 2, 1, 0, 1 and 0.
+
+The round-6 blocker was mine. In round 5, I wrote a reviewer's suggestion into
+the spec: that Hibernate's PostgreSQL dialect ignores a positive lock-timeout
+hint. That's true of Hibernate 6. Spring Boot 4.1.1 ships Hibernate 7.4.5, and
+its source (checked afterwards) applies the timeout with `SET LOCAL` around the
+one locking query. The design choice survived, for a better reason: one explicit
+`SET LOCAL` covers every lock in the transaction. The claim did not.
+
+**Interview talking point:** "The review loop found real protocol bugs, each
+one smaller than the last. The one I'm most careful to mention is a false claim
+I introduced myself: I took a reviewer's statement about Hibernate at face
+value, and it was only true for the previous major version. The lesson I took:
+check version-specific library behaviour against the source of the exact
+version we'll pin, before it goes into a spec."
+
 ---
 
 ## Bugs Worth Remembering
@@ -296,6 +357,7 @@ idempotent in-process sweeper). What an interviewer could still press on:
 | Date | Change | Accuracy-drift check |
 |---|---|---|
 | 2026-09-17 | Created at design stage from the spec and journal. No code, ADRs, retros, or PRs existed to read. | **DRIFT FOUND** — 2 real defects, 3 minor. Fixed inline; see below. |
+| 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 | 2026-09-18 | Synced to spec revisions 2 through 2.4: claim-index predicate, transport and identity model, trim order, open questions, and the rev-1 self-review talking point (its "caps get dropped" claim no longer matches the spec). Still design-stage — no shipped claims added. | Cold reviewer flagged the stale talking point and version note; both fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
