@@ -5,6 +5,7 @@
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
+**Revision 2.1** (same day) applies the cold review of revision 2 — see §14.
 
 ---
 
@@ -147,6 +148,18 @@ enforceable rather than aspirational — an agent token cannot reach the purchas
 endpoint at all. No tool parameter carries identity; the owner always comes from
 the authenticated principal.
 
+Everything outside the two chains is closed by default, except for three
+anonymous paths: Swagger UI (`/swagger-ui/**`, `/v3/api-docs/**`), `/error`,
+and `/actuator/health`. No other actuator endpoint is exposed in Phase 1.
+
+**Scaffold spike — must pass before the plan depends on it.** Spring AI's
+Streamable HTTP transport may run `@McpTool` methods on a thread where
+`SecurityContextHolder` is empty. The first task after the scaffold proves how
+the authenticated principal reaches a tool method: the security context, or
+Spring AI's MCP transport or request context. The test uses a real bearer
+token over real HTTP. Every owner-scoped guardrail depends on the answer, so the
+Phase 1 plan names the mechanism only after the spike, not before.
+
 ---
 
 ## 4. Domain model
@@ -171,7 +184,7 @@ erDiagram
 | `event` | id, venue_id, name, starts_at, sales_open_at, sales_close_at, status, currency | One performance. Currency is per event, so an order can never mix currencies |
 | `event_seat` | id, event_id, seat_id, venue_id, price_cents | A seat *for a given event*. `UNIQUE (event_id, seat_id)`. Composite FKs `(event_id, venue_id) → event` and `(seat_id, venue_id) → seat` make it impossible to offer a seat from a different venue |
 | `seat_hold` | id, event_seat_id, hold_group_id, owner, status, expires_at, created_at | One row per held seat. `hold_group_id` groups seats held together |
-| `hold_request` | owner, idempotency_key, request_hash, hold_group_id, created_at | Idempotency record for `hold_seats`. `PRIMARY KEY (owner, idempotency_key)` |
+| `hold_request` | owner, idempotency_key, request_hash, hold_group_id, response_json, created_at | Idempotency record for successful `hold_seats` calls. `PRIMARY KEY (owner, idempotency_key)` |
 | `ticket_order` | id, event_id, hold_group_id, owner, status, total_cents, currency, created_at | `UNIQUE (hold_group_id)` — one order per hold group, which makes confirmation idempotent |
 | `order_line` | id, order_id, event_seat_id, price_cents | One line per seat |
 
@@ -237,83 +250,164 @@ Stated plainly, because overclaiming here is the easiest interview trap:
 | An event only offers seats from its own venue | **Schema** — composite FKs on `event_seat` |
 | One order per hold group | **Schema** — `UNIQUE (hold_group_id)` on `ticket_order` |
 | All seats in a hold group belong to one event | Application (validated before insert; tested) |
-| Holds respect the sales window and caps | Application (tested) |
-| An expired hold cannot be confirmed | Application — conditional update below (tested under concurrency) |
+| Holds respect the sales window | Application (tested) |
+| Per-owner caps hold under concurrency | Application, serialized by a per-owner advisory lock (tested under concurrency) |
+| An idempotency key yields at most one hold group | **Schema** (`hold_request` primary key) plus the replay protocol below (tested under concurrency) |
+| An expired, released or sold hold cannot be confirmed or released | Application — lock-then-decide, below (tested under concurrency) |
+| Order lines match the owner's converted holds | Application — written in the same transaction as the conversion |
+| No deadlocks between hold, confirm, release and expiry | Application — the locking discipline below (tested) |
 
 **Future cancellation** (not Phase 1): would add an order-line status, make
 `uq_sold_once` a partial index on sold lines, and move the hold from
 `CONVERTED` to a new terminal `REFUNDED` status that the claim index excludes.
 
+### Locking discipline
+
+Every path that changes `seat_hold` rows **acquires every lock in ascending
+`event_seat_id` order**. That covers both row locks (`SELECT … ORDER BY
+event_seat_id FOR UPDATE`) and unique-index insert waits. Hold creation achieves
+this by finishing one seat before starting the next (below). Confirmation and
+release only lock existing rows. Two transactions that touch overlapping seats therefore always wait for
+each other in the same order and cannot deadlock. The one exception is the
+sweeper, which uses `FOR UPDATE SKIP LOCKED`: it never waits, so it cannot take
+part in a deadlock.
+
+This applies to multi-seat groups as much as single seats. Without the explicit
+lock, the row order of an `UPDATE` is whatever the query plan picks, and a
+multi-seat confirm racing a lazy expiry of the same group could deadlock.
+
 ### Hold creation
 
 One transaction, all-or-nothing:
 
-1. Validate the request (event on sale, window open, seats belong to the event,
-   per-request and per-owner caps).
-2. **Lazy expiry:** `UPDATE seat_hold SET status = 'EXPIRED' WHERE event_seat_id
-   IN (:seats) AND status = 'ACTIVE' AND expires_at <= :now`.
-3. Insert one `seat_hold` row per seat **in ascending `event_seat_id` order**.
-   Two callers requesting overlapping seat sets then contend in the same order
-   and cannot deadlock.
-4. Flush explicitly inside the service (`saveAndFlush` or JDBC), so a
-   constraint violation surfaces where it can be translated rather than at
-   commit time outside the handler.
+1. **Idempotency first.** `INSERT INTO hold_request (owner, idempotency_key,
+   request_hash) … ON CONFLICT DO NOTHING`. If a concurrent call with the same
+   key is still running, Postgres makes this insert wait for it (see
+   *Idempotent replay* below).
+2. **Serialize per owner.** `pg_advisory_xact_lock(hash(owner))`. A burst of
+   parallel calls from one owner cannot all pass the active-group cap check.
+3. Validate: event `ON_SALE`, sales window open, every seat belongs to the
+   event, per-request seat cap, per-owner active-group cap.
+4. **Claim seat by seat, in ascending `event_seat_id` order.** For each seat:
+   lock its `ACTIVE` hold if one exists, set it to `EXPIRED` if
+   `expires_at <= :now` (lazy expiry), then insert the new `seat_hold` row.
+   Finish one seat before touching the next. If all locks were taken before
+   any inserts, the order would break across the two phases: T1 holds seat 5's
+   lock and waits to insert seat 3, while T2 has inserted seat 3 and waits for
+   seat 5. All rows share one `hold_group_id` and **one `expires_at`**.
+5. Flush explicitly inside the service (`saveAndFlush` or JDBC). A constraint
+   violation then surfaces where it can be translated, not at commit time
+   outside the handler.
+6. Store the response in `hold_request.response_json` and commit.
 
-A unique violation is identified by SQLState `23505` **and** constraint name
-`uq_claimed_seat` — never by message text — and translated to `seat_taken`
-listing the conflicting seat ids. Postgres aborts the whole transaction on the
-first violation, so a multi-seat hold either claims every seat or none. SQLState
-`40P01` (deadlock) and `40001` (serialization failure) are mapped defensively to
-`contention_retry` even though ordered inserts should prevent them.
+A unique violation is identified by SQLState `23505` **and** the constraint
+name, never by message text. Only `uq_claimed_seat` translates to `seat_taken`
+(listing the conflicting seat ids); any other `23505` is a bug and surfaces as
+a 500 in tests. Postgres aborts the whole transaction on the first violation,
+so a multi-seat hold either claims every seat or none. SQLState `40P01`
+(deadlock) and `40001` (serialization failure) are mapped defensively to
+`contention_retry`, even though the locking discipline should prevent them.
+
+### Idempotent replay
+
+- `request_hash` is computed over a canonical form: `event_id` plus the sorted,
+  de-duplicated seat ids.
+- **Only successful holds are recorded.** A failed attempt rolls back its
+  `hold_request` row with everything else, so retrying a failed request runs it
+  again rather than replaying the failure.
+- **A concurrent retry** (an agent retrying after a timeout while the first call
+  is still running) waits in step 1. If the first call commits, the retry's
+  insert conflicts, and the retry reads the stored row in a fresh statement:
+  - a matching hash returns the stored response verbatim;
+  - a different hash returns `idempotency_key_reused`.
+
+  If the first call rolled back, the retry's insert succeeds and it proceeds
+  normally. A retry never collides with its own first attempt on
+  `uq_claimed_seat`.
+- **A replay after the group has expired** returns the original response
+  unchanged, including its original `expires_at`, so the agent can see the
+  hold lapsed. Replays report what happened; they do not re-check current
+  state.
 
 ### Hold confirmation (REST only)
 
-```sql
-UPDATE seat_hold SET status = 'CONVERTED'
- WHERE hold_group_id = :group AND owner = :owner
-   AND status = 'ACTIVE' AND expires_at > :now;
-```
+One transaction:
 
-The affected-row count must equal the group's seat count; otherwise the
-transaction rolls back with `hold_expired`. Then `ticket_order` and its
-`order_line`s are inserted in the same transaction. A concurrent lazy expiry of
-the same rows is also an `UPDATE` on those rows, so row locks serialize the two:
-whichever commits second re-evaluates its `WHERE` clause against the committed
-state and affects zero rows. There is no window in which both succeed.
+1. Lock the group's rows: `SELECT … FROM seat_hold WHERE hold_group_id = :group
+   AND owner = :owner ORDER BY event_seat_id FOR UPDATE`.
+2. If no rows are found, return `not_found`. That also covers another owner's
+   group.
+3. If a `ticket_order` already exists for the group, return it. A repeated or
+   double-clicked confirm is idempotent. The second request waits on step 1's
+   locks, then takes this branch.
+4. Decide by the rows' state:
+   - all `ACTIVE` with `expires_at > :now` → continue;
+   - `ACTIVE` but past `expires_at`, or `EXPIRED` → `hold_expired`;
+   - `RELEASED` → `hold_not_active`.
+5. The event must still be `ON_SALE` with `:now <= sales_close_at`. Otherwise
+   return `sales_closed`.
+6. `UPDATE … SET status = 'CONVERTED'` on the locked rows, then insert
+   `ticket_order` and its `order_line`s.
 
-A repeated confirm for an already-converted group returns the existing order
-(`UNIQUE (hold_group_id)` on `ticket_order`), so a double-clicked purchase is
-idempotent.
+A concurrent lazy expiry of the same seats locks the same rows in the same
+order, so exactly one of the two proceeds, and the other re-reads committed
+state and takes the matching branch above. That holds for multi-seat groups as
+well as single seats.
+
+### Release
+
+`release_hold` and `DELETE /api/holds/{id}` lock the group's rows as in
+confirmation steps 1–2. Only `ACTIVE` rows become `RELEASED`. A group that is
+`CONVERTED` returns `hold_not_active` and is never touched. If release could
+move a sold hold out of `uq_claimed_seat`, the seat would become holdable
+again.
+
+### Event cancellation
+
+`PATCH /api/events/{id}` to `CANCELLED` is rejected with `invalid_request` if
+the event has any confirmed order: cancelling sold events is part of the
+cancellation non-goal (§2). Otherwise it releases all of the event's live holds
+in the same transaction.
 
 ### Hold expiry — two mechanisms, deliberately
 
-1. **Lazy expiry (correctness)** — step 2 above, inside the hold transaction.
-2. **Scheduled sweeper (hygiene)** — an in-process `@Scheduled` job runs the
-   same `UPDATE` in bulk, and purges `hold_request` rows older than 24 hours.
+1. **Lazy expiry (correctness)** — creation step 4, inside the hold transaction.
+2. **Scheduled sweeper (hygiene)** — an in-process `@Scheduled` job. It expires
+   stale holds in bulk (`UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP
+   LOCKED)`) and purges `hold_request` rows older than 24 hours.
 
-Correctness never depends on the scheduler running — the sweeper only keeps the
-table tidy and keeps availability counts honest for read queries. The sweeper's
-`UPDATE` is idempotent, so a second instance running it would be redundant
-rather than wrong. Being able to explain *why both exist* is worth more than
-either mechanism alone.
+Correctness never depends on the scheduler running. The sweeper only keeps the
+table tidy and keeps availability counts honest for read queries. Its `UPDATE`
+is idempotent and skips locked rows, so a second instance running it would be
+redundant rather than wrong. Being able to explain *why both exist* is worth
+more than either mechanism alone.
 
 ### The portfolio centrepiece tests
 
 1. **Hold race.** N threads race to hold the same `event_seat`. Assert exactly
-   one succeeds and every other caller receives `seat_taken`. Repeated R times.
-2. **Confirm vs. expiry race.** Two threads straddle a hold's expiry instant,
-   each with its own fixed `Clock`: the owner confirms at `expires_at − 1ms`
-   while another user holds the same seat at `expires_at + 1ms`. Either order
-   of commit is legal — confirm wins (the new hold gets `seat_taken`) or the new
-   hold wins (the confirm gets `hold_expired`). Assert exactly one wins, every
-   run, and the database never records both a sale and a new claim.
+   one succeeds and every other caller receives `seat_taken`. Repeat R times.
+2. **Confirm vs. expiry race, multi-seat.** Hold a 3-seat group. Two threads
+   straddle its expiry instant: the owner confirms at `expires_at − 1ms`, and
+   another user holds an overlapping seat set at `expires_at + 1ms`. Each
+   thread gets its own time through a test `Clock` whose `instant()` reads a
+   per-thread override. Either commit order is legal: confirm wins and the new
+   hold gets `seat_taken`, or the new hold wins and the confirm gets
+   `hold_expired`. Assert that exactly one wins on every run, that no deadlock
+   error occurs, and that the database never records both a sale and a new
+   claim.
 3. **Overlapping multi-seat holds.** Callers request overlapping seat sets in
    different orders. Assert no deadlock errors and no partial holds.
+4. **Per-owner cap under concurrency.** One owner fires more parallel
+   `hold_seats` calls than the active-group cap allows. Assert exactly the cap
+   succeeds and the rest get `hold_limit_exceeded`.
+5. **Concurrent idempotent retry.** Two calls with the same idempotency key and
+   request run in parallel. Assert both return the same `hold_group_id` and
+   exactly one group exists.
 
-All run against real Postgres via Testcontainers, not an in-memory database —
-an H2 test here would prove nothing, since the behaviour under test is Postgres
-constraint enforcement under concurrent transactions. Test 1 must genuinely fail
-if `uq_claimed_seat` is removed.
+All run against real Postgres via Testcontainers, not an in-memory database. An
+H2 test here would prove nothing, because the behaviour under test is Postgres
+constraint enforcement and locking under concurrent transactions. Test 1 must
+genuinely fail if `uq_claimed_seat` is removed.
 
 ---
 
@@ -411,9 +505,9 @@ signals.
 | `GET /api/me/holds` | `BUYER` | Own live holds, including agent-created ones |
 | `DELETE /api/holds/{holdGroupId}` | `BUYER` (owner) | Release |
 | `POST /api/holds/{holdGroupId}/confirm` | `BUYER` (owner) | **The only purchase path.** Idempotent |
-| `GET /api/me/orders`, `GET /api/orders/{id}` | `BUYER` (owner), `ADMIN` (any) | |
+| `GET /api/me/orders`, `GET /api/orders/{id}` | `BUYER` (owner), `ADMIN` (any) | Another owner's order returns `not_found`, the same as `release_hold` |
 | `POST /api/events` | `ORGANISER` | Creates a `DRAFT` event on an existing venue with a price per section |
-| `PATCH /api/events/{id}` | `ORGANISER` | Sales window and status (`ON_SALE`, `CANCELLED`) |
+| `PATCH /api/events/{id}` | `ORGANISER` | Sales window and status (`ON_SALE`, `CANCELLED` — see §5 *Event cancellation*) |
 
 The two `ORGANISER` endpoints are the first thing trimmed if Phase 1 runs long
 (§9) — seeded events cover the demo without them.
@@ -456,7 +550,7 @@ error codes exercised by tests. Tool success rate and p95 latency are Phase 2.
 |---|---|---|
 | Domain unit tests | JUnit 5 + AssertJ, fixed `Clock` | Hold state transitions, expiry predicate, `Money` arithmetic, sales-window rules, caps |
 | Integration tests | Testcontainers + real Postgres | Repository behaviour, Flyway migrations apply cleanly, each schema constraint in §5 rejects a violating row, constraint violations surface as structured errors |
-| **Concurrency tests** | Testcontainers + executor pool | The three races in §5 |
+| **Concurrency tests** | Testcontainers + executor pool | The five races in §5 |
 | Security tests | Spring Security test + MockMvc | Bearer token rejected on `/api/**`; Basic rejected on `/mcp`; owner-only release/confirm; per-owner caps |
 | MCP contract tests | MCP client against the running app | `tools/list` output matches the checked-in `*.schema.json` files, so schema drift fails CI; each tool's error paths return structured errors |
 
@@ -469,7 +563,7 @@ mocking it away forfeits the entire signal.
 
 | Phase | Contents | Exit state |
 |---|---|---|
-| **1 — the week** | Domain core, REST + OpenAPI, Postgres + Flyway, Testcontainers suite incl. all three concurrency tests, demo-grade security (below), all 5 MCP tools over Streamable HTTP, all evidence artifacts, Docker, CI, seeded demo data | **Complete and presentable**, locally |
+| **1 — the week** | Domain core, REST + OpenAPI, Postgres + Flyway, Testcontainers suite incl. all five concurrency tests, demo-grade security (below), all 5 MCP tools over Streamable HTTP, all evidence artifacts, Docker, CI, seeded demo data | **Complete and presentable**, locally |
 | 2 | Observability: Micrometer + Prometheus + Grafana, MCP tool traces, measured tool success rate over 10 test prompts, p95 latency. Real authentication (OAuth2 / OIDC), then a hosted deploy on Railway | Fills the "70% of resumes miss this" gap; completes the MCP metrics bar |
 | 3 | Event-driven: transactional outbox + Kafka for `hold_expired` and `order_confirmed` events | Adds the in-demand Kafka signal |
 | 4 | Optional thin UI | Clickable live demo |
@@ -543,9 +637,9 @@ Self-service issuance belongs with OAuth2 in Phase 2.
 ## 12. Definition of done for Phase 1
 
 - [ ] `docker compose up` starts the service and Postgres; seeded demo data present
-- [ ] Swagger UI browsable; every endpoint in the §6 REST table exercised end to end
+- [ ] Swagger UI browsable; every endpoint in the §6 REST table exercised end to end (the `ORGANISER` endpoints only if not trimmed under §9)
 - [ ] All 5 MCP tools callable from Claude Code over Streamable HTTP with a bearer token
-- [ ] The three concurrency tests pass against real Postgres; the hold-race test genuinely fails if `uq_claimed_seat` is removed
+- [ ] The five concurrency tests in §5 pass against real Postgres; the hold-race test genuinely fails if `uq_claimed_seat` is removed
 - [ ] Security tests prove an MCP token cannot reach the confirm endpoint
 - [ ] `logs/example_run.txt` contains a real, reproduced failure-and-recovery run
 - [ ] Tool schemas checked in, and CI fails on schema drift
@@ -580,3 +674,4 @@ redundant and should not be merged.
 |---|---|---|
 | 1 | 2026-09-17 | Initial design from brainstorm |
 | 2 | 2026-09-18 | Requirements review. **Invariant:** claim index now covers `CONVERTED`, so a sold seat cannot be held; venue consistency and one-order-per-group moved into the schema; schema-vs-application guarantees tabled. **Transactions:** ordered inserts, explicit flush, SQLState-based error mapping, conditional-update confirmation, two new concurrency tests. **Identity:** stdio and SSE dropped for Streamable HTTP; bearer tokens for MCP, Basic for REST, disjoint chains; `buyer_ref` parameter removed; agent-to-human handover defined. **Scope:** order cancellation, venue management and public deploy declared non-goals; REST surface, full error code list, idempotency storage, statuses, `timestamptz` + injected `Clock`, and Phase 1 README metrics specified. Tier corrected: security slices are Mandatory |
+| 2.1 | 2026-09-18 | Cold review of revision 2. **Confirm** is now lock-then-decide, so a repeat confirm returns the existing order instead of `hold_expired`, and `hold_not_active` has a defined path. **Idempotency** keys are inserted first with `ON CONFLICT`, so a concurrent retry waits and replays instead of colliding with itself; the response is stored, the request hash is canonical, and only successes are recorded. **Locking discipline**: every row-changing path locks in `event_seat_id` order, and the sweeper uses `SKIP LOCKED`. The per-owner cap is serialized by an advisory lock. Release and event-cancel semantics defined, the default security chain stated, the principal-propagation spike added, and concurrency tests 4–5 added |

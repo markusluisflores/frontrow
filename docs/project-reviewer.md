@@ -1,7 +1,7 @@
 # FrontRow — Project Reviewer & Interview Guide
 
 > **Living document.** Updated as new concepts are added or lessons are learned.
-> Last updated: 2026-09-17
+> Last updated: 2026-09-18
 
 > ⚠️ **Design stage only. Nothing in this project has been built yet.**
 > Every entry below is a *design decision* supported by
@@ -38,9 +38,9 @@ already covers the consumer side.
 | Testing | JUnit 5, AssertJ, Testcontainers |
 | API docs | springdoc-openapi |
 | Container / CI | Docker, GitHub Actions |
-| Deploy | Railway |
+| Deploy | Railway (Phase 2, after real auth) |
 
-*Versions are from research, not verified against Maven Central. Pin at scaffold time.*
+*Spring Boot 4.1.1 and Spring AI 2.0.1 were confirmed as the latest GA releases on Maven Central on 2026-09-18. Pin exact versions at scaffold time.*
 
 ---
 
@@ -230,8 +230,8 @@ The cuttable parts were the organiser endpoints and the breadth of seed data."
 
 The spec (`docs/superpowers/specs/2026-09-17-frontrow-design.md`) carries goals
 and non-goals, the domain model, the concurrency design, the MCP threat model,
-phasing, and four deliberately-unresolved open questions. A self-review pass
-before sign-off caught two real defects: a hidden dependency (per-caller
+phasing, and one remaining open question (token issuance). Revision 1 had four;
+revision 2 resolved them. A self-review pass of revision 1 caught two real defects: a hidden dependency (per-caller
 guardrails silently needed a trusted caller identity that the same spec lists as
 unresolved for stdio transport) and an ambiguous requirement ("basic role-based
 security", now defined and explicitly labelled demo-grade).
@@ -239,16 +239,21 @@ security", now defined and explicitly labelled demo-grade).
 **Interview talking point:** "I review my own specs before anyone else sees them,
 and on this one it caught a dependency I'd hidden from myself — I'd written
 per-caller rate limits into the tool design while listing 'how do we authenticate
-an MCP caller over stdio' as an open question elsewhere in the same document. The
-spec now says that if that question is still open at implementation time, the
-per-caller caps get dropped rather than enforced against a caller-supplied ID,
-because that would be security theatre."
+an MCP caller over stdio' as an open question elsewhere in the same document. My
+first fix was to drop those caps rather than enforce them against a
+caller-supplied ID, because that would be security theatre. The later fix was
+better: move the MCP server to HTTP, so there's a real authenticated identity and
+the caps can stay."
 
 A second review (revision 2, 2026-09-18) found the index predicate left sold
 seats holdable, that the agent-to-human handover was undesigned, and that stdio
 transport meant a second process with nowhere to authenticate. The design moved
 to Streamable HTTP with bearer tokens, which resolved the identity question
-rather than dropping the caps.
+rather than dropping the caps. A cold review of that revision then found that a
+double-clicked confirm would have reported `hold_expired` for a successful
+purchase, and that concurrent idempotent retries were undefined. Both were fixed
+in revision 2.1 with a lock-then-decide confirm and an insert-first idempotency
+record. These are design findings; none of it has been implemented or tested yet.
 
 ---
 
@@ -281,7 +286,7 @@ idempotent in-process sweeper). What an interviewer could still press on:
 | Date | Change | Accuracy-drift check |
 |---|---|---|
 | 2026-09-17 | Created at design stage from the spec and journal. No code, ADRs, retros, or PRs existed to read. | **DRIFT FOUND** — 2 real defects, 3 minor. Fixed inline; see below. |
-| 2026-09-18 | Synced to spec revision 2: claim-index predicate, transport and identity model, trim order, open questions. Still design-stage — no shipped claims added. | Not yet run for this revision |
+| 2026-09-18 | Synced to spec revision 2 and 2.1: claim-index predicate, transport and identity model, trim order, open questions, and the rev-1 self-review talking point (its "caps get dropped" claim no longer matches the spec). Still design-stage — no shipped claims added. | Cold reviewer flagged the stale talking point and version note; both fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
 the no-code claim (four documentation files, no `src/`, no `pom.xml`, not a git
