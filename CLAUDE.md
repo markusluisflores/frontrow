@@ -30,7 +30,7 @@ bootstrap. The scaffold task must land all of them, not just the build:
 - Double-booking is prevented by Postgres constraints, not application logic.
   Integration and concurrency tests run against real Postgres (Testcontainers) —
   never H2, never a mocked repository.
-- MCP tools return structured errors (`{"error": ..., "hint": ...}`). An
+- MCP tools return structured errors (`{"code": ..., "hint": ...}`, same codes as REST). An
   unstructured string error is a review BLOCKER.
 - No MCP tool may complete a purchase. Agents hold; humans buy.
 
