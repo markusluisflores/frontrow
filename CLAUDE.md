@@ -8,8 +8,8 @@ the user-level CLAUDE.md and apply here.
 
 **Docs only — no build exists yet.** The design spec is
 `docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.1; 2.6
-reviewed and merged 2026-09-18, 2.6.1 a wording fix). Code scaffolding waits for the three ADRs (spec §13) and
-a Phase 1 implementation plan.
+reviewed and merged 2026-09-18, 2.6.1 a wording fix). The three spec §13 ADRs
+are in `docs/adr/`. Code scaffolding waits for a Phase 1 implementation plan.
 
 ## Deferred bootstrap items — owed by the Phase 1 scaffold task
 
@@ -28,12 +28,14 @@ bootstrap. The scaffold task must land all of them, not just the build:
 
 - The domain core has **no Spring Web and no MCP types**. If changing an MCP tool
   requires changing the domain core, the boundary has leaked — that is a review BLOCKER.
-- Double-booking is prevented by Postgres constraints, not application logic.
-  Integration and concurrency tests run against real Postgres (Testcontainers) —
-  never H2, never a mocked repository.
+- Double-booking is prevented by Postgres constraints, not application logic
+  (ADR-001). Integration and concurrency tests run against real Postgres
+  (Testcontainers) — never H2, never a mocked repository.
 - MCP tools return structured errors (`{"code": ..., "hint": ...}`, same codes as REST). An
   unstructured string error is a review BLOCKER.
-- No MCP tool may complete a purchase. Agents hold; humans buy.
+- No MCP tool may complete a purchase. Agents hold; humans buy. `/api/**` and
+  `/mcp` are disjoint credential chains (ADR-002).
+- MCP is served over Streamable HTTP only — no stdio, no SSE (ADR-003).
 
 ## Conventions
 
