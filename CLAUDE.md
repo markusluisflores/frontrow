@@ -7,8 +7,8 @@ the user-level CLAUDE.md and apply here.
 ## Current state
 
 **Docs only — no build exists yet.** The design spec is
-`docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6, reviewed
-and merged 2026-09-18). Code scaffolding waits for the three ADRs (spec §13) and
+`docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.1; 2.6
+reviewed and merged 2026-09-18, 2.6.1 a wording fix). Code scaffolding waits for the three ADRs (spec §13) and
 a Phase 1 implementation plan.
 
 ## Deferred bootstrap items — owed by the Phase 1 scaffold task

@@ -246,7 +246,8 @@ tested yet.**
 
 **Interview talking point:** "The index guarantees no seat is ever claimed
 twice. The lock order keeps the other state transitions correct and
-deadlock-free: confirm, release, cancel and expiry all decide on current state. I wrote down one lock order that every transaction follows, so
+deadlock-free: confirm, release, cancel and expiry all decide on current
+state. I wrote down one lock order that every transaction follows, so
 deadlock-freedom is a property I can argue from the order rather than hope for.
 The subtle part was that hold creation interleaves locks and inserts. Taking
 all the locks first and then inserting sounds safe, but it breaks the ordering
@@ -357,8 +358,8 @@ idempotent in-process sweeper). What an interviewer could still press on:
 | Date | Change | Accuracy-drift check |
 |---|---|---|
 | 2026-09-17 | Created at design stage from the spec and journal. No code, ADRs, retros, or PRs existed to read. | **DRIFT FOUND** — 2 real defects, 3 minor. Fixed inline; see below. |
-| 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 | 2026-09-18 | Synced to spec revisions 2 through 2.4: claim-index predicate, transport and identity model, trim order, open questions, and the rev-1 self-review talking point (its "caps get dropped" claim no longer matches the spec). Still design-stage — no shipped claims added. | Cold reviewer flagged the stale talking point and version note; both fixed |
+| 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
 the no-code claim (four documentation files, no `src/`, no `pom.xml`, not a git
