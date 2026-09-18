@@ -70,12 +70,12 @@ structured `seat_taken` error, not to prevent it.
 
 The index alone does not decide when a seat becomes free again. An `ACTIVE`
 hold past its `expires_at` still matches the predicate, so it keeps blocking
-the seat until something marks it `EXPIRED`. Hold creation therefore expires a
-lapsed hold on each seat itself, as an immediate SQL `UPDATE` before inserting
-its own row for that seat. Hibernate flushes inserts before updates, so an
-expiry left as a dirty entity would run after the insert and trip
-`uq_claimed_seat` on a seat that is actually free (spec §5, *Locking
-discipline* and *Hold expiry*).
+the seat until something marks it `EXPIRED`. Hold creation therefore handles
+each seat in turn: it locks the seat's `ACTIVE` hold, expires it with an
+immediate SQL `UPDATE` if it has lapsed, then inserts and flushes its own row.
+Hibernate flushes inserts before updates, so an expiry left as a dirty entity
+would run after the insert and trip `uq_claimed_seat` on a seat that is
+actually free (spec §5, *Hold creation* and *Locking discipline*).
 
 ### Consequences
 
@@ -92,7 +92,7 @@ discipline* and *Hold expiry*).
   constraint name from the driver's structured error, following the cause chain
   and `BatchUpdateException`, not message text.
 * ⚠️ Correctness depends on lazy expiry running as an immediate `UPDATE` inside
-  the hold transaction, not on the sweeper. A dedicated concurrency test with
+  the hold transaction, not on the sweeper. A dedicated sequential test with
   the sweeper off (spec §5, test 7) must guard this.
 * ⚠️ `CONVERTED` is permanent while no order can be cancelled. Adding
   cancellation later means a new terminal `REFUNDED` hold status that the index
