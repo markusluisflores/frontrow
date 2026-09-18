@@ -63,10 +63,14 @@ active hold, so the schema would stop a double *sale* but not a new hold on an
 already-sold seat. That gap was caught in the spec's revision-2 review. Application code
 catches the resulting constraint violation and translates it into a structured
 `seat_taken` error rather than leaking a 500. The alternatives considered were
-optimistic locking with a version column and pessimistic `SELECT ... FOR UPDATE`.
-Both work, but both place the guarantee in application logic, which means a bug
-in that logic silently becomes a double-booking. The index means that even if the
-service layer is wrong, the database cannot record the bad state.
+optimistic locking with a version column and pessimistic `SELECT ... FOR UPDATE`
+as the *primary* guarantee. Both work, but both place the guarantee in
+application logic, which means a bug in that logic silently becomes a
+double-booking. The index means that even if the service layer is wrong, the
+database cannot record the bad state. Row locks are still used in the design,
+for a different job: ordering concurrent transactions so they can't deadlock,
+and so that confirm, release and expiry decide on current state. The index is
+the guarantee; the locks keep the protocol well-behaved.
 
 **Interview talking point:** "I put the no-double-booking rule in the schema as a
 partial unique index rather than in a service method. Optimistic and pessimistic
@@ -122,7 +126,8 @@ is reversibility, not sensitivity: `hold_seats` mutates state and is still safe
 to automate because the mutation expires on its own, while a purchase is
 terminal. Write-path guardrails include per-request seat caps, an idempotency key
 so a retried call doesn't create a second hold, sales-window enforcement, and
-trace logging with caller identifiers redacted. Identity is enforced by two
+a structured log line per tool call with the owner hashed (full tracing is
+Phase 2). Identity is enforced by two
 disjoint credential chains: the MCP endpoint accepts only bearer tokens issued
 to a user's agent, the REST API accepts only HTTP Basic, and the confirm
 endpoint lives on REST — so an agent token cannot reach the purchase path at all.
