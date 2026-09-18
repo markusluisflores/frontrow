@@ -5,7 +5,7 @@
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
-**Revisions 2.1–2.5** (same day) apply five review rounds — see §14.
+**Revisions 2.1–2.6** (same day) apply the review rounds — see §14.
 
 ---
 
@@ -281,6 +281,8 @@ All of §5 assumes Postgres's default **READ COMMITTED** isolation, set
 explicitly on these transactions. Every check that runs after a lock wait depends on it, because the check must
 see what other transactions committed during that wait:
 - the idempotent-replay re-read;
+- confirm's existing-order check after the seat-row wait, which is what makes a
+  double-clicked confirm return the existing order;
 - the per-owner cap count after the advisory-lock wait;
 - cancel's confirmed-order check after the event-row wait;
 - rows re-checked after a `FOR UPDATE` wait;
@@ -316,9 +318,13 @@ only locks already on the row are share locks. It does this even while a
 `FOR UPDATE` is queued, so under steady hold traffic an event `PATCH` could
 wait indefinitely. The `PATCH` therefore begins with `SET LOCAL lock_timeout = '5s'` (configurable)
 and maps a timeout to `contention_retry`. The organiser retries; nothing
-deadlocks. Hibernate's `jakarta.persistence.lock.timeout` hint is not a
-substitute: the PostgreSQL dialect ignores positive values, so the timeout
-would silently not apply.
+deadlocks. The explicit `SET LOCAL` is preferred over Hibernate's
+`jakarta.persistence.lock.timeout` hint. Hibernate 7 applies that hint only to
+the locking query it is attached to, but a cancel also locks seat rows later in
+the same transaction, and one statement at the top covers every lock. It also
+doesn't depend on how a given Hibernate version handles the hint: Hibernate 6
+ignored positive values on PostgreSQL, while 7.x sets `lock_timeout` on the
+connection.
 
 Every path that changes `seat_hold` rows **acquires every lock in ascending
 `event_seat_id` order**. That covers both row locks (`SELECT … ORDER BY
@@ -365,7 +371,11 @@ One transaction, all-or-nothing:
 
 A unique violation is identified by SQLState `23505` **and** the constraint
 name, never by message text. The name comes from the driver's structured error
-(`PSQLException.getServerErrorMessage().getConstraint()`). Hibernate's
+(`PSQLException.getServerErrorMessage().getConstraint()`). Find the
+`PSQLException` by walking the cause chain, and look inside any
+`BatchUpdateException` via `getNextException()` if JDBC batching is enabled. A
+single `instanceof` check on the top-level exception would miss it and turn
+`seat_taken` into a 500. Hibernate's
 `ConstraintViolationException.getConstraintName()` parses the message instead,
 and returns null when Postgres reports errors in a language other than
 English. Only `uq_claimed_seat` translates to `seat_taken`,
@@ -807,4 +817,5 @@ redundant and should not be merged.
 | 2.2 | 2026-09-18 | Second review round. **Event-row lock** added to a single global lock order: `FOR SHARE` for hold/confirm, `FOR UPDATE` for cancel. This closes the cancel-vs-confirm race without deadlock (test 6). Defined: confirm precedence for mixed-state groups, idempotent release, "active group" for the cap, a half-open sales window, validation error codes, the REST `Idempotency-Key` header, MCP tokens limited to `BUYER` users with an `AGENT` authority, Phase 1 vs Phase 2 tool logging, and the `code` key for both adapters. The sweeper re-checks its predicate and purges in its own transaction. DoD extended (constraint tests, both chain directions, no raw tokens, architecture doc, ADRs) |
 | 2.3 | 2026-09-18 | Third review round. Confirm checks event status **before** hold state, so a cancelled event reports `sales_closed` rather than `hold_not_active`. Lazy expiry must be an immediate SQL `UPDATE` (Hibernate flushes inserts before updates), with a per-seat flush and a new sweeper-off test (7). Rows are read under the lock rather than from the persistence context. Every event `PATCH` takes `FOR UPDATE`, with a `lock_timeout` against share-lock starvation. Release precedence, duplicate seat ids, the `event` composite-FK key, and the unlocked `event_id` lookup are now specified |
 | 2.4 | 2026-09-18 | Fourth review round. Release expires lapsed rows instead of releasing them, so confirm outcomes never depend on the sweeper. READ COMMITTED stated as a requirement. `55P03` mapped to `contention_retry`. Confirm checks the full sales window. The concurrency tests specify distinct owners, keys and seats, so they exercise the intended race. `seat_taken` reports the first conflicting seat, which is all Postgres surfaces |
-| 2.5 | 2026-09-18 | Fifth review round: no blockers. Implementation traps pinned down: an explicit 401 filter for bearer tokens on `/api/**`, because Spring's Basic filter ignores them; `SET LOCAL lock_timeout`, because Hibernate's lock-timeout hint is ignored on Postgres; constraint names read from the driver's structured error. The READ COMMITTED dependency list is completed |
+| 2.5 | 2026-09-18 | Fifth review round: no blockers. Implementation traps pinned down: an explicit 401 filter for bearer tokens on `/api/**`, because Spring's Basic filter ignores them; `SET LOCAL lock_timeout` at the top of the PATCH transaction; constraint names read from the driver's structured error. The READ COMMITTED dependency list is completed |
+| 2.6 | 2026-09-18 | Final review pass. Corrected a false claim from 2.5: Hibernate 7.x (7.4.5 under Spring Boot 4.1.1) *does* apply a positive lock timeout on PostgreSQL, via the connection. The source was checked. `SET LOCAL` is kept for a version-independent reason: it covers every lock in the transaction. Also added confirm's existing-order check to the READ COMMITTED list, and cause-chain / `BatchUpdateException` handling for the constraint lookup |
