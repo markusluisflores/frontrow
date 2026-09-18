@@ -1,7 +1,7 @@
 # FrontRow — Project Reviewer & Interview Guide
 
 > **Living document.** Updated as new concepts are added or lessons are learned.
-> Last updated: 2026-09-17
+> Last updated: 2026-09-18
 
 > ⚠️ **Design stage only. Nothing in this project has been built yet.**
 > Every entry below is a *design decision* supported by
@@ -32,15 +32,15 @@ already covers the consumer side.
 |---|---|
 | Language | Java 25 (LTS) |
 | Framework | Spring Boot 4.1 |
-| MCP | Spring AI 2.0 (`@McpTool`), stdio + SSE transports |
+| MCP | Spring AI 2.0 (`@McpTool`), Streamable HTTP transport with bearer-token auth |
 | Database | Postgres + Flyway |
 | Build | Maven |
 | Testing | JUnit 5, AssertJ, Testcontainers |
 | API docs | springdoc-openapi |
 | Container / CI | Docker, GitHub Actions |
-| Deploy | Railway |
+| Deploy | Railway (Phase 2, after real auth) |
 
-*Versions are from research, not verified against Maven Central. Pin at scaffold time.*
+*Spring Boot 4.1.1 and Spring AI 2.0.1 were confirmed as the latest GA releases on Maven Central on 2026-09-18. Pin exact versions at scaffold time.*
 
 ---
 
@@ -56,19 +56,27 @@ nowhere to write a second name. The rule is enforced by the paper, not by the
 person.
 
 **The longer version:** Double-booking is prevented by a Postgres partial unique
-index — `CREATE UNIQUE INDEX ON seat_hold (event_seat_id) WHERE status = 'ACTIVE'`
-— plus a unique constraint on `order_line(event_seat_id)`. Application code
+index — `CREATE UNIQUE INDEX ON seat_hold (event_seat_id) WHERE status IN ('ACTIVE', 'CONVERTED')`
+— plus a unique constraint on `order_line(event_seat_id)`. The predicate covers
+`CONVERTED` (sold) as well as `ACTIVE`: with `ACTIVE` alone, a sold seat has no
+active hold, so the schema would stop a double *sale* but not a new hold on an
+already-sold seat. That gap was caught in the spec's revision-2 review. Application code
 catches the resulting constraint violation and translates it into a structured
 `seat_taken` error rather than leaking a 500. The alternatives considered were
-optimistic locking with a version column and pessimistic `SELECT ... FOR UPDATE`.
-Both work, but both place the guarantee in application logic, which means a bug
-in that logic silently becomes a double-booking. The index means that even if the
-service layer is wrong, the database cannot record the bad state.
+optimistic locking with a version column and pessimistic `SELECT ... FOR UPDATE`
+as the *primary* guarantee. Both work, but both place the guarantee in
+application logic, which means a bug in that logic silently becomes a
+double-booking. The index means that even if the service layer is wrong, the
+database cannot record the bad state. Row locks are still used in the design,
+for a different job: ordering concurrent transactions so they can't deadlock,
+and so that confirm, release and expiry decide on current state. The index is
+the guarantee; the locks keep the protocol well-behaved.
 
 **Interview talking point:** "I put the no-double-booking rule in the schema as a
 partial unique index rather than in a service method. Optimistic and pessimistic
 locking both would have worked, but they make correctness depend on application
-code being right. With the index, if my logic has a bug the worst case is a
+code being right. The index covers both live holds and converted-to-sold ones,
+so one constraint guards the whole lifecycle. With it, if my logic has a bug the worst case is a
 constraint violation I have to translate into a clean error — not a seat sold
 twice. I'd revisit that if the contention pattern meant constraint violations
 became the common path rather than the exceptional one, because then I'm paying
@@ -118,7 +126,11 @@ is reversibility, not sensitivity: `hold_seats` mutates state and is still safe
 to automate because the mutation expires on its own, while a purchase is
 terminal. Write-path guardrails include per-request seat caps, an idempotency key
 so a retried call doesn't create a second hold, sales-window enforcement, and
-trace logging with caller identifiers redacted.
+a structured log line per tool call with the owner hashed (full tracing is
+Phase 2). Identity is enforced by two
+disjoint credential chains: the MCP endpoint accepts only bearer tokens issued
+to a user's agent, the REST API accepts only HTTP Basic, and the confirm
+endpoint lives on REST — so an agent token cannot reach the purchase path at all.
 
 **Interview talking point:** "I drew the line at reversibility rather than at
 read-versus-write. The agent can hold seats, which does mutate state — but a hold
@@ -126,7 +138,8 @@ expires on its own, so the worst case of a confused agent is some seats being
 briefly unavailable. Buying is terminal, so there's no MCP tool for it at all;
 confirmation lives on the REST side behind a human. I'd rather the tool surface
 be obviously safe than rely on prompt instructions telling a model to be
-careful."
+careful — and the agent's credential is rejected by the REST side outright, so
+even a prompt-injected agent can at worst tie up seats until its holds expire."
 
 ---
 
@@ -161,7 +174,7 @@ when it goes wrong, and proving you handled that.
 **The longer version:** Published 2026 hiring guidance for MCP work names
 specific signals: typed JSON schemas checked into version control, thin
 single-responsibility tools rather than "mega-tools" hiding business logic,
-structured error contracts with recovery hints (`{"error":"seat_taken","hint":"call check_availability for current seats"}`),
+structured error contracts with recovery hints (`{"code":"seat_taken","hint":"call check_availability for current seats"}`),
 an architecture diagram with a threat model, measured tool success rate and p95
 latency, and **at least one logged tool failure showing error-and-recovery**.
 Named weak signals: happy-path-only demos, unstructured error strings, and MCP on
@@ -214,16 +227,16 @@ complete thing. They're scheduled as Phases 2–3.
 from had more on it than fits in a week. So I scoped Phase 1 to be genuinely
 *done* — domain, REST, real integration tests, the MCP tools and their evidence
 artifacts — and pushed Kafka and the observability stack to later phases. The
-thing I protected was the concurrency test and the MCP failure log, because those
-are the parts that are actually differentiating. The cuttable parts were
-demo-grade auth and the breadth of seed data."
+thing I protected was the concurrency tests, the credential separation and the
+MCP failure log, because those are the parts that are actually differentiating.
+The cuttable parts were the organiser endpoints and the breadth of seed data."
 
 ### Design Decisions Recorded Before Code
 
 The spec (`docs/superpowers/specs/2026-09-17-frontrow-design.md`) carries goals
 and non-goals, the domain model, the concurrency design, the MCP threat model,
-phasing, and four deliberately-unresolved open questions. A self-review pass
-before sign-off caught two real defects: a hidden dependency (per-caller
+phasing, and one remaining open question (token issuance). Revision 1 had four;
+revision 2 resolved them. A self-review pass of revision 1 caught two real defects: a hidden dependency (per-caller
 guardrails silently needed a trusted caller identity that the same spec lists as
 unresolved for stdio transport) and an ambiguous requirement ("basic role-based
 security", now defined and explicitly labelled demo-grade).
@@ -231,10 +244,26 @@ security", now defined and explicitly labelled demo-grade).
 **Interview talking point:** "I review my own specs before anyone else sees them,
 and on this one it caught a dependency I'd hidden from myself — I'd written
 per-caller rate limits into the tool design while listing 'how do we authenticate
-an MCP caller over stdio' as an open question elsewhere in the same document. The
-spec now says that if that question is still open at implementation time, the
-per-caller caps get dropped rather than enforced against a caller-supplied ID,
-because that would be security theatre."
+an MCP caller over stdio' as an open question elsewhere in the same document. My
+first fix was to drop those caps rather than enforce them against a
+caller-supplied ID, because that would be security theatre. The later fix was
+better: move the MCP server to HTTP, so there's a real authenticated identity and
+the caps can stay."
+
+A second review (revision 2, 2026-09-18) found the index predicate left sold
+seats holdable, that the agent-to-human handover was undesigned, and that stdio
+transport meant a second process with nowhere to authenticate. The design moved
+to Streamable HTTP with bearer tokens, which resolved the identity question
+rather than dropping the caps. A cold review of that revision then found that a
+double-clicked confirm would have reported `hold_expired` for a successful
+purchase, and that concurrent idempotent retries were undefined. Both were fixed
+in revision 2.1 with a lock-then-decide confirm and an insert-first idempotency
+record. Three more rounds (2.2–2.4) found smaller protocol bugs:
+- a cancel racing a confirm, fixed with a global lock order;
+- a Hibernate flush-order trap in lazy expiry;
+- a release path whose outcome depended on the sweeper.
+
+These are design findings; none of it has been implemented or tested yet.
 
 ---
 
@@ -247,19 +276,18 @@ because that would be security theatre."
 
 ## Open Questions I Should Be Able to Discuss
 
-These are unresolved *on purpose* and an interviewer may well find them:
+Revision 1 of the spec had four open questions; revision 2 resolved them
+(specific seat ids; bearer tokens over Streamable HTTP; a configurable TTL; an
+idempotent in-process sweeper). What an interviewer could still press on:
 
-1. **MCP authentication over stdio.** There's no HTTP layer to put a filter in
-   front of. How `buyer_ref` is established and trusted — and what stops one
-   caller releasing another's hold — must be answered before `release_hold`
-   ships. This is the sharpest open question in the project.
-2. **Seat selection semantics.** Specific seat IDs, or "3 together in section A"
-   with server-side adjacency allocation? Adjacency is a real algorithm and may
-   not fit Phase 1; the spec's provisional answer is specific seat IDs.
-3. **Hold TTL** — long enough to be usable, short enough to make the concurrency
-   demo meaningful. Configurable.
-4. **Sweeper placement** — in-process `@Scheduled` is fine for one instance and
-   becomes wrong the moment there are two.
+1. **Why not stdio?** It's the default transport for local MCP servers. The
+   answer: no HTTP layer to authenticate against, and the client spawns a second
+   copy of the service. Be ready to say what would change if a stdio client were
+   a hard requirement.
+2. **Token issuance** is a setup script in Phase 1 — demo-grade by design, with
+   OAuth2 deferred to Phase 2.
+3. **No cancellation.** The sold-once constraint is permanent in Phase 1; the
+   spec states how it would be relaxed (§5), and that is the likely follow-up.
 
 ---
 
@@ -268,6 +296,7 @@ These are unresolved *on purpose* and an interviewer may well find them:
 | Date | Change | Accuracy-drift check |
 |---|---|---|
 | 2026-09-17 | Created at design stage from the spec and journal. No code, ADRs, retros, or PRs existed to read. | **DRIFT FOUND** — 2 real defects, 3 minor. Fixed inline; see below. |
+| 2026-09-18 | Synced to spec revisions 2 through 2.4: claim-index predicate, transport and identity model, trim order, open questions, and the rev-1 self-review talking point (its "caps get dropped" claim no longer matches the spec). Still design-stage — no shipped claims added. | Cold reviewer flagged the stale talking point and version note; both fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
 the no-code claim (four documentation files, no `src/`, no `pom.xml`, not a git
