@@ -169,7 +169,7 @@ when it goes wrong, and proving you handled that.
 **The longer version:** Published 2026 hiring guidance for MCP work names
 specific signals: typed JSON schemas checked into version control, thin
 single-responsibility tools rather than "mega-tools" hiding business logic,
-structured error contracts with recovery hints (`{"error":"seat_taken","hint":"call check_availability for current seats"}`),
+structured error contracts with recovery hints (`{"code":"seat_taken","hint":"call check_availability for current seats"}`),
 an architecture diagram with a threat model, measured tool success rate and p95
 latency, and **at least one logged tool failure showing error-and-recovery**.
 Named weak signals: happy-path-only demos, unstructured error strings, and MCP on

@@ -5,7 +5,7 @@
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
-**Revision 2.1** (same day) applies the cold review of revision 2 — see §14.
+**Revisions 2.1–2.2** (same day) apply two review rounds — see §14.
 
 ---
 
@@ -68,7 +68,7 @@ directly to SDET experience while reading as current AI work.
 
 ### Non-goals
 
-- **No frontend.** OpenAPI/Swagger UI plus seeded demo data plus the MCP server
+- **No frontend in Phases 1–3.** OpenAPI/Swagger UI plus seeded demo data plus the MCP server
   is the demo. Four existing portfolio projects already prove frontend ability;
   this one is deliberately backend-only so effort concentrates on the gap.
 - **No real payments.** Order confirmation is simulated. Handling real payment
@@ -148,6 +148,11 @@ enforceable rather than aspirational — an agent token cannot reach the purchas
 endpoint at all. No tool parameter carries identity; the owner always comes from
 the authenticated principal.
 
+An MCP token carries **no role of its own**. Tokens are issued only to users
+who hold `BUYER`, and the MCP chain grants the token a single `AGENT` authority
+that is scoped to `/mcp`. An organiser's or admin's powers are never reachable
+through an agent token.
+
 Everything outside the two chains is closed by default, except for three
 anonymous paths: Swagger UI (`/swagger-ui/**`, `/v3/api-docs/**`), `/error`,
 and `/actuator/health`. No other actuator endpoint is exposed in Phase 1.
@@ -174,7 +179,7 @@ erDiagram
     EVENT_SEAT ||--o| ORDER_LINE : sold_as
     TICKET_ORDER ||--o{ ORDER_LINE : contains
     EVENT ||--o{ TICKET_ORDER : for
-    HOLD_REQUEST ||--|{ SEAT_HOLD : records
+    SEAT_HOLD }|--o| HOLD_REQUEST : "recorded by (24h)"
 ```
 
 | Table | Key fields | Notes |
@@ -202,14 +207,19 @@ is easy to defend in an interview.
 
 - Hold: `ACTIVE`, `EXPIRED`, `RELEASED`, `CONVERTED`. Transitions are only
   `ACTIVE → EXPIRED` (lazy expiry or sweeper), `ACTIVE → RELEASED` (owner
-  releases), `ACTIVE → CONVERTED` (owner confirms). Everything else is terminal.
+  releases, or the event is cancelled), `ACTIVE → CONVERTED` (owner confirms).
+  Everything else is terminal. A group's rows can end up in mixed states: an
+  overlapping hold lazily expires only the seats it overlaps.
 - Order: `CONFIRMED` only in Phase 1 (no cancellation — §2).
-- Event: `DRAFT`, `ON_SALE`, `CANCELLED`. Holds require `ON_SALE` *and* the
-  current time inside the sales window.
+- Event: `DRAFT`, `ON_SALE`, `CANCELLED`. Holds and confirmations require
+  `ON_SALE` *and* `sales_open_at <= :now < sales_close_at`. The window is
+  half-open, and the same bound applies everywhere.
 
 **A hold is live iff** `status = 'ACTIVE' AND expires_at > :now`. Every query
 that asks "is this seat available?" or "is this hold confirmable?" uses exactly
-that predicate — there is no second definition.
+that predicate — there is no second definition. An **active hold group** (for
+the per-owner cap) is a group with at least one live row, so lapsed-but-unswept
+groups never count against the cap.
 
 ---
 
@@ -255,13 +265,27 @@ Stated plainly, because overclaiming here is the easiest interview trap:
 | An idempotency key yields at most one hold group | **Schema** (`hold_request` primary key) plus the replay protocol below (tested under concurrency) |
 | An expired, released or sold hold cannot be confirmed or released | Application — lock-then-decide, below (tested under concurrency) |
 | Order lines match the owner's converted holds | Application — written in the same transaction as the conversion |
-| No deadlocks between hold, confirm, release and expiry | Application — the locking discipline below (tested) |
+| No deadlocks between hold, confirm, release, cancel and expiry | Application — the locking discipline below (tested) |
+| A cancelled event never has a confirmed order | Application — event-row lock, below (tested under concurrency) |
 
 **Future cancellation** (not Phase 1): would add an order-line status, make
 `uq_sold_once` a partial index on sold lines, and move the hold from
 `CONVERTED` to a new terminal `REFUNDED` status that the claim index excludes.
 
 ### Locking discipline
+
+Every transaction takes the locks it needs in one global order, and skips the
+ones it doesn't need:
+
+1. the `hold_request` key (hold creation only);
+2. the per-owner advisory lock (hold creation only);
+3. the **`event` row** — `FOR SHARE` for hold creation and confirmation,
+   `FOR UPDATE` for an event status change;
+4. `seat_hold` rows and unique-index insert waits, in ascending
+   `event_seat_id`.
+
+Release takes only step 4. It doesn't read event status, so it never needs
+step 3.
 
 Every path that changes `seat_hold` rows **acquires every lock in ascending
 `event_seat_id` order**. That covers both row locks (`SELECT … ORDER BY
@@ -286,8 +310,13 @@ One transaction, all-or-nothing:
    *Idempotent replay* below).
 2. **Serialize per owner.** `pg_advisory_xact_lock(hash(owner))`. A burst of
    parallel calls from one owner cannot all pass the active-group cap check.
-3. Validate: event `ON_SALE`, sales window open, every seat belongs to the
-   event, per-request seat cap, per-owner active-group cap.
+3. Lock the event row `FOR SHARE`, then validate. Failures map as follows:
+   - event missing → `not_found`
+   - `DRAFT` or before `sales_open_at` → `sales_not_open`
+   - `CANCELLED` or at/after `sales_close_at` → `sales_closed`
+   - a seat id not offered by this event → `invalid_request` (naming the ids)
+   - per-request seat cap → `too_many_seats`
+   - per-owner active-group cap → `hold_limit_exceeded`
 4. **Claim seat by seat, in ascending `event_seat_id` order.** For each seat:
    lock its `ACTIVE` hold if one exists, set it to `EXPIRED` if
    `expires_at <= :now` (lazy expiry), then insert the new `seat_hold` row.
@@ -333,19 +362,25 @@ so a multi-seat hold either claims every seat or none. SQLState `40P01`
 
 One transaction:
 
-1. Lock the group's rows: `SELECT … FROM seat_hold WHERE hold_group_id = :group
-   AND owner = :owner ORDER BY event_seat_id FOR UPDATE`.
+1. Lock the event row `FOR SHARE`, then the group's rows: `SELECT … FROM
+   seat_hold WHERE hold_group_id = :group AND owner = :owner ORDER BY
+   event_seat_id FOR UPDATE`.
 2. If no rows are found, return `not_found`. That also covers another owner's
    group.
 3. If a `ticket_order` already exists for the group, return it. A repeated or
    double-clicked confirm is idempotent. The second request waits on step 1's
    locks, then takes this branch.
-4. Decide by the rows' state:
-   - all `ACTIVE` with `expires_at > :now` → continue;
-   - `ACTIVE` but past `expires_at`, or `EXPIRED` → `hold_expired`;
-   - `RELEASED` → `hold_not_active`.
-5. The event must still be `ON_SALE` with `:now <= sales_close_at`. Otherwise
-   return `sales_closed`.
+4. Decide by the rows' state, in this order of precedence:
+   - every row live → continue;
+   - any row `RELEASED` → `hold_not_active`;
+   - otherwise (any row `EXPIRED`, or `ACTIVE` past `expires_at`, including a
+     group that was only partly expired by an overlapping hold) →
+     `hold_expired`.
+5. The event must still be `ON_SALE` with `:now < sales_close_at`. Otherwise
+   return `sales_closed`. Because of the event-row lock taken in step 1, a
+   concurrent cancellation either commits first (this step sees `CANCELLED`) or
+   waits until this confirm commits (and is then rejected — see *Event
+   cancellation*).
 6. `UPDATE … SET status = 'CONVERTED'` on the locked rows, then insert
    `ticket_order` and its `order_line`s.
 
@@ -356,25 +391,38 @@ well as single seats.
 
 ### Release
 
-`release_hold` and `DELETE /api/holds/{id}` lock the group's rows as in
-confirmation steps 1–2. Only `ACTIVE` rows become `RELEASED`. A group that is
+`release_hold` and `DELETE /api/holds/{id}` lock the group's rows (no event
+lock), returning `not_found` if there are none. Every `ACTIVE` row becomes
+`RELEASED`. Release is idempotent: a group with no `ACTIVE` rows left (already
+expired or released) returns success with nothing to do. A group that is
 `CONVERTED` returns `hold_not_active` and is never touched. If release could
 move a sold hold out of `uq_claimed_seat`, the seat would become holdable
 again.
 
 ### Event cancellation
 
-`PATCH /api/events/{id}` to `CANCELLED` is rejected with `invalid_request` if
-the event has any confirmed order: cancelling sold events is part of the
-cancellation non-goal (§2). Otherwise it releases all of the event's live holds
-in the same transaction.
+`PATCH /api/events/{id}` to `CANCELLED` first locks the event row
+`FOR UPDATE`. That waits for every in-flight hold creation and confirmation on
+the event (they hold it `FOR SHARE`), and blocks new ones until it commits. Only
+then does it check for confirmed orders. If any exist, it rejects with
+`invalid_request`: cancelling sold events is part of the cancellation non-goal
+(§2). Otherwise it releases the event's `ACTIVE` holds, locking them in
+ascending `event_seat_id` order, and commits `CANCELLED`.
+
+Without the event lock, a confirm could pass its `ON_SALE` check while the
+cancel was blocked on the confirm's seat rows. The event would end up cancelled
+with a sold order. And if either side locked seats before the event, the two
+would deadlock.
 
 ### Hold expiry — two mechanisms, deliberately
 
 1. **Lazy expiry (correctness)** — creation step 4, inside the hold transaction.
 2. **Scheduled sweeper (hygiene)** — an in-process `@Scheduled` job. It expires
-   stale holds in bulk (`UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP
-   LOCKED)`) and purges `hold_request` rows older than 24 hours.
+   stale holds in bulk: `UPDATE … WHERE id IN (SELECT id … WHERE status =
+   'ACTIVE' AND expires_at <= :now FOR UPDATE SKIP LOCKED)`. Postgres re-checks
+   the predicate after locking, so a hold confirmed a moment earlier is never
+   expired. Purging `hold_request` rows older than 24 hours runs in a separate
+   transaction.
 
 Correctness never depends on the scheduler running. The sweeper only keeps the
 table tidy and keeps availability counts honest for read queries. Its `UPDATE`
@@ -403,6 +451,10 @@ more than either mechanism alone.
 5. **Concurrent idempotent retry.** Two calls with the same idempotency key and
    request run in parallel. Assert both return the same `hold_group_id` and
    exactly one group exists.
+6. **Cancel vs. confirm** (only if the `ORGANISER` endpoints are built, §9).
+   An organiser cancels while an owner confirms. Assert that either the confirm
+   gets `sales_closed` and the event is `CANCELLED`, or the order exists and the
+   cancel gets `invalid_request`. Never both, and no deadlock.
 
 All run against real Postgres via Testcontainers, not an in-memory database. An
 H2 test here would prove nothing, because the behaviour under test is Postgres
@@ -456,24 +508,29 @@ owner), and confirms. No one else can see, release, or confirm that hold.
 
 All enforced per owner, which is possible because identity is trusted (§3):
 
-- Cap on simultaneously active hold groups per owner (default 3)
+- Cap on simultaneously active hold groups per owner (default 3; "active" as defined in §4)
 - Cap on seats per hold (default 8)
-- Idempotency key required on `hold_seats`: a replay with the same key and the
+- Idempotency key required on every hold: the `idempotency_key` parameter on
+  `hold_seats`, and an `Idempotency-Key` header on `POST /api/events/{id}/holds`.
+  Both share `hold_request` and the same protocol (§5). A replay with the same key and the
   same request returns the original result; the same key with a different
   request returns `idempotency_key_reused`. Keys live in `hold_request` for 24
   hours.
-- Sales-window enforcement (no holds before `sales_open_at` or after `sales_close_at`)
+- Sales-window enforcement (the half-open window in §4)
 - `release_hold` on another owner's hold returns `not_found` — it does not
   reveal that the hold exists
-- Tool traces are logged with the owner reduced to a short hash; tokens are never logged
+- **Phase 1 tool logging:** one structured log line per tool call (tool, outcome
+  or error code, duration, owner reduced to a short hash); tokens are never
+  logged. Metrics and distributed tracing over those calls are Phase 2.
 
 Caps and the hold TTL are configuration properties, not constants.
 
 ### Error contracts
 
 Structured, machine-parseable, always with a recovery hint. The same codes are
-used by both adapters — REST carries them in an RFC 9457 Problem Details body
-(`code` extension member), MCP as the tool's structured error result.
+used by both adapters, always under the key `code`. REST carries it as an
+extension member of an RFC 9457 Problem Details body; MCP returns it in the
+tool's structured error result.
 
 | Code | Hint (abridged) |
 |---|---|
@@ -490,8 +547,11 @@ used by both adapters — REST carries them in an RFC 9457 Problem Details body
 | `invalid_request` | names the offending parameter |
 
 ```json
-{"error": "seat_taken", "seat_ids": [412], "hint": "call check_availability for current seats"}
+{"code": "seat_taken", "seat_ids": [412], "hint": "call check_availability for current seats"}
 ```
+
+A tool call that fails MCP authentication never reaches a tool. It gets an
+HTTP 401 from the MCP filter chain.
 
 An unstructured string error is a review BLOCKER — it is one of the named weak
 signals.
@@ -501,11 +561,12 @@ signals.
 | Method & path | Role | Notes |
 |---|---|---|
 | `GET /api/events`, `GET /api/events/{id}`, `GET /api/events/{id}/availability` | anonymous | Mirrors the three read tools |
-| `POST /api/events/{id}/holds` | `BUYER` | Humans can hold directly too; same service as `hold_seats` |
+| `POST /api/events/{id}/holds` | `BUYER` | Humans can hold directly too; same service as `hold_seats`. Requires an `Idempotency-Key` header |
 | `GET /api/me/holds` | `BUYER` | Own live holds, including agent-created ones |
 | `DELETE /api/holds/{holdGroupId}` | `BUYER` (owner) | Release |
 | `POST /api/holds/{holdGroupId}/confirm` | `BUYER` (owner) | **The only purchase path.** Idempotent |
-| `GET /api/me/orders`, `GET /api/orders/{id}` | `BUYER` (owner), `ADMIN` (any) | Another owner's order returns `not_found`, the same as `release_hold` |
+| `GET /api/me/orders` | `BUYER` | Own orders |
+| `GET /api/orders/{id}` | `BUYER` (owner), `ADMIN` (any) | Another owner's order returns `not_found`, the same as `release_hold` |
 | `POST /api/events` | `ORGANISER` | Creates a `DRAFT` event on an existing venue with a price per section |
 | `PATCH /api/events/{id}` | `ORGANISER` | Sales window and status (`ON_SALE`, `CANCELLED` — see §5 *Event cancellation*) |
 
@@ -550,8 +611,8 @@ error codes exercised by tests. Tool success rate and p95 latency are Phase 2.
 |---|---|---|
 | Domain unit tests | JUnit 5 + AssertJ, fixed `Clock` | Hold state transitions, expiry predicate, `Money` arithmetic, sales-window rules, caps |
 | Integration tests | Testcontainers + real Postgres | Repository behaviour, Flyway migrations apply cleanly, each schema constraint in §5 rejects a violating row, constraint violations surface as structured errors |
-| **Concurrency tests** | Testcontainers + executor pool | The five races in §5 |
-| Security tests | Spring Security test + MockMvc | Bearer token rejected on `/api/**`; Basic rejected on `/mcp`; owner-only release/confirm; per-owner caps |
+| **Concurrency tests** | Testcontainers + executor pool | The races in §5 |
+| Security tests | Spring Security test + MockMvc | Bearer token rejected on `/api/**`; Basic rejected on `/mcp`; unauthenticated `/mcp` gets 401; owner-only release/confirm; per-owner caps; agent token cannot exercise `ORGANISER`/`ADMIN` powers |
 | MCP contract tests | MCP client against the running app | `tools/list` output matches the checked-in `*.schema.json` files, so schema drift fails CI; each tool's error paths return structured errors |
 
 No mocking of the database. Testcontainers is the named differentiator and
@@ -563,10 +624,10 @@ mocking it away forfeits the entire signal.
 
 | Phase | Contents | Exit state |
 |---|---|---|
-| **1 — the week** | Domain core, REST + OpenAPI, Postgres + Flyway, Testcontainers suite incl. all five concurrency tests, demo-grade security (below), all 5 MCP tools over Streamable HTTP, all evidence artifacts, Docker, CI, seeded demo data | **Complete and presentable**, locally |
-| 2 | Observability: Micrometer + Prometheus + Grafana, MCP tool traces, measured tool success rate over 10 test prompts, p95 latency. Real authentication (OAuth2 / OIDC), then a hosted deploy on Railway | Fills the "70% of resumes miss this" gap; completes the MCP metrics bar |
+| **1 — the week** | Domain core, REST + OpenAPI, Postgres + Flyway, Testcontainers suite incl. the §5 concurrency tests, demo-grade security (below), all 5 MCP tools over Streamable HTTP, all evidence artifacts, Docker, CI, seeded demo data | **Complete and presentable**, locally |
+| 2 | Observability: Micrometer + Prometheus + Grafana, metrics and distributed tracing over MCP tool calls, measured tool success rate over 10 test prompts, p95 latency. Real authentication (OAuth2 / OIDC), then a hosted deploy on Railway | Fills the "70% of resumes miss this" gap; completes the MCP metrics bar |
 | 3 | Event-driven: transactional outbox + Kafka for `hold_expired` and `order_confirmed` events | Adds the in-demand Kafka signal |
-| 4 | Optional thin UI | Clickable live demo |
+| 4 | Optional thin UI (lifts the §2 no-frontend non-goal) | Clickable live demo |
 
 **"Demo-grade security" is defined, not left vague:** Spring Security with two
 disjoint filter chains. `/api/**` uses HTTP Basic against in-memory users
@@ -639,10 +700,14 @@ Self-service issuance belongs with OAuth2 in Phase 2.
 - [ ] `docker compose up` starts the service and Postgres; seeded demo data present
 - [ ] Swagger UI browsable; every endpoint in the §6 REST table exercised end to end (the `ORGANISER` endpoints only if not trimmed under §9)
 - [ ] All 5 MCP tools callable from Claude Code over Streamable HTTP with a bearer token
-- [ ] The five concurrency tests in §5 pass against real Postgres; the hold-race test genuinely fails if `uq_claimed_seat` is removed
-- [ ] Security tests prove an MCP token cannot reach the confirm endpoint
+- [ ] The concurrency tests in §5 pass against real Postgres (test 6 only if the `ORGANISER` endpoints are built); the hold-race test genuinely fails if `uq_claimed_seat` is removed
+- [ ] Security tests prove the chains are disjoint in both directions — an MCP token cannot reach the confirm endpoint, and Basic credentials cannot reach `/mcp`
+- [ ] Every schema constraint in §5 has an integration test inserting a violating row
+- [ ] No raw token in the repository or committed config — only SHA-256 hashes
 - [ ] `logs/example_run.txt` contains a real, reproduced failure-and-recovery run
 - [ ] Tool schemas checked in, and CI fails on schema drift
+- [ ] `docs/mcp/architecture.md` covers trust boundaries and why there is no `confirm_order`
+- [ ] The §13 ADRs are recorded in `docs/adr/`
 - [ ] README states the no-`confirm_order` decision, the demo-grade security caveat, and the §7 metrics
 - [ ] CI green on a clean checkout
 
@@ -675,3 +740,4 @@ redundant and should not be merged.
 | 1 | 2026-09-17 | Initial design from brainstorm |
 | 2 | 2026-09-18 | Requirements review. **Invariant:** claim index now covers `CONVERTED`, so a sold seat cannot be held; venue consistency and one-order-per-group moved into the schema; schema-vs-application guarantees tabled. **Transactions:** ordered inserts, explicit flush, SQLState-based error mapping, conditional-update confirmation, two new concurrency tests. **Identity:** stdio and SSE dropped for Streamable HTTP; bearer tokens for MCP, Basic for REST, disjoint chains; `buyer_ref` parameter removed; agent-to-human handover defined. **Scope:** order cancellation, venue management and public deploy declared non-goals; REST surface, full error code list, idempotency storage, statuses, `timestamptz` + injected `Clock`, and Phase 1 README metrics specified. Tier corrected: security slices are Mandatory |
 | 2.1 | 2026-09-18 | Cold review of revision 2. **Confirm** is now lock-then-decide, so a repeat confirm returns the existing order instead of `hold_expired`, and `hold_not_active` has a defined path. **Idempotency** keys are inserted first with `ON CONFLICT`, so a concurrent retry waits and replays instead of colliding with itself; the response is stored, the request hash is canonical, and only successes are recorded. **Locking discipline**: every row-changing path locks in `event_seat_id` order, and the sweeper uses `SKIP LOCKED`. The per-owner cap is serialized by an advisory lock. Release and event-cancel semantics defined, the default security chain stated, the principal-propagation spike added, and concurrency tests 4–5 added |
+| 2.2 | 2026-09-18 | Second review round. **Event-row lock** added to a single global lock order: `FOR SHARE` for hold/confirm, `FOR UPDATE` for cancel. This closes the cancel-vs-confirm race without deadlock (test 6). Defined: confirm precedence for mixed-state groups, idempotent release, "active group" for the cap, a half-open sales window, validation error codes, the REST `Idempotency-Key` header, MCP tokens limited to `BUYER` users with an `AGENT` authority, Phase 1 vs Phase 2 tool logging, and the `code` key for both adapters. The sweeper re-checks its predicate and purges in its own transaction. DoD extended (constraint tests, both chain directions, no raw tokens, architecture doc, ADRs) |
