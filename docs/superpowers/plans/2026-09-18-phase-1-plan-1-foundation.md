@@ -416,7 +416,7 @@ Restore the file with `./mvnw spotless:apply`.
 
 Then temporarily add `java.util.List raw = new java.util.ArrayList();` inside
 `main`.
-Run: `./mvnw -q compile`
+Run: `./mvnw compile` (not `-q`, which hides the WARN-level lint lines)
 Expected: FAIL with `warning: [rawtypes]` and "warnings found and -Werror
 specified".
 
@@ -712,7 +712,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
     groups:
       spring-boot:
         patterns: ['org.springframework.boot*']
@@ -722,11 +722,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 2
 ```
 
-`open-pull-requests-limit: 5` enforces the global rule "never accumulate more
-than 5 Dependabot PRs", per ecosystem.
+`open-pull-requests-limit` applies to each `updates` entry, not the whole
+file. The global rule is "never accumulate more than 5 Dependabot PRs", so the
+5 is split: 3 for Maven, which gets more updates, and 2 for Actions.
 
 - [ ] **Step 6: Lint the workflows locally**
 
@@ -1130,7 +1131,9 @@ Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=PrincipalPropagationSpike
 
 This is an experiment, so each result is data. Record, for each of the four
 tests (A, B and the two controls), PASS or FAIL and the exact assertion message. A FAIL on test A or B
-usually reads `expected: "alice" but was: "<anonymous>"`.
+usually reads `expected: "alice" but was: "<anonymous>"`. It could also read
+`but was: "anonymousUser"`, if the tool's thread carries Spring's anonymous
+token rather than an empty context. Record whichever value appears.
 
 The two controls must PASS before A or B means anything:
 - `unauthenticatedMcpRequestIsRejectedWith401` (negative control)
@@ -1163,8 +1166,9 @@ reading, and ADR-004 cites both the result and that bean.
 | FAIL | FAIL | **BLOCKED.** Stop and report both messages to the controller. This is a replacement-design point for the user, not something to patch here. |
 
 Then make the suite green without deleting evidence. Rename the losing test so
-its name states the observed behaviour, and assert that behaviour. For example,
-if A fails:
+its name states the observed behaviour, and assert the **observed** value from
+Step 3, not a predicted one. For example, if A fails with
+`but was: "<anonymous>"`:
 
 ```java
     @Test
@@ -1221,11 +1225,12 @@ an `@McpTool` method. Streamable HTTP may run tool methods on a thread where
 **Chosen: <A or B>**, because <the Step 4 row that applied, with the observed
 results: A = <PASS/FAIL: message>, B = <PASS/FAIL: message>>.
 
-Why A behaved as it did: Spring AI 2.0.1's `McpServerAutoConfiguration`
-registers a `servletMcpSyncServerCustomizer` bean that sets
-`immediateExecution(true)` for servlet SYNC servers, so tool methods run on the
-request thread. <If B: state whether A still passing changed the choice, and
-why not.>
+Why A behaved as it did: <If A passed: Spring AI 2.0.1's
+`McpServerAutoConfiguration` registers a `servletMcpSyncServerCustomizer` bean
+that sets `immediateExecution(true)` for servlet SYNC servers, so tool methods
+run on the request thread. If A failed: what the run showed instead, since that
+source reading did not hold.> <If B: state whether A still passing changed the
+choice, and why not.>
 
 ### Consequences
 
@@ -1240,7 +1245,7 @@ why not.>
 ```
 
 Every `<...>` above is filled from the run before committing. None may remain.
-Run: `grep -nE '<(A or B|McpTransportContext \||mechanism|date|the Step|PASS/FAIL|If B|Plan 3)' docs/adr/ADR-004-mcp-principal-propagation.md`
+Run: `grep -nE '<(A or B|McpTransportContext \||mechanism|date|the Step|PASS/FAIL|If A|If B|Plan 3)' docs/adr/ADR-004-mcp-principal-propagation.md docs/adr/README.md`
 Expected: no output. This grep looks for the template's own placeholders, not
 any `<`, because recorded evidence such as `but was: "<anonymous>"` contains
 one legitimately.
@@ -1924,6 +1929,15 @@ git commit -m "feat(schema): add V1 schema with the seat-claim invariant constra
     `protocol: STREAMABLE` a repeat of the default, when it actually selects
     the transport.
   - All checked against the sources, and all applied.
+- **Review round 3** (resumed and fresh pair on the round-2 fixes): 0 BLOCKERs
+  from either reviewer. The fresh reviewer checked every Java call in the plan
+  against the sources and found nothing deprecated and no lint trigger. It
+  couldn't reach the sources for a few Spring Framework, pgjdbc and JDK
+  classes; the first `./mvnw verify` covers those.
+  - Applied 2 SUGGESTIONs: the Dependabot limit split 3/2 to respect the cap
+    of 5, and dropping `-q` so the rawtypes warning shows.
+  - Applied 3 NITs: assert the observed value, not a predicted one; make the
+    ADR-004 explanation conditional; include the README row in the grep.
 - **Crossing check:** the spike crosses mechanism (A/B) with authentication
   (token/none). The unauthenticated case must pass before A or B means anything.
   Otherwise a harness 401 on async dispatch would read as a mechanism failure.
