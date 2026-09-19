@@ -492,6 +492,12 @@ unverified hook.
 
 - [ ] **Step 10: Update `CLAUDE.md`**
 
+Replace the "Current state" paragraph's first sentence, **"Docs only — no build
+exists yet."**, with **"Scaffold only — a Maven build and a context-load test
+exist; no domain code yet."** The old sentence becomes false in this task, and
+the interview guide's rule forbids claims that run ahead of the code, or behind
+it.
+
 In "Deferred bootstrap items", strike through the items this task delivered.
 Keep the list, so Task 2 can strike its own items:
 - Maven wrapper; versions pinned
@@ -791,10 +797,13 @@ Read the settings again first and stop if they differ from that list:
 
 ```bash
 gh api repos/markusluisflores/frontrow/branches/main/protection \
-  --jq '{enforce_admins:.enforce_admins.enabled, approvals:.required_pull_request_reviews.required_approving_review_count, force_pushes:.allow_force_pushes.enabled, deletions:.allow_deletions.enabled}'
+  --jq '{enforce_admins:.enforce_admins.enabled, approvals:.required_pull_request_reviews.required_approving_review_count, force_pushes:.allow_force_pushes.enabled, deletions:.allow_deletions.enabled, linear_history:.required_linear_history.enabled, conversation_resolution:.required_conversation_resolution.enabled, block_creations:.block_creations.enabled, lock_branch:.lock_branch.enabled}'
 ```
 
-Expected: `{"enforce_admins":true,"approvals":0,"force_pushes":false,"deletions":false}`.
+Expected: `{"enforce_admins":true,"approvals":0,"force_pushes":false,"deletions":false,"linear_history":false,"conversation_resolution":false,"block_creations":false,"lock_branch":false}`.
+The `PUT` resets every one of these to the body's value, or to false where the
+body leaves it out. If any differs, stop: the body must be updated to keep
+it.
 
 Write this body to `protection.json`:
 
@@ -827,8 +836,6 @@ Expected read-back:
 `{"checks":["Build and test","Analyze (java-kotlin)"],"enforce_admins":true,"force_pushes":false}`.
 `enforce_admins` stays on, so merges into `main` now wait for both checks. That
 includes docs-only PRs, because `ci.yml` runs on every PR.
-
-Expected read-back: `["Build and test","Analyze (java-kotlin)"]`.
 
 Then strike the last deferred item in `CLAUDE.md` and commit:
 
@@ -899,8 +906,14 @@ spring:
         type: SYNC
 ```
 
-`protocol` and `type` repeat the 2.0.1 defaults (`STREAMABLE`, `SYNC`), so a
-future default change can't silently switch the transport (ADR-003).
+**`protocol: STREAMABLE` is load-bearing. Never remove it as redundant.** The
+property's field defaults to `STREAMABLE`, but the auto-configuration conditions
+read the property itself. The Streamable HTTP condition is
+`havingValue = "STREAMABLE", matchIfMissing = false`, and the SSE condition is
+`havingValue = "SSE", matchIfMissing = true` (`McpServerAutoConfiguration`,
+Spring AI 2.0.1). With the line missing, the server comes up as SSE, which
+ADR-003 rules out. `type: SYNC` does repeat its default. It stays so the
+transport and execution model can be read in one place.
 
 Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=FrontRowApplicationTests`
 Expected: PASS. The context still loads with the MCP server and security on the
@@ -1025,7 +1038,7 @@ class PrincipalPropagationSpikeTest {
                 .requestTimeout(Duration.ofSeconds(10))
                 .build()) {
             client.initialize();
-            CallToolResult result = client.callTool(new CallToolRequest(toolName, Map.of()));
+            CallToolResult result = client.callTool(CallToolRequest.builder(toolName).arguments(Map.of()).build());
             assertThat(result.isError()).as("tool error: %s", result.content()).isNotEqualTo(Boolean.TRUE);
             return ((TextContent) result.content().getFirst()).text();
         }
@@ -1115,8 +1128,8 @@ would look like a mechanism failure when it is really the spike's own filter.
 
 Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=PrincipalPropagationSpikeTest`
 
-This is an experiment, so each result is data. Record, for each of the three
-tests, PASS or FAIL and the exact assertion message. A FAIL on test A or B
+This is an experiment, so each result is data. Record, for each of the four
+tests (A, B and the two controls), PASS or FAIL and the exact assertion message. A FAIL on test A or B
 usually reads `expected: "alice" but was: "<anonymous>"`.
 
 The two controls must PASS before A or B means anything:
@@ -1208,6 +1221,12 @@ an `@McpTool` method. Streamable HTTP may run tool methods on a thread where
 **Chosen: <A or B>**, because <the Step 4 row that applied, with the observed
 results: A = <PASS/FAIL: message>, B = <PASS/FAIL: message>>.
 
+Why A behaved as it did: Spring AI 2.0.1's `McpServerAutoConfiguration`
+registers a `servletMcpSyncServerCustomizer` bean that sets
+`immediateExecution(true)` for servlet SYNC servers, so tool methods run on the
+request thread. <If B: state whether A still passing changed the choice, and
+why not.>
+
 ### Consequences
 
 * ✅ <Plan 3's adapter reads the owner via the chosen mechanism and passes it to
@@ -1221,8 +1240,10 @@ results: A = <PASS/FAIL: message>, B = <PASS/FAIL: message>>.
 ```
 
 Every `<...>` above is filled from the run before committing. None may remain.
-Run: `grep -n '<' docs/adr/ADR-004-mcp-principal-propagation.md`
-Expected: no output.
+Run: `grep -nE '<(A or B|McpTransportContext \||mechanism|date|the Step|PASS/FAIL|If B|Plan 3)' docs/adr/ADR-004-mcp-principal-propagation.md`
+Expected: no output. This grep looks for the template's own placeholders, not
+any `<`, because recorded evidence such as `but was: "<anonymous>"` contains
+one legitimately.
 
 Add this row to `docs/adr/README.md`:
 
@@ -1417,12 +1438,12 @@ final class SchemaFixtures {
 }
 ```
 
-`org.postgresql` is a `runtime` dependency from Task 1, so code can't compile
-against `PSQLException` yet. In `pom.xml`, delete the
-`<scope>runtime</scope>` line from the `postgresql` dependency, which makes it
-`compile` scope. Don't add a second declaration: Maven warns on duplicates.
-`compile` is the scope Plan 2 needs anyway, because its error translator reads
-`PSQLException` in main code (spec §5).
+In `pom.xml`, delete the `<scope>runtime</scope>` line from the `postgresql`
+dependency, which makes it `compile` scope. Test code would compile either way,
+because Maven puts runtime dependencies on the test classpath. The reason is
+Plan 2: its error translator reads `PSQLException` in **main** code (spec §5).
+Doing it here keeps the dependency change beside the first code that uses the
+class. Don't add a second declaration: Maven warns on duplicates.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -1894,6 +1915,15 @@ git commit -m "feat(schema): add V1 schema with the seat-claim invariant constra
   - Not applied: the `$CLAUDE_PROJECT_DIR` hook-path NIT. How it expands in a
     Windows hook command is unverified, and Task 1 Step 9 tests the hook live
     anyway.
+- **Review round 2** (resumed and fresh pair on the round-1 fixes):
+  - Resumed: 0 BLOCKER, 1 SUGGESTION, 3 NITs.
+  - Fresh: 1 BLOCKER, 2 SUGGESTIONs, 4 NITs. The blocker: the deprecated
+    `CallToolRequest(String, Map)` constructor would fail test compilation
+    under `-Werror`.
+  - The fresh reviewer also found that this plan wrongly called
+    `protocol: STREAMABLE` a repeat of the default, when it actually selects
+    the transport.
+  - All checked against the sources, and all applied.
 - **Crossing check:** the spike crosses mechanism (A/B) with authentication
   (token/none). The unauthenticated case must pass before A or B means anything.
   Otherwise a harness 401 on async dispatch would read as a mechanism failure.
