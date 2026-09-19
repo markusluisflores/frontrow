@@ -133,8 +133,11 @@ unzip -o wrapper.zip mvnw mvnw.cmd
 rm wrapper.zip
 mkdir -p .mvn/wrapper
 chmod +x mvnw
-git update-index --chmod=+x mvnw 2>/dev/null || true
 ```
+
+This repo has `core.filemode=false`, so `chmod` alone doesn't reach git. Step 11
+stages `mvnw` with `git add --chmod=+x`, and that sets mode 100755 in the index.
+Without it, CI's `./mvnw` fails with "Permission denied".
 
 Create `.mvn/wrapper/maven-wrapper.properties`:
 
@@ -347,9 +350,13 @@ class FrontRowApplicationTests {
 
 - [ ] **Step 4: Run the test to verify it fails**
 
-Run: `./mvnw -q test -Dtest=FrontRowApplicationTests`
-Expected: FAIL. The test does not compile, because no `@SpringBootConfiguration`
-exists yet ("Unable to find a @SpringBootConfiguration").
+Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=FrontRowApplicationTests`
+Expected: FAIL with `IllegalStateException: Unable to find a
+@SpringBootConfiguration`. The test compiles, but there's no application class
+yet. `-Dspotless.check.skip=true` stops the not-yet-formatted files from failing
+the run at `spotless:check` before the test even starts. That would be a
+failure for the wrong reason. The same flag appears on every targeted `-Dtest`
+run in this plan; `./mvnw verify` never skips it.
 
 - [ ] **Step 5: Write the minimal implementation**
 
@@ -387,6 +394,12 @@ failures, and SpotBugs reports no bugs.
 If SpotBugs flags `FrontRowApplication` for `EI_EXPOSE_REP` or anything else,
 fix the code. Do not add an exclusion.
 
+**Fallback if `-Werror` fails on something outside our code**, such as a
+`[path]` or `[classfile]` warning raised by a dependency jar: record the exact
+warning and mark this step BLOCKED for the controller. Never silently add a
+`-Xlint:-<key>` exclusion to get green; excluding one is a decision the
+controller brings to the user.
+
 **Fallback if SpotBugs itself fails on Java 25 class files:** that is an error
 from the plugin, not a finding against our code (for example
 `Unsupported class file major version 69`). Record the exact message and mark
@@ -409,7 +422,12 @@ specified".
 
 Revert that change, then run `./mvnw verify` and expect `BUILD SUCCESS`.
 
-- [ ] **Step 8: Add the per-file format hook**
+- [ ] **Step 8: Add the per-file format hook (tell the user first)**
+
+This edits `.claude/settings.json`, which changes how Claude Code behaves in
+this project, and Step 9 needs a session restart. Before this step, the
+controller tells the user what the hook does, and gets a yes for the settings
+change and the restart.
 
 `.claude/hooks/spotless-file.ps1`:
 
@@ -491,9 +509,13 @@ Leave "enforced in CI" open for Task 2. Also add this line under "Conventions":
 - [ ] **Step 11: Commit**
 
 ```bash
-git add mvnw mvnw.cmd .mvn pom.xml src .claude/settings.json .claude/hooks CLAUDE.md
+git add --chmod=+x mvnw
+git add mvnw.cmd .mvn pom.xml src .claude/settings.json .claude/hooks CLAUDE.md
+git ls-files -s mvnw
 git commit -m "chore(build): scaffold Maven build with Spotless and SpotBugs gates"
 ```
+
+Expected from `git ls-files -s`: the line starts with `100755`.
 
 ---
 
@@ -513,6 +535,12 @@ secrets listed, idempotent runs, and a manual-trigger note.
 - Consumes: `./mvnw verify` from Task 1.
 - Produces: required-check names `Build and test` (from `ci.yml`) and
   `Analyze (java-kotlin)` (from `codeql.yml`), which branch protection uses.
+
+- [ ] **Step 0: Invoke `cicd-standards`**
+
+The implementer invokes the `cicd-standards` skill before writing any workflow,
+as the global workflow and `CLAUDE.md` require. Its checklist is the
+acceptance test for Steps 1–5.
 
 - [ ] **Step 1: Write `.github/workflows/ci.yml`**
 
@@ -560,20 +588,28 @@ jobs:
 
       - name: Upload test reports when the build fails
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: surefire-reports
           path: target/surefire-reports/
           if-no-files-found: ignore
 ```
 
-- [ ] **Step 2: Check the upload-artifact major before committing**
+- [ ] **Step 2: Re-check the action majors before committing**
 
-Run: `gh api repos/actions/upload-artifact/releases/latest --jq .tag_name`
-Expected: a tag such as `v5.x.y`. Put that major in `ci.yml` in place of `@v4`.
-This plan pinned the other three actions on 2026-09-18 (checkout `v7`,
-setup-java `v6`, codeql-action `v4`, dependency-review-action `v5`). This one
-was not checked then.
+The plan pinned these on 2026-09-18: checkout `v7`, setup-java `v6`,
+upload-artifact `v7`, codeql-action `v4`, dependency-review-action `v5`.
+Execution may be days later, so check them again:
+
+```bash
+for r in actions/checkout actions/setup-java actions/upload-artifact actions/dependency-review-action; do
+  echo "$r $(gh api repos/$r/releases/latest --jq .tag_name)"
+done
+gh api "repos/github/codeql-action/tags?per_page=100" --jq '.[].name' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
+```
+
+Expected: the same majors. If one has moved, update the `@vN` pins in the
+workflows. Dependabot keeps them current after this.
 
 - [ ] **Step 3: Write `.github/workflows/codeql.yml`**
 
@@ -646,6 +682,7 @@ jobs:
   review:
     name: Dependency review
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
@@ -710,15 +747,26 @@ Strike these in the deferred list: CI workflow, CodeQL, dependency scan,
 Dependabot, and the "enforced in CI" half of the linter item. Leave
 "branch-protection required status checks" open until Step 9.
 
-- [ ] **Step 8: Commit, push and open the PR so the checks run**
+- [ ] **Step 8: Commit, then push and open a draft PR (the user must confirm first)**
 
 ```bash
 git add .github/workflows .github/dependabot.yml CLAUDE.md
 git commit -m "ci(github): add build, CodeQL, dependency review and Dependabot"
-git push -u origin HEAD
 ```
 
-Open the PR, or push to the already-open PR. Then run `gh pr checks --watch`.
+The workflows only run on GitHub, so proving them means pushing. Pushing and
+opening a PR are outward-facing, so the controller asks the user in chat first
+and continues only after a clear yes. Then:
+
+```bash
+git push -u origin HEAD
+gh pr create --draft --base main --title "feat: Phase 1 foundation (plan 1)" --body "Draft: Phase 1 plan 1 in progress. Not ready for review."
+gh pr checks --watch
+```
+
+It stays a **draft** until all four tasks are done. `pre-pr-review` and
+`/security-review` run before it's marked ready. The global workflow requires
+both before a PR is up for review, and a draft PR doesn't skip that.
 Expected: `Build and test`, `Analyze (java-kotlin)` and `Dependency review` all
 pass.
 
@@ -729,11 +777,56 @@ A red check here goes through the `bug` skill before anyone reads logs.
 This changes repository settings, so the controller asks the user in chat first
 and runs it only after a clear yes:
 
+`main`'s protection has no status-checks section yet (read on 2026-09-18). The
+`PATCH .../protection/required_status_checks` endpoint only updates an existing
+one, so this step uses `PUT .../protection` with the full body. A `PUT`
+replaces everything, so the body restates every current setting, as read on
+2026-09-18:
+- enforce admins on
+- PR required with 0 approvals
+- no force-pushes and no deletions
+- no push restrictions
+
+Read the settings again first and stop if they differ from that list:
+
 ```bash
-gh api -X PATCH repos/markusluisflores/frontrow/branches/main/protection/required_status_checks \
-  -f strict=true -f 'contexts[]=Build and test' -f 'contexts[]=Analyze (java-kotlin)'
-gh api repos/markusluisflores/frontrow/branches/main/protection/required_status_checks --jq '.contexts'
+gh api repos/markusluisflores/frontrow/branches/main/protection \
+  --jq '{enforce_admins:.enforce_admins.enabled, approvals:.required_pull_request_reviews.required_approving_review_count, force_pushes:.allow_force_pushes.enabled, deletions:.allow_deletions.enabled}'
 ```
+
+Expected: `{"enforce_admins":true,"approvals":0,"force_pushes":false,"deletions":false}`.
+
+Write this body to `protection.json`:
+
+```json
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": ["Build and test", "Analyze (java-kotlin)"]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": false,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+```
+
+```bash
+gh api -X PUT repos/markusluisflores/frontrow/branches/main/protection --input protection.json
+rm protection.json
+gh api repos/markusluisflores/frontrow/branches/main/protection \
+  --jq '{checks:.required_status_checks.contexts, enforce_admins:.enforce_admins.enabled, force_pushes:.allow_force_pushes.enabled}'
+```
+
+Expected read-back:
+`{"checks":["Build and test","Analyze (java-kotlin)"],"enforce_admins":true,"force_pushes":false}`.
+`enforce_admins` stays on, so merges into `main` now wait for both checks. That
+includes docs-only PRs, because `ci.yml` runs on every PR.
 
 Expected read-back: `["Build and test","Analyze (java-kotlin)"]`.
 
@@ -809,7 +902,7 @@ spring:
 `protocol` and `type` repeat the 2.0.1 defaults (`STREAMABLE`, `SYNC`), so a
 future default change can't silently switch the transport (ADR-003).
 
-Run: `./mvnw -q test -Dtest=FrontRowApplicationTests`
+Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=FrontRowApplicationTests`
 Expected: PASS. The context still loads with the MCP server and security on the
 classpath.
 
@@ -844,6 +937,7 @@ import java.security.Principal;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.server.common.autoconfigure.properties.McpServerStreamableHttpProperties;
@@ -878,7 +972,8 @@ import tools.jackson.databind.json.JsonMapper;
 @Import({TestcontainersConfiguration.class, PrincipalPropagationSpikeTest.SpikeConfig.class})
 class PrincipalPropagationSpikeTest {
 
-    static final String SPIKE_TOKEN = "spike-only-not-a-secret";
+    /** Generated per run: spec §12 allows no raw token in the repository, even a test one. */
+    static final String SPIKE_TOKEN = UUID.randomUUID().toString();
     static final String SPIKE_USER = "alice";
     static final String PRINCIPAL_KEY = "frontrow.principal";
     static final String ANONYMOUS = "<anonymous>";
@@ -898,15 +993,25 @@ class PrincipalPropagationSpikeTest {
 
     @Test
     void unauthenticatedMcpRequestIsRejectedWith401() throws Exception {
-        HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/mcp"))
+        assertThat(postPing(null).statusCode()).isEqualTo(401);
+    }
+
+    /** Positive control: the spike's own bearer filter admits the token, so A/B results are about mechanism. */
+    @Test
+    void authenticatedMcpRequestPassesTheSecurityChain() throws Exception {
+        assertThat(postPing("Bearer " + SPIKE_TOKEN).statusCode()).isNotIn(401, 403);
+    }
+
+    private HttpResponse<String> postPing(String authorization) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/mcp"))
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json, text/event-stream")
-                .POST(HttpRequest.BodyPublishers.ofString(
-                        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"))
-                .build();
+                .POST(HttpRequest.BodyPublishers.ofString("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"));
+        if (authorization != null) {
+            builder.header(HttpHeaders.AUTHORIZATION, authorization);
+        }
         try (HttpClient http = HttpClient.newHttpClient()) {
-            HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
-            assertThat(response.statusCode()).isEqualTo(401);
+            return http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
         }
     }
 
@@ -1008,14 +1113,32 @@ would look like a mechanism failure when it is really the spike's own filter.
 
 - [ ] **Step 3: Run the spike**
 
-Run: `./mvnw -q test -Dtest=PrincipalPropagationSpikeTest`
+Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=PrincipalPropagationSpikeTest`
 
 This is an experiment, so each result is data. Record, for each of the three
 tests, PASS or FAIL and the exact assertion message. A FAIL on test A or B
 usually reads `expected: "alice" but was: "<anonymous>"`.
 
-`unauthenticatedMcpRequestIsRejectedWith401` must PASS. If it fails, the spike
-harness is wrong, not the mechanism: fix the chain before reading A or B.
+The two controls must PASS before A or B means anything:
+- `unauthenticatedMcpRequestIsRejectedWith401` (negative control)
+- `authenticatedMcpRequestPassesTheSecurityChain` (positive control; a ping
+  without a session may get a 400, which is fine)
+
+If either control fails, the spike harness is wrong, not the mechanism. Fix it
+first.
+
+**Only a returned value is a mechanism result.** A or B failing with
+`expected: "alice" but was: "<anonymous>"` is data. A or B failing with an
+**exception**, such as a 401 or 403 from `client.initialize()`, a timeout or a
+tool error, is a harness failure: fix it, don't read it through the decision
+table.
+
+**Expected outcome, from the source:** `McpServerAutoConfiguration` (Spring AI
+2.0.1, the `servletMcpSyncServerCustomizer` bean) sets
+`immediateExecution(true)` for servlet SYNC servers, so the tool should run on
+the request thread. The transport's extractor also runs there. Row 1 (both
+PASS) is the likely result. The spike proves it rather than trusting the
+reading, and ADR-004 cites both the result and that bean.
 
 - [ ] **Step 4: Apply the decision rule**
 
@@ -1130,6 +1253,7 @@ git commit -m "test(mcp): prove how the caller principal reaches MCP tool method
 - Produces: the tables and constraint names Plan 2's services and error
   mapping depend on:
   - `uq_claimed_seat`, which maps to `seat_taken`
+  - `uq_event_seat`
   - `uq_sold_once`
   - `uq_order_hold_group`
   - `pk_hold_request`, the idempotency key
@@ -1154,8 +1278,11 @@ git commit -m "test(mcp): prove how the caller principal reaches MCP tool method
   with the numeric `seat_ids` in the spec §6 error example.
 - `hold_group_id` is a `uuid`, generated by the application.
 - `hold_request.hold_group_id` and `response_json` are **nullable**. The row is
-  inserted first, with only `(owner, idempotency_key, request_hash)`, and
-  completed in step 5 (spec §5, *Hold creation* steps 1 and 5).
+  inserted first and completed in step 5 (spec §5, *Hold creation* steps 1 and
+  5). That first insert writes `(owner, idempotency_key, request_hash,
+  created_at)`. Spec §5 lists only the first three, but `created_at` is
+  `NOT NULL` with no default, so Plan 2's insert passes it from the injected
+  `Clock`.
 - The CHECK constraints below go beyond spec §5. Each is listed in
   `SchemaConstraintsTest` so a reviewer can see and reject any of them
   individually. The same goes for `uq_seat_position`.
@@ -1506,6 +1633,47 @@ class SchemaConstraintsTest {
     }
 
     @Test
+    void eventCurrencyMustBeAThreeLetterCode() {
+        assertViolation(
+                () -> jdbc.update(
+                        """
+                        INSERT INTO event (venue_id, name, starts_at, sales_open_at, sales_close_at, status, currency)
+                        VALUES (?, 'Lowercase', ?, ?, ?, 'DRAFT', 'cad')""",
+                        venueId,
+                        SchemaFixtures.ts(SchemaFixtures.NOW),
+                        SchemaFixtures.ts(SchemaFixtures.NOW),
+                        SchemaFixtures.ts(SchemaFixtures.NOW.plusSeconds(60))),
+                CHECK_VIOLATION,
+                "ck_event_currency");
+    }
+
+    @Test
+    void negativeOrderTotalIsRejected() {
+        assertViolation(
+                () -> jdbc.update(
+                        """
+                        INSERT INTO ticket_order (event_id, hold_group_id, owner, status, total_cents, currency, created_at)
+                        VALUES (?, ?, 'alice', 'CONFIRMED', -1, 'CAD', ?)""",
+                        eventId,
+                        UUID.randomUUID(),
+                        SchemaFixtures.ts(SchemaFixtures.NOW)),
+                CHECK_VIOLATION,
+                "ck_ticket_order_total");
+    }
+
+    @Test
+    void negativeOrderLinePriceIsRejected() {
+        long orderId = db.order(eventId, UUID.randomUUID(), "alice");
+        assertViolation(
+                () -> jdbc.update(
+                        "INSERT INTO order_line (order_id, event_seat_id, price_cents) VALUES (?, ?, -1)",
+                        orderId,
+                        eventSeatId),
+                CHECK_VIOLATION,
+                "ck_order_line_price");
+    }
+
+    @Test
     void unknownOrderStatusIsRejected() {
         assertViolation(
                 () -> jdbc.update(
@@ -1542,7 +1710,7 @@ and Plan 2's service tests exercise it.
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `./mvnw -q test -Dtest=SchemaConstraintsTest`
+Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=SchemaConstraintsTest`
 Expected: FAIL. Every test errors in `@BeforeEach` with
 `relation "venue" does not exist`.
 
@@ -1611,7 +1779,8 @@ CREATE TABLE seat_hold (
 CREATE UNIQUE INDEX uq_claimed_seat
     ON seat_hold (event_seat_id) WHERE status IN ('ACTIVE', 'CONVERTED');
 
--- Inserted first with (owner, idempotency_key, request_hash); completed at commit (spec §5).
+-- Inserted first with (owner, idempotency_key, request_hash, created_at from the Clock);
+-- hold_group_id and response_json are filled in at commit (spec §5).
 CREATE TABLE hold_request (
     owner           text        NOT NULL,
     idempotency_key text        NOT NULL,
@@ -1651,7 +1820,7 @@ CREATE TABLE order_line (
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./mvnw spotless:apply` and then `./mvnw verify`
-Expected: `BUILD SUCCESS`. `SchemaConstraintsTest` runs 19 tests (18 methods;
+Expected: `BUILD SUCCESS`. `SchemaConstraintsTest` runs 22 tests (21 methods;
 `endedHoldsDoNotBlockANewHold` runs twice) with 0 failures. Task 1's and
 Task 3's tests still pass.
 
@@ -1659,7 +1828,7 @@ Task 3's tests still pass.
 
 Temporarily delete the `CREATE UNIQUE INDEX uq_claimed_seat …` statement from
 `V1__core_schema.sql`.
-Run: `./mvnw -q test -Dtest=SchemaConstraintsTest`
+Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=SchemaConstraintsTest`
 Expected: FAIL. `secondActiveHoldOnASeatIsRejected`, `soldSeatCannotBeHeldAgain`
 and `activeHoldBlocksConversionOfAnotherHold` fail with "expected
 uq_claimed_seat to reject the row".
@@ -1717,6 +1886,14 @@ git commit -m "feat(schema): add V1 schema with the seat-claim invariant constra
     exists. Every task therefore runs `spotless:apply` and then `verify` before
     committing, so the executor's run is the first real check. The APIs were
     checked against the 2.0.1 sources, so they aren't guessed.
+- **Review round 1** (fresh reviewer): 3 BLOCKERs, 7 SUGGESTIONs and 3 NITs.
+  All were checked against the repo, GitHub or the sources before being
+  applied. Applied: all blockers and suggestions, and 2 NITs.
+  - Blockers: the `mvnw` executable bit, the branch-protection API call, and the
+    missing push gate.
+  - Not applied: the `$CLAUDE_PROJECT_DIR` hook-path NIT. How it expands in a
+    Windows hook command is unverified, and Task 1 Step 9 tests the hook live
+    anyway.
 - **Crossing check:** the spike crosses mechanism (A/B) with authentication
   (token/none). The unauthenticated case must pass before A or B means anything.
   Otherwise a harness 401 on async dispatch would read as a mechanism failure.
