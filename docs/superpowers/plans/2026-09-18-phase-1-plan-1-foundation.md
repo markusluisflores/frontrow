@@ -1931,9 +1931,10 @@ git commit -m "feat(schema): add V1 schema with the seat-claim invariant constra
   - All checked against the sources, and all applied.
 - **Review round 3** (resumed and fresh pair on the round-2 fixes): 0 BLOCKERs
   from either reviewer. The fresh reviewer checked every Java call in the plan
-  against the sources and found nothing deprecated and no lint trigger. It
-  couldn't reach the sources for a few Spring Framework, pgjdbc and JDK
-  classes; the first `./mvnw verify` covers those.
+  against the sources and found nothing deprecated and no lint trigger. It also
+  downloaded and checked spring-webmvc and spring-jdbc 7.0.9. Only the pgjdbc
+  and JDK sources went unchecked; the first `./mvnw verify` covers those.
+  A resumed check of the fix commit came back clean.
   - Applied 2 SUGGESTIONs: the Dependabot limit split 3/2 to respect the cap
     of 5, and dropping `-q` so the rawtypes warning shows.
   - Applied 3 NITs: assert the observed value, not a predicted one; make the
