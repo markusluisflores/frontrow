@@ -37,7 +37,9 @@ Also read `docs/adr/ADR-001` to `ADR-003`.
   - Hibernate `7.4.5.Final`
   - Flyway `12.4.0`
   - PostgreSQL JDBC `42.7.13`
-  - Testcontainers `2.0.5`
+  - Testcontainers `2.0.5` (only `testcontainers-postgresql`; nothing here uses
+    `@Testcontainers`/`@Container`, so Plan 2 adds `testcontainers-junit-jupiter`
+    if it needs one)
   - JUnit Jupiter `6.0.3`
   - AssertJ `3.27.7`
   - Spring Security `7.1.1`
@@ -115,11 +117,17 @@ static analysis, and compile plus tests as the type-check gate.
 Run: `java -version` and `docker version --format '{{.Server.Version}}'`
 Expected: Java `25.x`, and a Docker server version.
 
-If Java is not 25, stop and ask the user to install it. Installing software
-needs their explicit permission. The command to offer is
-`winget install --id EclipseAdoptium.Temurin.25.JDK` (version 25.0.4 on
-2026-09-18). After the install, `JAVA_HOME` must point at the JDK 25 directory
-in a new shell.
+If Java is not 25, **stop**. The user installs the JDK themselves; they said so
+on 2026-09-21. Do not install it, and do not offer to. Report what `java
+-version` printed and wait. The steps they hold are: install Temurin 25
+(`winget install --id EclipseAdoptium.Temurin.25.JDK`, or the Adoptium MSI with
+"Set JAVA_HOME variable" and "Add to PATH" enabled), then confirm in a new
+terminal that `java -version` reports 25 and `JAVA_HOME` points at that JDK.
+Their PATH also carries a `jdk-21\bin` entry, so 25 has to come first.
+
+Before Task 1 starts, both must hold in the shell the build will run in:
+- `java -version` reports 25
+- `echo $JAVA_HOME` points at the Temurin 25 directory (Maven reads it)
 
 If Docker is not running, stop: every test in this plan needs it. Also run
 `git config core.hooksPath` and expect `.githooks`. If it's empty, run
@@ -228,11 +236,6 @@ Expected: `Apache Maven 3.9.16` and `Java version: 25`.
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers-postgresql</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>testcontainers-junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -394,6 +397,12 @@ failures, and SpotBugs reports no bugs.
 If SpotBugs flags `FrontRowApplication` for `EI_EXPOSE_REP` or anything else,
 fix the code. Do not add an exclusion.
 
+**Fallback if Spotless or palantir-java-format fails on JDK 25**, for example
+with an `IllegalAccessError` or a message about `jdk.compiler` exports: record
+the exact message and mark this step BLOCKED for the controller. Do not drop
+the formatter, and do not hand-write `.mvn/jvm.config` `--add-exports` flags to
+push past it. Which of those to do is the user's call.
+
 **Fallback if `-Werror` fails on something outside our code**, such as a
 `[path]` or `[classfile]` warning raised by a dependency jar: record the exact
 warning and mark this step BLOCKED for the controller. Never silently add a
@@ -416,7 +425,10 @@ Restore the file with `./mvnw spotless:apply`.
 
 Then temporarily add `java.util.List raw = new java.util.ArrayList();` inside
 `main`.
-Run: `./mvnw compile` (not `-q`, which hides the WARN-level lint lines)
+Run: `./mvnw compile -Dspotless.check.skip=true`
+(not `-q`, which hides the WARN-level lint lines; the Spotless skip keeps the
+deliberately ugly line from failing at `spotless:check`, which is bound to
+`validate` and so runs before `compile`)
 Expected: FAIL with `warning: [rawtypes]` and "warnings found and -Werror
 specified".
 
@@ -1258,12 +1270,22 @@ Add this row to `docs/adr/README.md`:
 
 Here too, both placeholders are filled from the run.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Commit and push to the draft PR**
 
 ```bash
 git add pom.xml src/main/resources/application.yml src/test/java/io/github/markusluisflores/frontrow/mcp docs/adr
 git commit -m "test(mcp): prove how the caller principal reaches MCP tool methods"
+git push
+gh pr checks --watch
 ```
+
+Expected: `Build and test` and `Analyze (java-kotlin)` pass. The spike runs
+Testcontainers on the runner, so this is the first time it runs anywhere but
+this machine.
+
+The user approved pushing this branch at Task 2 Step 8, and that covers
+later pushes to the same draft PR. If they asked to be asked each time, ask.
+A red check goes through the `bug` skill before anyone reads logs.
 
 ---
 
@@ -1862,12 +1884,20 @@ uq_claimed_seat to reject the row".
 Restore the statement (check with `git diff --exit-code src/main/resources/db`),
 then run `./mvnw verify` and expect `BUILD SUCCESS`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Commit and push to the draft PR**
 
 ```bash
 git add pom.xml src/main/resources/db src/test/java/io/github/markusluisflores/frontrow/schema
 git commit -m "feat(schema): add V1 schema with the seat-claim invariant constraints"
+git push
+gh pr checks --watch
 ```
+
+Expected: both checks pass, with all 22 schema test runs green on the runner.
+
+Same gate as Task 3 Step 6. After this, all four tasks are done, so the plan's
+exit is: `pre-pr-review`, then `/security-review` on the full diff, then mark
+the PR ready for review. Leave it draft until both have run.
 
 ---
 
@@ -1896,9 +1926,11 @@ git commit -m "feat(schema): add V1 schema with the seat-claim invariant constra
 
 ## Self-review record
 
-- **Placeholders:** the only `<...>` are in Task 3 Step 5's ADR-004 template.
-  They are filled from the spike's own output, and Step 5 greps to prove none
-  remain.
+- **Placeholders:** the only `<...>` an implementer must fill are in Task 3
+  Step 5's ADR-004 template. They come from the spike's own output, and Step 5
+  greps both ADR files to prove none remain. The other angle brackets are
+  literal syntax: `<type>(<scope>)` in the commit rule, and `<branch>` in the
+  CI Runbook's own command examples.
 - **Type consistency:** checked across all four tasks:
   - `TestcontainersConfiguration`, `SchemaFixtures` and their method names
   - the constraint names in V1, the tests and the Interfaces block
@@ -1939,6 +1971,10 @@ git commit -m "feat(schema): add V1 schema with the seat-claim invariant constra
     of 5, and dropping `-q` so the rawtypes warning shows.
   - Applied 3 NITs: assert the observed value, not a predicted one; make the
     ADR-004 explanation conditional; include the README row in the grep.
+- **Review round 4** (fresh, on the round-3 fixes and the whole file): 0
+  BLOCKERs, 3 SUGGESTIONs, 2 NITs, all applied. The substantive one: Tasks 3
+  and 4 committed but never pushed, so CI would never have seen the spike or
+  the schema. Both now push to the draft PR and watch the checks.
 - **Crossing check:** the spike crosses mechanism (A/B) with authentication
   (token/none). The unauthenticated case must pass before A or B means anything.
   Otherwise a harness 401 on async dispatch would read as a mechanism failure.
