@@ -127,7 +127,8 @@ Their PATH also carries a `jdk-21\bin` entry, so 25 has to come first.
 
 Before Task 1 starts, both must hold in the shell the build will run in:
 - `java -version` reports 25
-- `echo $JAVA_HOME` points at the Temurin 25 directory (Maven reads it)
+- `JAVA_HOME` points at the Temurin 25 directory, because Maven reads it
+  (`$env:JAVA_HOME` in PowerShell, `$JAVA_HOME` in Git Bash)
 
 If Docker is not running, stop: every test in this plan needs it. Also run
 `git config core.hooksPath` and expect `.githooks`. If it's empty, run
