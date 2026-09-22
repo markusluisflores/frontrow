@@ -27,7 +27,8 @@ bootstrap. The scaffold task must land all of them, not just the build:
 - ~~Linter / static analysis enforced in CI~~
 - ~~CI workflow, CodeQL (`java-kotlin`), dependency vulnerability scan, Dependabot
   (`maven` + `github-actions`) — invoke `cicd-standards` first~~
-- Branch-protection required status checks, once the CI job names exist
+- ~~Branch-protection required status checks~~ — `main` requires
+  `Build and test` and `Analyze (java-kotlin)`, strict mode on
 
 ## Architecture rules
 
