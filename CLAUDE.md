@@ -62,3 +62,5 @@ bootstrap. The scaffold task must land all of them, not just the build:
 | `dependency-review.yml` | PRs only | Re-run from the PR's Checks tab |
 
 No workflow reads a secret. Never push an empty commit to trigger CI.
+Manual triggers work only once the workflow file is on `main` —
+`workflow_dispatch` isn't available from a branch that hasn't merged yet.
