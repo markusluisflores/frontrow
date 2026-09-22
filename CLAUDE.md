@@ -6,20 +6,26 @@ the user-level CLAUDE.md and apply here.
 
 ## Current state
 
-**Docs only — no build exists yet.** The design spec is
+**Scaffold only — a Maven build and a context-load test exist; no domain
+code yet.** The design spec is
 `docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.1; 2.6
 reviewed and merged 2026-09-18, 2.6.1 a wording fix). The three spec §13 ADRs
-are in `docs/adr/`. Code scaffolding waits for a Phase 1 implementation plan.
+are in `docs/adr/`. The Phase 1 plan 1 (foundation) is under execution on
+`feat/phase-1-foundation`:
+`docs/superpowers/plans/2026-09-18-phase-1-plan-1-foundation.md`.
 
 ## Deferred bootstrap items — owed by the Phase 1 scaffold task
 
 These `new-project` steps need a `pom.xml` and were deliberately not done at
 bootstrap. The scaffold task must land all of them, not just the build:
 
-- Maven wrapper; Java/Spring versions pinned from Maven Central (not from the spec)
-- Test framework: JUnit 5 + AssertJ + Testcontainers; `./mvnw verify` as the test command
-- Formatter (Spotless) plus a per-file `PostToolUse` hook in `.claude/settings.json`
-- Linter / static analysis enforced in CI; compile + tests as the type-check gate
+- ~~Maven wrapper; Java/Spring versions pinned from Maven Central (not from the spec)~~
+- ~~Test framework: JUnit 5 + AssertJ + Testcontainers; `./mvnw verify` as the test command~~
+- ~~Formatter (Spotless)~~
+- Per-file `PostToolUse` Spotless hook in `.claude/settings.json` — owed by
+  the controller, with the user (plan Task 1 Steps 8-9)
+- ~~Linter / static analysis (SpotBugs), and compile + tests as the type-check gate (`-Werror`)~~
+- Linter / static analysis enforced in CI
 - CI workflow, CodeQL (`java-kotlin`), dependency vulnerability scan, Dependabot
   (`maven` + `github-actions`) — invoke `cicd-standards` first
 - Branch-protection required status checks, once the CI job names exist
@@ -45,3 +51,5 @@ bootstrap. The scaffold task must land all of them, not just the build:
 - ADRs go in `docs/adr/`. Session journal: `docs/journal/2026.md`.
   Interview guide: `docs/project-reviewer.md` — design-stage entries must not
   claim shipped work.
+- Tests: JUnit Jupiter 6 (Boot 4.1.1-managed; same API as the "JUnit 5" named in
+  the spec) + AssertJ + Testcontainers. Run everything with `./mvnw verify`.
