@@ -24,9 +24,9 @@ bootstrap. The scaffold task must land all of them, not just the build:
 - ~~Formatter (Spotless)~~
 - ~~Per-file `PostToolUse` Spotless hook in `.claude/settings.json`~~
 - ~~Linter / static analysis (SpotBugs), and compile + tests as the type-check gate (`-Werror`)~~
-- Linter / static analysis enforced in CI
-- CI workflow, CodeQL (`java-kotlin`), dependency vulnerability scan, Dependabot
-  (`maven` + `github-actions`) — invoke `cicd-standards` first
+- ~~Linter / static analysis enforced in CI~~
+- ~~CI workflow, CodeQL (`java-kotlin`), dependency vulnerability scan, Dependabot
+  (`maven` + `github-actions`) — invoke `cicd-standards` first~~
 - Branch-protection required status checks, once the CI job names exist
 
 ## Architecture rules
@@ -52,3 +52,13 @@ bootstrap. The scaffold task must land all of them, not just the build:
   claim shipped work.
 - Tests: JUnit Jupiter 6 (Boot 4.1.1-managed; same API as the "JUnit 5" named in
   the spec) + AssertJ + Testcontainers. Run everything with `./mvnw verify`.
+
+## CI Runbook
+
+| Workflow | Runs on | Manual trigger |
+|---|---|---|
+| `ci.yml` — Build and test | push to `main`, PRs | `gh workflow run ci.yml --ref <branch>` |
+| `codeql.yml` — Analyze (java-kotlin) | push to `main`, PRs, Mondays | `gh workflow run codeql.yml --ref <branch>` |
+| `dependency-review.yml` | PRs only | Re-run from the PR's Checks tab |
+
+No workflow reads a secret. Never push an empty commit to trigger CI.
