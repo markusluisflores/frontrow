@@ -22,8 +22,7 @@ bootstrap. The scaffold task must land all of them, not just the build:
 - ~~Maven wrapper; Java/Spring versions pinned from Maven Central (not from the spec)~~
 - ~~Test framework: JUnit 5 + AssertJ + Testcontainers; `./mvnw verify` as the test command~~
 - ~~Formatter (Spotless)~~
-- Per-file `PostToolUse` Spotless hook in `.claude/settings.json` — owed by
-  the controller, with the user (plan Task 1 Steps 8-9)
+- ~~Per-file `PostToolUse` Spotless hook in `.claude/settings.json`~~
 - ~~Linter / static analysis (SpotBugs), and compile + tests as the type-check gate (`-Werror`)~~
 - Linter / static analysis enforced in CI
 - CI workflow, CodeQL (`java-kotlin`), dependency vulnerability scan, Dependabot
