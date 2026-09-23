@@ -83,3 +83,14 @@ The rejected options:
 * ⚠️ Phase 1 security is demo-grade: in-memory Basic users, and static bearer
   tokens stored only as SHA-256 hashes. The README must say so. Real
   authentication (OAuth2 / OIDC) is Phase 2.
+* ⚠️ Declaring any `SecurityFilterChain` bean disables Spring Boot's default
+  one (`defaultSecurityFilterChain` is `@ConditionalOnDefaultWebSecurity`),
+  and `FilterChainProxy` passes through, unauthenticated, any request that
+  matches no chain — it does not deny it. The spike is safe only because
+  `/mcp` is its one endpoint. Once `/api/**` and `/mcp` are both written as
+  `securityMatcher`-scoped chains, everything outside both matchers —
+  actuator, error dispatch, a later endpoint, a path-normalisation variant
+  that slips a matcher — is served with no security applied, silently: no
+  test fails, nothing logs. Plan 2 must add a lowest-ordered catch-all chain
+  with no `securityMatcher` and `anyRequest().denyAll()`, plus a test that
+  hits an unmatched path and expects 401/403.
