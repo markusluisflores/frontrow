@@ -69,9 +69,19 @@ class PrincipalPropagationSpikeTest {
     @LocalServerPort
     int port;
 
+    /**
+     * Tripwire, not a functional requirement: ADR-004 chose mechanism B (McpTransportContext). This test proves
+     * mechanism A also happens to work today, given current Spring AI tool-execution threading. If a future Spring
+     * AI upgrade changes that threading and this test starts failing, re-read ADR-004 before touching this test —
+     * the fix is not to restore mechanism A.
+     */
     @Test
     void mechanismA_securityContextHolderSeesThePrincipal() {
-        assertThat(callTool("whoami_security_context")).isEqualTo(SPIKE_USER);
+        assertThat(callTool("whoami_security_context"))
+                .as("tripwire for ADR-004's assumption that tool methods run on the request thread; "
+                        + "mechanism B (McpTransportContext) is the chosen path regardless of this result; "
+                        + "a failure here means re-reading ADR-004, not fixing a bug")
+                .isEqualTo(SPIKE_USER);
     }
 
     @Test

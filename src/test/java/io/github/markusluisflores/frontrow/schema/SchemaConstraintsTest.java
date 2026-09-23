@@ -20,8 +20,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Every schema constraint gets a violating-row test (spec §12). Each test does its setup, then exactly one violating
- * statement last, because Postgres aborts the transaction on the first error. Every test rolls back.
+ * Every constraint spec §5 names gets a violating-row test (spec §12). Each test does its setup, then exactly one
+ * violating statement last, because Postgres aborts the transaction on the first error. Every test rolls back.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -66,7 +66,7 @@ class SchemaConstraintsTest {
     }
 
     @Test
-    void activeHoldBlocksConversionOfAnotherHold() {
+    void activeHoldBlocksInsertingAConvertedHold() {
         db.hold(eventSeatId, UUID.randomUUID(), "alice", "ACTIVE");
         assertViolation(
                 () -> db.hold(eventSeatId, UUID.randomUUID(), "bob", "CONVERTED"), UNIQUE_VIOLATION, "uq_claimed_seat");
