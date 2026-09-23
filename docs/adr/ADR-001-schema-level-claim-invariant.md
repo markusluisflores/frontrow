@@ -3,9 +3,12 @@
 **Date:** 2026-09-18
 **Status:** Accepted
 
-Not yet implemented. No code exists; this records a design decision. The full
-design is in the spec, `docs/superpowers/specs/2026-09-17-frontrow-design.md`
-§5.
+Implemented in `src/main/resources/db/migration/V1__core_schema.sql`:
+`uq_claimed_seat`, the partial unique index over `('ACTIVE', 'CONVERTED')`
+holds, and `uq_sold_once` on `order_line`. Proven by
+`SchemaConstraintsTest`, including a mutation check that dropped
+`uq_claimed_seat` and confirmed exactly three tests failed. The full design
+is in the spec, `docs/superpowers/specs/2026-09-17-frontrow-design.md` §5.
 
 ## Context and Problem Statement
 

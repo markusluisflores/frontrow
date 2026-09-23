@@ -7,5 +7,19 @@
       "Bash(docker ps*)",
       "Bash(gitleaks *)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File .claude/hooks/spotless-file.ps1",
+            "statusMessage": "Formatting Java file..."
+          }
+        ]
+      }
+    ]
   }
 }

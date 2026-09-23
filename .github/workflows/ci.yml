@@ -1,0 +1,48 @@
+# Build and test: compile (-Werror), Spotless check, unit + Testcontainers
+# integration tests, SpotBugs.
+# Secrets: none. GITHUB_TOKEN is not used beyond checkout's default read scope.
+# Manual trigger: gh workflow run ci.yml --ref <branch>
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Temurin JDK 25 with Maven cache
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Verify Docker is available for Testcontainers
+        run: docker version --format 'Docker server {{.Server.Version}}' || { echo "::error::Docker is unavailable on this runner - Testcontainers integration tests cannot run."; exit 1; }
+
+      - name: Build, test and run static analysis (./mvnw verify)
+        run: ./mvnw -B -ntp verify
+
+      - name: Upload test reports when the build fails
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          if-no-files-found: ignore
