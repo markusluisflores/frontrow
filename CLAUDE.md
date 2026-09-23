@@ -8,8 +8,8 @@ the user-level CLAUDE.md and apply here.
 
 **Phase 1 plan 1 (foundation) is complete: a Maven build, CI, the V1 schema
 migration, and a principal-propagation spike exist; no domain code yet.**
-27 test runs pass, 22 of them schema constraint tests, plus
-`src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
+27 test runs pass, 22 of them schema constraint tests. The migration itself
+is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
 `docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.1; 2.6
 reviewed and merged 2026-09-18, 2.6.1 a wording fix). Four ADRs are in
 `docs/adr/` — the three from spec §13 plus ADR-004, recorded by this

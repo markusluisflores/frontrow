@@ -336,8 +336,10 @@ version we'll pin, before it goes into a spec."
 
 ## Bugs Worth Remembering
 
-*Nothing yet — no code has been written.* This section fills in from
-`docs/retros/` and debugging sessions as Phase 1 is implemented.
+*No bugs found yet.* The code that exists — the scaffold, CI, the V1 schema
+migration, and the principal-propagation spike — was green on first run.
+This section fills in from `docs/retros/` and debugging sessions as more of
+Phase 1 is implemented.
 
 ---
 
