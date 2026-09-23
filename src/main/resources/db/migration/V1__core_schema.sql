@@ -8,23 +8,25 @@ CREATE TABLE venue (
 
 CREATE TABLE seat (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    venue_id    bigint NOT NULL REFERENCES venue (id),
+    venue_id    bigint NOT NULL,
     section     text   NOT NULL,
     row_label   text   NOT NULL,
     seat_number int    NOT NULL,
+    CONSTRAINT fk_seat_venue FOREIGN KEY (venue_id) REFERENCES venue (id),
     CONSTRAINT uq_seat_position UNIQUE (venue_id, section, row_label, seat_number),
     CONSTRAINT uq_seat_venue UNIQUE (id, venue_id)
 );
 
 CREATE TABLE event (
     id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    venue_id       bigint      NOT NULL REFERENCES venue (id),
+    venue_id       bigint      NOT NULL,
     name           text        NOT NULL,
     starts_at      timestamptz NOT NULL,
     sales_open_at  timestamptz NOT NULL,
     sales_close_at timestamptz NOT NULL,
     status         text        NOT NULL,
     currency       char(3)     NOT NULL,
+    CONSTRAINT fk_event_venue FOREIGN KEY (venue_id) REFERENCES venue (id),
     CONSTRAINT uq_event_venue UNIQUE (id, venue_id),
     CONSTRAINT ck_event_status CHECK (status IN ('DRAFT', 'ON_SALE', 'CANCELLED')),
     CONSTRAINT ck_event_sales_window CHECK (sales_open_at < sales_close_at),
@@ -45,12 +47,13 @@ CREATE TABLE event_seat (
 
 CREATE TABLE seat_hold (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    event_seat_id bigint      NOT NULL REFERENCES event_seat (id),
+    event_seat_id bigint      NOT NULL,
     hold_group_id uuid        NOT NULL,
     owner         text        NOT NULL,
     status        text        NOT NULL,
     expires_at    timestamptz NOT NULL,
     created_at    timestamptz NOT NULL,
+    CONSTRAINT fk_seat_hold_event_seat FOREIGN KEY (event_seat_id) REFERENCES event_seat (id),
     CONSTRAINT ck_seat_hold_status CHECK (status IN ('ACTIVE', 'EXPIRED', 'RELEASED', 'CONVERTED'))
 );
 
@@ -72,13 +75,14 @@ CREATE TABLE hold_request (
 
 CREATE TABLE ticket_order (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    event_id      bigint      NOT NULL REFERENCES event (id),
+    event_id      bigint      NOT NULL,
     hold_group_id uuid        NOT NULL,
     owner         text        NOT NULL,
     status        text        NOT NULL,
     total_cents   bigint      NOT NULL,
     currency      char(3)     NOT NULL,
     created_at    timestamptz NOT NULL,
+    CONSTRAINT fk_ticket_order_event FOREIGN KEY (event_id) REFERENCES event (id),
     CONSTRAINT uq_order_hold_group UNIQUE (hold_group_id),
     CONSTRAINT ck_ticket_order_status CHECK (status IN ('CONFIRMED')),
     CONSTRAINT ck_ticket_order_total CHECK (total_cents >= 0),
@@ -87,9 +91,11 @@ CREATE TABLE ticket_order (
 
 CREATE TABLE order_line (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    order_id      bigint NOT NULL REFERENCES ticket_order (id),
-    event_seat_id bigint NOT NULL REFERENCES event_seat (id),
+    order_id      bigint NOT NULL,
+    event_seat_id bigint NOT NULL,
     price_cents   bigint NOT NULL,
+    CONSTRAINT fk_order_line_order FOREIGN KEY (order_id) REFERENCES ticket_order (id),
+    CONSTRAINT fk_order_line_event_seat FOREIGN KEY (event_seat_id) REFERENCES event_seat (id),
     -- Defence in depth (ADR-001): a seat appears on at most one order line.
     CONSTRAINT uq_sold_once UNIQUE (event_seat_id),
     CONSTRAINT ck_order_line_price CHECK (price_cents >= 0)
