@@ -337,9 +337,12 @@ version we'll pin, before it goes into a spec."
 ## Bugs Worth Remembering
 
 *No bugs found yet.* The code that exists — the scaffold, CI, the V1 schema
-migration, and the principal-propagation spike — was green on first run.
-This section fills in from `docs/retros/` and debugging sessions as more of
-Phase 1 is implemented.
+migration, and the principal-propagation spike — has no known defect. The
+one early red check was CI configuration, not code: the first `Dependency
+review` run failed because the repository's Dependency graph setting
+wasn't enabled yet; enabling it fixed the run, no workflow or code change
+needed. This section fills in from `docs/retros/` and debugging sessions as
+more of Phase 1 is implemented.
 
 ---
 

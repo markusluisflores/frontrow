@@ -84,13 +84,20 @@ The rejected options:
   tokens stored only as SHA-256 hashes. The README must say so. Real
   authentication (OAuth2 / OIDC) is Phase 2.
 * ⚠️ Declaring any `SecurityFilterChain` bean disables Spring Boot's default
-  one (`defaultSecurityFilterChain` is `@ConditionalOnDefaultWebSecurity`),
-  and `FilterChainProxy` passes through, unauthenticated, any request that
-  matches no chain — it does not deny it. The spike is safe only because
-  `/mcp` is its one endpoint. Once `/api/**` and `/mcp` are both written as
+  one — `@ConditionalOnDefaultWebSecurity` sits on the auto-configuration
+  class that declares `defaultSecurityFilterChain`, not on the method
+  itself — and `FilterChainProxy` passes through, unauthenticated, any
+  request that matches no chain; it does not deny it. It does log "No
+  security for <request>" at TRACE, the handle for debugging exactly this
+  failure, but nothing fails loudly by default. The spike is safe today
+  only because its only unmatched paths are `/mcp` itself and Boot's own
+  `/error` dispatch, neither of which exposes anything worth protecting
+  yet. Once `/api/**` and `/mcp` are both written as
   `securityMatcher`-scoped chains, everything outside both matchers —
-  actuator, error dispatch, a later endpoint, a path-normalisation variant
-  that slips a matcher — is served with no security applied, silently: no
-  test fails, nothing logs. Plan 2 must add a lowest-ordered catch-all chain
-  with no `securityMatcher` and `anyRequest().denyAll()`, plus a test that
-  hits an unmatched path and expects 401/403.
+  actuator, a later endpoint, a path-normalisation variant that slips a
+  matcher — is served with no security applied, silently: no test fails.
+  Plan 2 must add a catch-all chain with no `securityMatcher` that is
+  evaluated *last* — Spring tries chains in ascending order and stops at
+  the first match, so this chain needs the largest order value,
+  `@Order(Ordered.LOWEST_PRECEDENCE)` — with `anyRequest().denyAll()`, plus
+  a test that hits an unmatched path and expects 401/403.
