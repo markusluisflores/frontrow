@@ -44,13 +44,28 @@ bearer filter through `RequestAttributeSecurityContextRepository`. A passing
 did not change the choice: `McpTransportContext` is the transport's own
 carrier for request data and does not depend on which thread runs the tool,
 where `SecurityContextHolder` working today is a threading detail a future
-Spring AI change could alter silently.
+Spring AI change could alter silently. This removes only the tool-threading
+dependency, not the underlying Spring Security dependency: the extractor's
+`ServerRequest.principal()` still resolves via
+`SecurityContextHolderAwareRequestWrapper.getUserPrincipal()`, which reads
+`SecurityContextHolder` on the request thread, just at extraction time rather
+than inside the tool method.
 
 ### Consequences
 
 * ✅ Plan 3's adapter reads the owner via `McpTransportContext` and passes it
   to the application service as a plain `String`, so the domain core stays
   free of MCP types.
+* ⚠️ The spike's chain disables CSRF (`SpikeConfig.spikeMcpChain`), which
+  CodeQL flags as `java/spring-disabled-csrf-protection`. That is safe here
+  only because two facts hold together: the chain is `securityMatcher`-scoped
+  to `/mcp`, `/mcp/**`; it is `STATELESS`; and it authenticates purely from
+  the `Authorization` header, so there is no ambient cookie or session for a
+  cross-site request to ride on, and a browser cannot be induced to attach
+  that header cross-site. The exception holds only inside a
+  `securityMatcher`-scoped, stateless, header-authenticated chain — a future
+  cookie- or session-based chain for human users on `/api/**` must keep CSRF
+  enabled.
 * ⚠️ The app defines its own `WebMvcStreamableServerTransportProvider` bean,
   replacing the auto-configured one, so it must track the auto-config's
   settings (endpoint, keep-alive, disallow-delete) on Spring AI upgrades.
