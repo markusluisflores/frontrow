@@ -1,15 +1,20 @@
 # FrontRow — Project Reviewer & Interview Guide
 
 > **Living document.** Updated as new concepts are added or lessons are learned.
-> Last updated: 2026-09-18
+> Last updated: 2026-09-22
 
-> ⚠️ **Design stage only. Nothing in this project has been built yet.**
-> Every entry below is a *design decision* supported by
-> `docs/superpowers/specs/2026-09-17-frontrow-design.md`. No code, no tests, no
-> measured results exist. Do not claim any of this as shipped work in an
-> interview — the honest framing is "here's a design I reasoned through and the
-> tradeoffs I weighed," which is still a real answer. Entries get rewritten with
-> implementation evidence as Phase 1 lands.
+> ⚠️ **Phase 1 (foundation) landed; the domain is still design-only.** The
+> Maven build, CI (build/CodeQL/dependency-review/Dependabot), the V1 schema
+> migration with its constraint tests, and the principal-propagation spike
+> (ADR-004) now exist and are proven by `./mvnw verify`. What does **not**
+> exist: domain code, application services, REST endpoints, MCP tools, and
+> concurrency tests; nothing is deployed. Entries below that describe
+> unbuilt work are still *design decisions* supported by
+> `docs/superpowers/specs/2026-09-17-frontrow-design.md` — do not claim those
+> as shipped work in an interview; the honest framing is "here's a design I
+> reasoned through and the tradeoffs I weighed," which is still a real
+> answer. Entries get rewritten with implementation evidence as later plans
+> land.
 
 ---
 

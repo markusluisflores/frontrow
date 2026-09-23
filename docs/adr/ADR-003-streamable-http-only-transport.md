@@ -3,9 +3,12 @@
 **Date:** 2026-09-18
 **Status:** Accepted
 
-Not yet implemented. No code exists; this records a design decision. The full
-design is in the spec, `docs/superpowers/specs/2026-09-17-frontrow-design.md`
-§10.
+Implemented for configuration and proven by a spike: `src/main/resources/
+application.yml` sets `spring.ai.mcp.server.protocol: STREAMABLE`, and
+`PrincipalPropagationSpikeTest` (see ADR-004) exercised a real Streamable
+HTTP server over real HTTP with a bearer token. No production MCP tool
+exists yet — that is a later plan. The full design is in the spec,
+`docs/superpowers/specs/2026-09-17-frontrow-design.md` §10.
 
 ## Context and Problem Statement
 

@@ -66,8 +66,9 @@ than inside the tool method.
   `securityMatcher`-scoped, stateless, header-authenticated chain — a future
   cookie- or session-based chain for human users on `/api/**` must keep CSRF
   enabled.
-* ⚠️ The app defines its own `WebMvcStreamableServerTransportProvider` bean,
+* ⚠️ The spike defines its own `WebMvcStreamableServerTransportProvider` bean,
   replacing the auto-configured one, so it must track the auto-config's
-  settings (endpoint, keep-alive, disallow-delete) on Spring AI upgrades.
+  settings (endpoint, keep-alive, disallow-delete) on Spring AI upgrades. The
+  production bean is a later plan's job; it does not exist yet.
 * ⚠️ The spike test stays in the suite as a tripwire: a Spring AI upgrade that
   changes tool threading fails it.
