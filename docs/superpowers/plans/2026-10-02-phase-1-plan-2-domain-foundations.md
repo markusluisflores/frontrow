@@ -38,16 +38,33 @@ Each is listed so a reviewer can reject it individually.
 
 1. **The advisory-lock key is computed in Java, not by Postgres.** Spec §5 says `pg_advisory_xact_lock(hash(owner))` without naming the hash. Postgres's `hashtext()` is undocumented internal API whose value has changed between major versions. This plan derives a stable `long` from the first 8 bytes of `SHA-256(owner)` and passes it as a bind parameter, so the key is reproducible, testable, and independent of the server version.
 2. **Entities are the persistence model; the domain package holds pure rules.** Spec §3 forbids Spring Web and MCP types in the core, and §8 wants domain unit tests with a fixed `Clock` and no database. Both are satisfied by a pure `domain` package (value objects and rules, no imports beyond the JDK) plus JPA entities in `persistence`. There is deliberately **no mapper layer** between them: the services in Plan 3 read entities and call domain rules with their values. A full hexagonal mapping layer would be more code than this project's size justifies (YAGNI).
-3. **`SET LOCAL lock_timeout` is formatted as a literal, not bound.** Postgres does not accept bind parameters in `SET`. The value comes from validated configuration (`@Min`/`@Max` on a `Duration`), never from a request, and the plan's code converts it to milliseconds with `toMillis()` so no string from outside the application ever reaches that statement.
-4. **The locking gateway returns small records, not entities.** A locking read exists precisely to see the committed row rather than the persistence context, so returning a detached record keeps that honest and makes it impossible to hand the result back to Hibernate as a managed entity by accident.
+3. **A `CONVERTED` row reports `hold_not_active`, not `hold_expired`.** Spec §5's *Hold confirmation* step 4 names
+   only `RELEASED` for `hold_not_active`, so read literally a `CONVERTED` row would fall into `hold_expired`. This
+   plan treats `CONVERTED` like `RELEASED`, because §5's *Release* rule 1 does exactly that and because "already
+   bought" is not "lapsed". The branch is also unreachable in practice: confirm step 2 returns the existing order
+   before the state check. If a reviewer prefers the literal reading, only `HoldRules.confirmOutcome` changes.
+
+4. **`SET LOCAL lock_timeout` is formatted as a literal, not bound.** Postgres does not accept bind parameters in `SET`. The value comes from validated configuration (`@Min`/`@Max` on a `Duration`), never from a request, and the plan's code converts it to milliseconds with `toMillis()` so no string from outside the application ever reaches that statement.
+4. **`Instant` is converted to `OffsetDateTime` at the JDBC boundary, in both directions.** The pinned driver,
+   pgjdbc 42.7.13, has **no `Instant` branch** in `PgResultSet.getObject(int, Class)` — the supported temporal types
+   are `LocalDate`, `LocalTime`, `LocalDateTime`, `OffsetDateTime` and `OffsetTime`, and anything else falls through
+   to `conversion to {0} from {1} not supported`. `PgPreparedStatement` likewise infers a SQL type for
+   `OffsetDateTime` but not for `Instant` (`Can't infer the SQL type to use for an instance of java.time.Instant`).
+   So every raw-JDBC read does `rs.getObject(col, OffsetDateTime.class).toInstant()` and every raw-JDBC bind does
+   `OffsetDateTime.ofInstant(instant, ZoneOffset.UTC)`. Plan 1's `SchemaFixtures` already hit this and used
+   `Timestamp.from(...)`; `OffsetDateTime` is preferred because it carries the offset explicitly instead of depending
+   on the JVM default zone. **JPA is unaffected** — Hibernate maps `Instant` to `timestamptz` itself — so entities
+   keep `Instant` fields.
+
+5. **The locking gateway returns small records, not entities.** A locking read exists precisely to see the committed row rather than the persistence context, so returning a detached record keeps that honest and makes it impossible to hand the result back to Hibernate as a managed entity by accident.
 
 ## File Structure
 
 | Path | Responsibility | Task |
 |---|---|---|
 | `src/main/java/.../domain/Money.java` | `long` cents + ISO currency, with same-currency arithmetic | 1 |
-| `src/main/java/.../domain/HoldStatus.java`, `EventStatus.java`, `OrderStatus.java` | The §4 status enums and their legal transitions | 1 |
-| `src/main/java/.../domain/HoldRules.java` | The live-hold predicate, the confirm precedence rule, the caps | 1 |
+| `src/main/java/.../domain/HoldStatus.java`, `EventStatus.java`, `OrderStatus.java` | The §4 status enums; `HoldStatus` also carries its legal transitions | 1 |
+| `src/main/java/.../domain/HoldRules.java` | The live-hold predicate and the confirm precedence rule | 1 |
 | `src/main/java/.../domain/SalesWindow.java` | The half-open window test | 1 |
 | `src/test/java/.../domain/*Test.java` | Pure unit tests, fixed `Clock`, no Spring, no database | 1 |
 | `src/main/java/.../error/ErrorCode.java` | The eleven §6 codes with their hints | 2 |
@@ -454,9 +471,10 @@ public final class HoldRules {
     }
 
     /**
-     * Confirm precedence (spec §5): every row live proceeds; any RELEASED or CONVERTED row reports hold_not_active;
-     * anything else — EXPIRED, or ACTIVE past its expiry, including a group only partly expired by an overlapping
-     * hold — reports hold_expired.
+     * Confirm precedence: every row live proceeds; any RELEASED or CONVERTED row reports hold_not_active; anything
+     * else — EXPIRED, or ACTIVE past its expiry, including a group only partly expired by an overlapping hold —
+     * reports hold_expired. Spec §5 step 4 names only RELEASED for hold_not_active; grouping CONVERTED with it is a
+     * plan-level decision (see the plan's "Plan-level decisions" section), consistent with §5's Release rule 1.
      */
     public static ConfirmOutcome confirmOutcome(Collection<HoldRow> rows, Instant now) {
         if (rows.isEmpty()) {
@@ -479,7 +497,8 @@ public final class HoldRules {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./mvnw spotless:apply` then `./mvnw verify`
-Expected: `BUILD SUCCESS`. The four new test classes run 30 tests between them; Plan 1's 27 still pass.
+Expected: `BUILD SUCCESS`. The four new test classes contribute 22 test methods (26 runs, because two
+`@ParameterizedTest` methods expand to three cases each); Plan 1's 27 runs still pass.
 
 - [ ] **Step 5: Prove the domain core has no framework dependency**
 
@@ -792,7 +811,7 @@ The `IdentityHashMap` guard is why the self-referencing-cause test passes. A pla
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `./mvnw spotless:apply` then `./mvnw -q test -Dtest='io.github.markusluisflores.frontrow.error.*Test'`
-Expected: PASS, 8 tests.
+Expected: PASS — 8 test methods, 18 runs (`everyCodeIsSnakeCaseAndCarriesARecoveryHint` expands to eleven).
 
 - [ ] **Step 5: Point the schema tests at the real implementation**
 
@@ -895,7 +914,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.transaction.annotation.Transactional;
 
 /** Round-trips every entity against real Postgres, so a column or enum mismatch fails here rather than in a service. */
@@ -974,7 +992,6 @@ class PersistenceMappingTest {
     }
 
     @Test
-    @DirtiesContext
     void statusesAreStoredAsTextNotOrdinals() {
         Venue venue = venues.save(new Venue("Text Hall"));
         Event event = events.save(new Event(
@@ -1137,12 +1154,21 @@ public class SeatHold {
 The remaining six, each in the same style — package-level javadoc not required, but every field's `@Column(name = ...)` must match `V1__core_schema.sql` exactly, because `ddl-auto: validate` will reject a mismatch at startup:
 
 - **`Seat`** — `@ManyToOne` `venue` on `venue_id`; `section`, `row_label` (field `rowLabel`), `seat_number` (field `seatNumber`, `int`). Constructor `(Venue, String section, String rowLabel, int seatNumber)`.
-- **`Event`** — `@ManyToOne` `venue`; `name`; `starts_at`, `sales_open_at`, `sales_close_at` as `Instant`; `status` as `@Enumerated(EnumType.STRING) EventStatus`; `currency` as `String`. Constructor in that order. Add `salesWindow()` returning `SalesWindow.of(salesOpenAt, salesCloseAt)` so services never rebuild the window by hand.
+- **`Event`** — `@ManyToOne` `venue`; `name`; `starts_at`, `sales_open_at`, `sales_close_at` as `Instant`; `status` as `@Enumerated(EnumType.STRING) EventStatus`; `currency` as `String` **annotated `@JdbcTypeCode(SqlTypes.CHAR)`** (see below). Constructor in that order. Add `salesWindow()` returning `SalesWindow.of(salesOpenAt, salesCloseAt)` so services never rebuild the window by hand.
 - **`EventSeat`** — `@ManyToOne` `event`, `@ManyToOne` `seat`, plus a plain `@Column(name = "venue_id", nullable = false) Long venueId` (the composite FKs in V1 need the column written explicitly), and `price_cents` as `long`. Add `price(String currency)` returning `Money.ofCents(priceCents, currency)`.
 - **`HoldRequest`** — `@IdClass(HoldRequestId.class)`, with `@Id String owner` and `@Id @Column(name = "idempotency_key") String idempotencyKey`; `request_hash`; nullable `hold_group_id` (`UUID`) and `response_json` (`String`, annotated `@JdbcTypeCode(SqlTypes.JSON)` from `org.hibernate.annotations`/`org.hibernate.type` so Hibernate writes it to the `jsonb` column); `created_at` as `Instant` and **not null**. Spec §5 inserts the row with `(owner, idempotency_key, request_hash)` first, so the plan's constructor takes `(owner, key, hash, Instant createdAt)` as well as the full form.
-- **`HoldRequestId`** — a `Serializable` record-shaped class with `owner` and `idempotencyKey`, `equals`/`hashCode`. A JPA `@IdClass` must be a class with a no-arg constructor, so write it as a small class rather than a record.
-- **`TicketOrder`** — `@ManyToOne` `event`; `hold_group_id` (`UUID`, unique); `owner`; `status` as `@Enumerated(EnumType.STRING) OrderStatus`; `total_cents` as `long`; `currency`; `created_at`.
+- **`HoldRequestId`** — a `Serializable` class with `owner`, `idempotencyKey`, a no-arg constructor (required of a JPA `@IdClass`, which is why this is not a record), `equals`/`hashCode`, **and `private static final long serialVersionUID = 1L;`**. Without that field the build fails: `-Xlint:all` includes `serial`, and `-Werror` turns the warning into `error: warnings found and -Werror specified`. Confirmed by compiling the class with javac 25.
+- **`TicketOrder`** — `@ManyToOne` `event`; `hold_group_id` (`UUID`, unique); `owner`; `status` as `@Enumerated(EnumType.STRING) OrderStatus`; `total_cents` as `long`; `currency` **with `@JdbcTypeCode(SqlTypes.CHAR)`**; `created_at`.
 - **`OrderLine`** — `@ManyToOne` `order` on `order_id`, `@ManyToOne` `eventSeat` on `event_seat_id`, `price_cents` as `long`.
+
+**The two `currency` columns are `char(3)`, not `text`, and that breaks `ddl-auto: validate` unless it is
+declared.** A plain `String` field maps to `VARCHAR`; Hibernate's validator compares type codes and names, pgjdbc
+reports `bpchar` as `Types.CHAR`, and `PostgreSQLDialect` does not remap `CHAR`, so startup fails with
+`wrong column type ... found [bpchar (Types#CHAR)], but expecting [varchar(255) (Types#VARCHAR)]`. A
+`columnDefinition` does **not** fix it, because the type code stays `VARCHAR`. The fix is
+`@JdbcTypeCode(org.hibernate.type.SqlTypes.CHAR)` on both `currency` fields. Every other column validates as
+written: `timestamptz` against `Instant`, `uuid`, `jsonb` with `@JdbcTypeCode(SqlTypes.JSON)`, and every `text`
+column.
 
 Every entity: a `protected` no-arg constructor for Hibernate, a public constructor taking the required fields, getters only, and **no setters** except the explicit state-transition methods (`SeatHold#transitionTo`). Mutating a managed entity is how deferred updates happen, and spec §5 wants those few places visible by name.
 
@@ -1254,7 +1280,11 @@ Every lock in the system is taken here, through explicit SQL, in the global orde
 
 **Interfaces:**
 - Consumes: `FrontRowProperties#lockTimeout`, `HoldStatus`, `PostgresErrors`.
-- Produces, for Plan 3 — the complete lock vocabulary, in the order they may be taken:
+- Produces, for Plan 3 — the lock vocabulary **this plan needs**, in the order the locks may be taken. It is not
+  the complete set: Plan 3 **extends this class** with the sweeper's `FOR UPDATE ... SKIP LOCKED`, cancellation's
+  "lock the event's ACTIVE holds ascending by `event_seat_id`", and hold creation's `hold_request ... ON CONFLICT DO
+  NOTHING` (lock-order step 1). Step 8 installs a `CLAUDE.md` rule that lock SQL appears nowhere else in
+  `src/main`, so extending this file is the only way Plan 3 can add a lock.
   - `setLockTimeout()` — `SET LOCAL lock_timeout`, for the event `PATCH` path only
   - `lockOwner(String owner)` — `pg_advisory_xact_lock`, hold creation only
   - `lockEventForShare(long eventId)` / `lockEventForUpdate(long eventId)` → `Optional<EventRow>`
@@ -1302,20 +1332,25 @@ The pinned value is **an output of the first run, not a prediction**. Implement 
 package io.github.markusluisflores.frontrow.persistence;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import io.github.markusluisflores.frontrow.TestcontainersConfiguration;
 import io.github.markusluisflores.frontrow.domain.EventStatus;
 import io.github.markusluisflores.frontrow.domain.HoldStatus;
 import io.github.markusluisflores.frontrow.error.PostgresErrors;
-import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -1325,8 +1360,13 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Proves the Postgres lock semantics spec §5 depends on. These run as real concurrent transactions: a single-threaded
- * test could not tell a lock that waits from one that does not.
+ * Proves the Postgres lock semantics spec §5 depends on, with real concurrent transactions: a single-threaded test
+ * cannot tell a lock that waits from one that does not.
+ *
+ * <p>Two rules make these proofs honest. Every task runs on a dedicated virtual-thread executor, never the common
+ * ForkJoinPool — a latch-blocked task there can starve the pool on a small machine, and a test would then "prove" a
+ * lock waits when nothing was ever scheduled. And a waiter is only treated as blocked once Postgres itself reports a
+ * session waiting on a lock, read from pg_stat_activity, rather than inferring it from a TimeoutException.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -1343,6 +1383,7 @@ class LockingGatewayTest {
     @Autowired
     TransactionTemplate tx;
 
+    ExecutorService pool;
     long eventId;
     long venueId;
     long eventSeatId;
@@ -1350,6 +1391,7 @@ class LockingGatewayTest {
 
     @BeforeEach
     void seed() {
+        pool = Executors.newVirtualThreadPerTaskExecutor();
         jdbc.sql("TRUNCATE order_line, ticket_order, hold_request, seat_hold, event_seat, event, seat, venue")
                 .update();
         venueId = jdbc.sql("INSERT INTO venue (name) VALUES ('Lock Hall') RETURNING id")
@@ -1362,13 +1404,18 @@ class LockingGatewayTest {
                         INSERT INTO event (venue_id, name, starts_at, sales_open_at, sales_close_at, status, currency)
                         VALUES (:venue, 'Lock test', :starts, :open, :close, 'ON_SALE', 'CAD') RETURNING id""")
                 .param("venue", venueId)
-                .param("starts", NOW.plus(30, ChronoUnit.DAYS))
-                .param("open", NOW.minus(1, ChronoUnit.DAYS))
-                .param("close", NOW.plus(29, ChronoUnit.DAYS))
+                .param("starts", utc(NOW.plus(30, ChronoUnit.DAYS)))
+                .param("open", utc(NOW.minus(1, ChronoUnit.DAYS)))
+                .param("close", utc(NOW.plus(29, ChronoUnit.DAYS)))
                 .query(Long.class)
                 .single();
         eventSeatId = insertEventSeat(seatOne);
         secondEventSeatId = insertEventSeat(seatTwo);
+    }
+
+    @AfterEach
+    void shutDownPool() {
+        pool.shutdownNow();
     }
 
     @Test
@@ -1377,6 +1424,7 @@ class LockingGatewayTest {
         assertThat(row.status()).isEqualTo(EventStatus.ON_SALE);
         assertThat(row.venueId()).isEqualTo(venueId);
         assertThat(row.currency()).isEqualTo("CAD");
+        assertThat(row.salesOpenAt()).isEqualTo(NOW.minus(1, ChronoUnit.DAYS));
     }
 
     @Test
@@ -1387,39 +1435,48 @@ class LockingGatewayTest {
     @Test
     void twoShareLocksOnTheSameEventDoNotBlockEachOther() throws Exception {
         CountDownLatch firstHolds = new CountDownLatch(1);
-        CountDownLatch secondDone = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
 
-        CompletableFuture<Void> first = CompletableFuture.runAsync(() -> tx.executeWithoutResult(status -> {
+        Future<?> first = pool.submit(() -> tx.executeWithoutResult(status -> {
             gateway.lockEventForShare(eventId);
             firstHolds.countDown();
-            awaitQuietly(secondDone, 10);
+            awaitQuietly(release);
         }));
-
         assertThat(firstHolds.await(10, TimeUnit.SECONDS)).isTrue();
-        tx.executeWithoutResult(status -> assertThat(gateway.lockEventForShare(eventId)).isPresent());
-        secondDone.countDown();
+
+        // No latch games here: if a share lock blocked a share lock, this call would simply never return.
+        Future<Boolean> second = pool.submit(
+                () -> tx.execute(status -> gateway.lockEventForShare(eventId).isPresent()));
+        assertThat(second.get(10, TimeUnit.SECONDS)).isTrue();
+
+        release.countDown();
         first.get(10, TimeUnit.SECONDS);
     }
 
     @Test
     void anExclusiveEventLockMakesAShareLockWait() throws Exception {
         CountDownLatch exclusiveHeld = new CountDownLatch(1);
-        CountDownLatch releaseExclusive = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch waiterStarted = new CountDownLatch(1);
 
-        CompletableFuture<Void> holder = CompletableFuture.runAsync(() -> tx.executeWithoutResult(status -> {
+        Future<?> holder = pool.submit(() -> tx.executeWithoutResult(status -> {
             gateway.lockEventForUpdate(eventId);
             exclusiveHeld.countDown();
-            awaitQuietly(releaseExclusive, 10);
+            awaitQuietly(release);
         }));
-
         assertThat(exclusiveHeld.await(10, TimeUnit.SECONDS)).isTrue();
-        CompletableFuture<Boolean> waiter = CompletableFuture.supplyAsync(
-                () -> tx.execute(status -> gateway.lockEventForShare(eventId).isPresent()));
 
-        // The share lock must still be waiting while the exclusive lock is held.
-        assertThatThrownBy(() -> waiter.get(1, TimeUnit.SECONDS)).isInstanceOf(java.util.concurrent.TimeoutException.class);
+        Future<Boolean> waiter = pool.submit(() -> tx.execute(status -> {
+            waiterStarted.countDown();
+            return gateway.lockEventForShare(eventId).isPresent();
+        }));
+        assertThat(waiterStarted.await(10, TimeUnit.SECONDS)).isTrue();
 
-        releaseExclusive.countDown();
+        // Postgres's own view of the world: a session is blocked on a lock, not merely unscheduled.
+        awaitSessionsWaitingOnLocks(1);
+        assertThat(waiter.isDone()).isFalse();
+
+        release.countDown();
         assertThat(waiter.get(10, TimeUnit.SECONDS)).isTrue();
         holder.get(10, TimeUnit.SECONDS);
     }
@@ -1427,25 +1484,24 @@ class LockingGatewayTest {
     @Test
     void lockTimeoutTurnsAnUnavailableLockIntoAPostgresTimeout() throws Exception {
         CountDownLatch exclusiveHeld = new CountDownLatch(1);
-        CountDownLatch releaseExclusive = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
 
-        CompletableFuture<Void> holder = CompletableFuture.runAsync(() -> tx.executeWithoutResult(status -> {
+        Future<?> holder = pool.submit(() -> tx.executeWithoutResult(status -> {
             gateway.lockEventForUpdate(eventId);
             exclusiveHeld.countDown();
-            awaitQuietly(releaseExclusive, 10);
+            awaitQuietly(release);
         }));
-
         assertThat(exclusiveHeld.await(10, TimeUnit.SECONDS)).isTrue();
+
         try {
-            Throwable thrown = org.assertj.core.api.Assertions.catchThrowable(
-                    () -> tx.executeWithoutResult(status -> {
-                        gateway.setLockTimeout();
-                        gateway.lockEventForUpdate(eventId);
-                    }));
-            assertThat(thrown).isNotNull();
+            Throwable thrown = catchThrowable(() -> tx.executeWithoutResult(status -> {
+                gateway.setLockTimeout();
+                gateway.lockEventForUpdate(eventId);
+            }));
+            assertThat(thrown).as("the second exclusive lock must time out, not wait forever").isNotNull();
             assertThat(PostgresErrors.sqlState(thrown)).isEqualTo(PostgresErrors.LOCK_NOT_AVAILABLE);
         } finally {
-            releaseExclusive.countDown();
+            release.countDown();
             holder.get(10, TimeUnit.SECONDS);
         }
     }
@@ -1453,25 +1509,28 @@ class LockingGatewayTest {
     @Test
     void theAdvisoryLockSerializesOneOwnerAndNotTwo() throws Exception {
         CountDownLatch aliceHolds = new CountDownLatch(1);
-        CountDownLatch releaseAlice = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch secondAliceStarted = new CountDownLatch(1);
 
-        CompletableFuture<Void> alice = CompletableFuture.runAsync(() -> tx.executeWithoutResult(status -> {
+        Future<?> alice = pool.submit(() -> tx.executeWithoutResult(status -> {
             gateway.lockOwner("alice");
             aliceHolds.countDown();
-            awaitQuietly(releaseAlice, 10);
+            awaitQuietly(release);
         }));
         assertThat(aliceHolds.await(10, TimeUnit.SECONDS)).isTrue();
 
-        CompletableFuture<Void> bob =
-                CompletableFuture.runAsync(() -> tx.executeWithoutResult(status -> gateway.lockOwner("bob")));
-        bob.get(10, TimeUnit.SECONDS);
+        // A different owner is a different key, so this must not wait at all.
+        pool.submit(() -> tx.executeWithoutResult(status -> gateway.lockOwner("bob"))).get(10, TimeUnit.SECONDS);
 
-        CompletableFuture<Void> secondAlice =
-                CompletableFuture.runAsync(() -> tx.executeWithoutResult(status -> gateway.lockOwner("alice")));
-        assertThatThrownBy(() -> secondAlice.get(1, TimeUnit.SECONDS))
-                .isInstanceOf(java.util.concurrent.TimeoutException.class);
+        Future<?> secondAlice = pool.submit(() -> tx.executeWithoutResult(status -> {
+            secondAliceStarted.countDown();
+            gateway.lockOwner("alice");
+        }));
+        assertThat(secondAliceStarted.await(10, TimeUnit.SECONDS)).isTrue();
+        awaitSessionsWaitingOnLocks(1);
+        assertThat(secondAlice.isDone()).isFalse();
 
-        releaseAlice.countDown();
+        release.countDown();
         secondAlice.get(10, TimeUnit.SECONDS);
         alice.get(10, TimeUnit.SECONDS);
     }
@@ -1483,7 +1542,7 @@ class LockingGatewayTest {
 
         tx.executeWithoutResult(status -> {
             assertThat(gateway.expireHold(holdId)).isTrue();
-            // Same transaction, read back through SQL: the UPDATE already reached the database.
+            // Read back through SQL inside the same transaction: the UPDATE already reached the database.
             assertThat(statusOf(holdId)).isEqualTo("EXPIRED");
             assertThat(gateway.expireHold(holdId)).isFalse();
         });
@@ -1491,16 +1550,15 @@ class LockingGatewayTest {
 
     @Test
     void readsTheActiveHoldForASeatAndIgnoresEndedOnes() {
-        UUID ended = UUID.randomUUID();
-        insertHold(eventSeatId, ended, "alice", HoldStatus.RELEASED, NOW.plusSeconds(600));
+        insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.RELEASED, NOW.plusSeconds(600));
         assertThat(tx.execute(status -> gateway.lockActiveHoldForSeat(eventSeatId))).isEmpty();
 
-        UUID live = UUID.randomUUID();
-        long holdId = insertHold(eventSeatId, live, "bob", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        long holdId = insertHold(eventSeatId, UUID.randomUUID(), "bob", HoldStatus.ACTIVE, NOW.plusSeconds(600));
         HoldRow row = tx.execute(status -> gateway.lockActiveHoldForSeat(eventSeatId)).orElseThrow();
         assertThat(row.id()).isEqualTo(holdId);
         assertThat(row.owner()).isEqualTo("bob");
         assertThat(row.status()).isEqualTo(HoldStatus.ACTIVE);
+        assertThat(row.expiresAt()).isEqualTo(NOW.plusSeconds(600));
     }
 
     @Test
@@ -1526,6 +1584,23 @@ class LockingGatewayTest {
         insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
         insertHold(secondEventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.minusSeconds(1));
         assertThat(tx.execute(status -> gateway.countActiveHoldGroups("alice", NOW))).isEqualTo(1);
+    }
+
+    /** Waits until Postgres reports at least `expected` sessions blocked on a lock, so "it waits" is observed. */
+    private void awaitSessionsWaitingOnLocks(int expected) throws InterruptedException {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            int waiting = jdbc.sql(
+                            """
+                            SELECT count(*) FROM pg_stat_activity
+                            WHERE datname = current_database() AND wait_event_type = 'Lock'""")
+                    .query(Integer.class)
+                    .single();
+            if (waiting >= expected) {
+                return;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("no session reported waiting on a lock within 10s");
     }
 
     private long insertSeat(String row, int number) {
@@ -1561,8 +1636,8 @@ class LockingGatewayTest {
                 .param("group", group)
                 .param("owner", owner)
                 .param("status", status.name())
-                .param("expires", expiresAt)
-                .param("created", NOW)
+                .param("expires", utc(expiresAt))
+                .param("created", utc(NOW))
                 .query(Long.class)
                 .single();
     }
@@ -1574,25 +1649,34 @@ class LockingGatewayTest {
                 .single();
     }
 
-    private static void awaitQuietly(CountDownLatch latch, int seconds) {
+    /** pgjdbc cannot infer a SQL type for a bare Instant, so every bind goes through OffsetDateTime. */
+    private static OffsetDateTime utc(Instant instant) {
+        return OffsetDateTime.ofInstant(instant, ZoneOffset.UTC);
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
         try {
-            if (!latch.await(seconds, TimeUnit.SECONDS)) {
-                throw new IllegalStateException("latch did not open within " + seconds + "s");
+            if (!latch.await(10, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("latch did not open within 10s");
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(interrupted);
         }
     }
-
-    @SuppressWarnings("unused")
-    private static Duration unusedMarker() {
-        return Duration.ZERO;
-    }
 }
 ```
 
-Delete the `unusedMarker` method and the `Duration` import if the final file does not need them — `-Werror` will not complain about an unused private method, but leaving dead code in is a review finding.
+Two things about this test class are deliberate and must not be "simplified":
+
+- **The virtual-thread executor, not `CompletableFuture`.** `CompletableFuture.runAsync` uses the common
+  ForkJoinPool, whose parallelism is `cores - 1`. A latch-blocked task there occupies a worker with no compensation,
+  so on a 2-core machine the waiter may never be scheduled at all — and the test would pass for that reason while
+  proving nothing about locks. Spec §8 asks for an executor pool; virtual threads give one where blocking is free.
+- **`awaitSessionsWaitingOnLocks` instead of a `TimeoutException`.** A timeout cannot distinguish "blocked on the
+  lock" from "has not started yet". Reading `pg_stat_activity.wait_event_type = 'Lock'` asks Postgres directly, so
+  the assertion is an observation rather than an inference. The `started` latch plus `isDone()` then pins down that
+  the waiter reached the locking call and has not returned.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1644,7 +1728,11 @@ package io.github.markusluisflores.frontrow.persistence;
 import io.github.markusluisflores.frontrow.config.FrontRowProperties;
 import io.github.markusluisflores.frontrow.domain.EventStatus;
 import io.github.markusluisflores.frontrow.domain.HoldStatus;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -1685,9 +1773,11 @@ public class LockingGateway {
 
     /** Step 2 of the lock order: serializes one owner's concurrent hold creations so the cap cannot be raced. */
     public void lockOwner(String owner) {
-        jdbc.sql("SELECT pg_advisory_xact_lock(:key)")
+        // Wrapped in a SELECT 1 because pg_advisory_xact_lock returns void, and a void column's mapped value is not
+        // a thing worth depending on.
+        jdbc.sql("SELECT 1 FROM (SELECT pg_advisory_xact_lock(:key)) locked")
                 .param("key", AdvisoryLockKey.forOwner(owner))
-                .query(Object.class)
+                .query(Integer.class)
                 .single();
     }
 
@@ -1708,8 +1798,8 @@ public class LockingGateway {
                         rs.getLong("id"),
                         rs.getLong("venue_id"),
                         EventStatus.valueOf(rs.getString("status")),
-                        rs.getObject("sales_open_at", Instant.class),
-                        rs.getObject("sales_close_at", Instant.class),
+                        instantAt(rs, "sales_open_at"),
+                        instantAt(rs, "sales_close_at"),
                         rs.getString("currency")))
                 .optional();
     }
@@ -1752,19 +1842,27 @@ public class LockingGateway {
                         SELECT count(DISTINCT hold_group_id) FROM seat_hold
                         WHERE owner = :owner AND status = 'ACTIVE' AND expires_at > :now""")
                 .param("owner", owner)
-                .param("now", now)
+                .param("now", OffsetDateTime.ofInstant(now, ZoneOffset.UTC))
                 .query(Integer.class)
                 .single();
     }
 
-    private static HoldRow mapHold(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+    private static HoldRow mapHold(ResultSet rs, int rowNum) throws SQLException {
         return new HoldRow(
                 rs.getLong("id"),
                 rs.getLong("event_seat_id"),
                 rs.getObject("hold_group_id", UUID.class),
                 rs.getString("owner"),
                 HoldStatus.valueOf(rs.getString("status")),
-                rs.getObject("expires_at", Instant.class));
+                instantAt(rs, "expires_at"));
+    }
+
+    /**
+     * pgjdbc 42.7.13 has no Instant branch in getObject(column, Class) — OffsetDateTime is the supported
+     * offset-carrying type, and converting from it needs no zone assumption.
+     */
+    private static Instant instantAt(ResultSet rs, String column) throws SQLException {
+        return rs.getObject(column, OffsetDateTime.class).toInstant();
     }
 }
 ```
@@ -1801,7 +1899,7 @@ Expected: `BUILD SUCCESS`. `LockingGatewayTest` runs 11 tests; everything from T
 
 Two likely stumbles, both worth reporting rather than working around:
 - If `lockTimeoutTurnsAnUnavailableLockIntoAPostgresTimeout` fails because no exception is thrown, `SET LOCAL` did not apply — check the transaction actually began before `setLockTimeout()`.
-- If `rs.getObject(column, Instant.class)` throws, the pgjdbc version in use does not support that conversion; report the exact message instead of switching to `Timestamp` arithmetic, which would reintroduce a timezone assumption spec §4 forbids.
+- If `rs.getObject(column, OffsetDateTime.class)` throws, or a bind of an `OffsetDateTime` is rejected, the driver in use differs from the pinned pgjdbc 42.7.13. Report the exact message rather than falling back to `Timestamp` arithmetic, which reintroduces a JVM-default-zone assumption spec §4 forbids.
 
 - [ ] **Step 7: Prove the lock order is written down in one place**
 
@@ -1823,7 +1921,7 @@ Add to "Architecture rules":
   BLOCKER. Check with:
   `grep -rln "FOR UPDATE\|FOR SHARE\|pg_advisory" src/main/java/`
 - The `domain` package imports only `java.*`. Check with:
-  `grep -rn "^import" src/main/java/**/domain/ | grep -v "import java\."`
+  `grep -rn "^import" src/main/java/io/github/markusluisflores/frontrow/domain/ | grep -v "import java\."`
 ```
 
 - [ ] **Step 9: Commit**
@@ -1854,6 +1952,8 @@ Body must record the pinned advisory-lock key value and state that the concurren
 | §5 `SET LOCAL lock_timeout` for the PATCH path | 4 (the mechanism) | Plan 3 (the PATCH path) |
 | §5 lazy expiry as an immediate `UPDATE` | 4 (the mechanism) | Plan 3 (hold creation step 4) |
 | §5 per-owner advisory lock | 4 | Plan 3's cap check |
+| §5 READ COMMITTED set explicitly on every locking transaction | — | **Plan 3** — this plan's gateway takes locks but owns no transaction boundary. Postgres already defaults to READ COMMITTED, so nothing fails if it is forgotten, which is exactly why it needs an owner |
+| §5 the sweeper's `SKIP LOCKED`, cancellation's per-event hold locking, `hold_request` insert | — | Plan 3, extending `LockingGateway` |
 | §8 domain unit tests with a fixed `Clock`, no database | 1 | |
 | §8 repository behaviour against real Postgres | 3, 4 | |
 | §5 hold creation, confirm, release, cancel, sweeper; concurrency tests 1-7 | — | Plan 3 |
@@ -1866,4 +1966,15 @@ Body must record the pinned advisory-lock key value and state that the concurren
 - **Type consistency:** checked across tasks — `HoldStatus`/`EventStatus`/`OrderStatus` from Task 1 are the same types the entities map in Task 3 and the gateway returns in Task 4; `HoldRules.HoldRow` (domain, three fields) is deliberately distinct from `persistence.HoldRow` (six fields, as read under the lock), and Plan 3 converts between them.
 - **Sibling reuse:** Task 2 Step 5 deletes `SchemaFixtures`'s private copy of the cause-chain walk rather than leaving two implementations — the duplicate exists only because Plan 1 needed it before `src/main` had an error package.
 - **Tooling:** all four literal commit subjects were run through `.githooks/commit-msg` and pass (62, 63, 69 and 69 characters, measured not estimated). Java snippets were not compiled — that happens on the executor's first `./mvnw verify` — but every API used was verified against the pinned sources on 2026-10-02: `JdbcClient.sql/param/query/single/optional/list/update` in spring-jdbc 7.0.9, and `JdbcClientAutoConfiguration` in `spring-boot-jdbc` 4.1.1.
+- **Review round 1** (fresh reviewer, verified against the pinned driver, Hibernate and Spring sources rather than
+  from memory): **5 BLOCKERs**, 5 SUGGESTIONs, 3 NITs — all applied.
+  - `rs.getObject(column, Instant.class)` is unsupported by pgjdbc 42.7.13, so every locking read would have thrown.
+  - Binding a bare `Instant` fails the same way; the seed data would not have inserted.
+  - `currency char(3)` mapped as a plain `String` fails `ddl-auto: validate` at startup — needs
+    `@JdbcTypeCode(SqlTypes.CHAR)`.
+  - `HoldRequestId` without `serialVersionUID` fails the build under `-Werror` (confirmed by compiling it).
+  - The lock-wait proofs could pass vacuously on the common ForkJoinPool, and a `TimeoutException` cannot tell
+    "blocked on a lock" from "never scheduled". They now use a virtual-thread executor and read
+    `pg_stat_activity` to observe the wait.
+  - I re-verified the first two and the fourth myself before applying them.
 - **Verification-matrix crossing check:** the lock tests cross *lock mode* (share, exclusive, advisory) with *contention* (uncontended, contended, contended with a timeout). Those two are the pair most likely to interact, because a lock that looks correct uncontended is exactly the bug a single-threaded test cannot see — which is why every lock assertion here runs in a second transaction on another thread.
