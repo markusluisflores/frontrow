@@ -23,7 +23,10 @@ Phase 1's remaining plans, after this one:
 - **Time comes from an injected `java.time.Clock`**, passed into queries as a parameter. Never `now()` in SQL, never `Instant.now()` in a service or entity (spec §4).
 - **A hold is live iff `status = 'ACTIVE' AND expires_at > :now`.** One definition, used everywhere (spec §4). An **active hold group** is a group with at least one live row.
 - **The sales window is half-open:** `sales_open_at <= :now < sales_close_at`, and the event must be `ON_SALE` (spec §4).
-- **READ COMMITTED**, set explicitly on every transaction that locks (spec §5).
+- **READ COMMITTED** is required on every transaction that locks (spec §5). **No code in this plan sets it**, because
+  nothing here owns a transaction boundary — the gateway is called inside someone else's transaction. Plan 3 sets it
+  on each service method and the coverage table assigns it there. Postgres defaults to READ COMMITTED, so a forgotten
+  setting fails nothing, which is exactly why it needs a named owner rather than an assumption.
 - **Constraint violations are identified by SQLState plus the constraint name from the driver's structured error** — `PSQLException.getServerErrorMessage().getConstraint()`, found by walking the cause chain and any `BatchUpdateException.getNextException()`. Never by message text, and never via Hibernate's `ConstraintViolationException.getConstraintName()`, which parses the message and returns null under a non-English locale (spec §5).
 - **Only `uq_claimed_seat` maps to `seat_taken`.** Any other `23505` is a bug and must surface as a 500 in tests (spec §5).
 - **Money is `long` cents plus an ISO currency code**, never `double`, never `BigDecimal` (spec §4).
@@ -45,7 +48,7 @@ Each is listed so a reviewer can reject it individually.
    before the state check. If a reviewer prefers the literal reading, only `HoldRules.confirmOutcome` changes.
 
 4. **`SET LOCAL lock_timeout` is formatted as a literal, not bound.** Postgres does not accept bind parameters in `SET`. The value comes from validated configuration (`@Min`/`@Max` on a `Duration`), never from a request, and the plan's code converts it to milliseconds with `toMillis()` so no string from outside the application ever reaches that statement.
-4. **`Instant` is converted to `OffsetDateTime` at the JDBC boundary, in both directions.** The pinned driver,
+5. **`Instant` is converted to `OffsetDateTime` at the JDBC boundary, in both directions.** The pinned driver,
    pgjdbc 42.7.13, has **no `Instant` branch** in `PgResultSet.getObject(int, Class)` — the supported temporal types
    are `LocalDate`, `LocalTime`, `LocalDateTime`, `OffsetDateTime` and `OffsetTime`, and anything else falls through
    to `conversion to {0} from {1} not supported`. `PgPreparedStatement` likewise infers a SQL type for
@@ -56,7 +59,7 @@ Each is listed so a reviewer can reject it individually.
    on the JVM default zone. **JPA is unaffected** — Hibernate maps `Instant` to `timestamptz` itself — so entities
    keep `Instant` fields.
 
-5. **The locking gateway returns small records, not entities.** A locking read exists precisely to see the committed row rather than the persistence context, so returning a detached record keeps that honest and makes it impossible to hand the result back to Hibernate as a managed entity by accident.
+6. **The locking gateway returns small records, not entities.** A locking read exists precisely to see the committed row rather than the persistence context, so returning a detached record keeps that honest and makes it impossible to hand the result back to Hibernate as a managed entity by accident.
 
 ## File Structure
 
@@ -1349,7 +1352,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -1654,10 +1656,14 @@ class LockingGatewayTest {
         return OffsetDateTime.ofInstant(instant, ZoneOffset.UTC);
     }
 
+    /**
+     * A lock holder waits longer than the 10s an assertion spends polling for a waiter, so a slow poll cannot make
+     * the holder give up its lock mid-assertion and turn a real pass into a flake.
+     */
     private static void awaitQuietly(CountDownLatch latch) {
         try {
-            if (!latch.await(10, TimeUnit.SECONDS)) {
-                throw new IllegalStateException("latch did not open within 10s");
+            if (!latch.await(30, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("latch did not open within 30s");
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
@@ -1965,7 +1971,7 @@ Body must record the pinned advisory-lock key value and state that the concurren
 - **Placeholders:** none. The one value filled in during execution is the pinned advisory-lock hash, and Task 4 Step 4 says explicitly that it is an output of the first run, not a prediction.
 - **Type consistency:** checked across tasks — `HoldStatus`/`EventStatus`/`OrderStatus` from Task 1 are the same types the entities map in Task 3 and the gateway returns in Task 4; `HoldRules.HoldRow` (domain, three fields) is deliberately distinct from `persistence.HoldRow` (six fields, as read under the lock), and Plan 3 converts between them.
 - **Sibling reuse:** Task 2 Step 5 deletes `SchemaFixtures`'s private copy of the cause-chain walk rather than leaving two implementations — the duplicate exists only because Plan 1 needed it before `src/main` had an error package.
-- **Tooling:** all four literal commit subjects were run through `.githooks/commit-msg` and pass (62, 63, 69 and 69 characters, measured not estimated). Java snippets were not compiled — that happens on the executor's first `./mvnw verify` — but every API used was verified against the pinned sources on 2026-10-02: `JdbcClient.sql/param/query/single/optional/list/update` in spring-jdbc 7.0.9, and `JdbcClientAutoConfiguration` in `spring-boot-jdbc` 4.1.1.
+- **Tooling:** all four literal commit subjects were run through `.githooks/commit-msg` and pass (62, 63, 69 and 69 characters, measured not estimated). Most Java snippets were not compiled — that happens on the executor's first `./mvnw verify`. The exception is the `@IdClass` shape from review round 1, which was compiled with javac 25 under the project's own flags to confirm the `serial` lint failure. Every API used was verified against the pinned sources on 2026-10-02: `JdbcClient.sql/param/query/single/optional/list/update` in spring-jdbc 7.0.9, and `JdbcClientAutoConfiguration` in `spring-boot-jdbc` 4.1.1.
 - **Review round 1** (fresh reviewer, verified against the pinned driver, Hibernate and Spring sources rather than
   from memory): **5 BLOCKERs**, 5 SUGGESTIONs, 3 NITs — all applied.
   - `rs.getObject(column, Instant.class)` is unsupported by pgjdbc 42.7.13, so every locking read would have thrown.
@@ -1977,4 +1983,15 @@ Body must record the pinned advisory-lock key value and state that the concurren
     "blocked on a lock" from "never scheduled". They now use a virtual-thread executor and read
     `pg_stat_activity` to observe the wait.
   - I re-verified the first two and the fourth myself before applying them.
+- **Review round 2** (fresh, on the fix pass `96f0c1f`): **0 BLOCKERs**, 1 SUGGESTION, 4 NITs — all applied here.
+  It verified the five round-1 fixes rather than ticking them, including running a real `postgres:18-alpine`
+  container to confirm the rewritten `lockOwner` does take the advisory lock (visible in `pg_locks`) and that
+  `pg_stat_activity` reports `Lock/advisory` and `Lock/transactionid` for the two waits the tests assert on. It also
+  audited every JDBC boundary rather than only the two round 1 named, and confirmed `instantAt`'s unguarded
+  `toInstant()` is safe because all four columns it reads are `NOT NULL` in V1.
+  - Its findings were numbering drift in the decisions list, an import left unused by the fix pass, READ COMMITTED
+    stated two ways, a holder-latch budget with no flake margin, and a self-review line that contradicted its own
+    round-1 bullet about compiling.
+  - Still open by design: SpotBugs on the new `src/main`, Spotless reformatting, and Hibernate's runtime CHAR
+    binding — none observable until execution.
 - **Verification-matrix crossing check:** the lock tests cross *lock mode* (share, exclusive, advisory) with *contention* (uncontended, contended, contended with a timeout). Those two are the pair most likely to interact, because a lock that looks correct uncontended is exactly the bug a single-threaded test cannot see — which is why every lock assertion here runs in a second transaction on another thread.
