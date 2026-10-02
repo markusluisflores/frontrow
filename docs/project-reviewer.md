@@ -1,14 +1,17 @@
 # FrontRow — Project Reviewer & Interview Guide
 
 > **Living document.** Updated as new concepts are added or lessons are learned.
-> Last updated: 2026-09-22
+> Last updated: 2026-10-02
 
-> ⚠️ **Phase 1 (foundation) landed; the domain is still design-only.** The
-> Maven build, CI (build/CodeQL/dependency-review/Dependabot), the V1 schema
-> migration with its constraint tests, and the principal-propagation spike
-> (ADR-004) now exist and are proven by `./mvnw verify`. What does **not**
-> exist: domain code, application services, REST endpoints, MCP tools, and
-> concurrency tests; nothing is deployed. Entries below that describe
+> ⚠️ **Phase 1 plan 1 of 5 (foundation) landed; the domain is still
+> design-only.** The Maven build, CI (build/CodeQL/dependency-review/Dependabot),
+> the V1 schema migration with its constraint tests, and the
+> principal-propagation spike (ADR-004) now exist and are proven by
+> `./mvnw verify`. **Plan 2 (domain foundations) is a merged plan document with
+> zero code from it.** What does **not** exist: domain classes, JPA entities,
+> repositories, application services, the security chains, REST endpoints, MCP
+> tools, concurrency tests, seed data, a Dockerfile or compose file; nothing is
+> deployed. Entries below that describe
 > unbuilt work are still *design decisions* supported by
 > `docs/superpowers/specs/2026-09-17-frontrow-design.md` — do not claim those
 > as shipped work in an interview; the honest framing is "here's a design I
@@ -20,9 +23,17 @@
 
 ## What We Built
 
-*(Nothing yet.)* The designed system: an event ticketing and seat-reservation
-service in Spring Boot, exposed through two inbound adapters over one domain
-core — a REST API for humans and an MCP server for agents.
+**What exists, as of 2026-10-02:** a Maven build on Java 25 (wrapper pinned to
+Maven 3.10.0 with its distribution checksum) gated by Spotless, SpotBugs and
+`-Xlint:all -Werror`; CI running build-and-test, CodeQL, dependency review and
+Dependabot, with two checks required on `main`; the `V1__core_schema.sql`
+migration carrying the whole domain model and the seat-claim invariant; 21
+constraint tests that each insert a violating row; a principal-propagation spike
+test; 27 test runs in total. **No domain code, and no code at all from plan 2.**
+
+The *designed* system, most of which is not built: an event ticketing and
+seat-reservation service in Spring Boot, exposed through two inbound adapters
+over one domain core — a REST API for humans and an MCP server for agents.
 
 **Why this project exists** (worth being able to say out loud): `Java` was on
 the resume with no supporting project or work bullet behind it. Infor was LPL,
@@ -40,12 +51,12 @@ already covers the consumer side.
 | MCP | Spring AI 2.0 (`@McpTool`), Streamable HTTP transport with bearer-token auth |
 | Database | Postgres + Flyway |
 | Build | Maven |
-| Testing | JUnit 5, AssertJ, Testcontainers |
-| API docs | springdoc-openapi |
-| Container / CI | Docker, GitHub Actions |
+| Testing | JUnit Jupiter 6 (Boot-managed; the spec says "JUnit 5", same API), AssertJ, Testcontainers |
+| API docs | springdoc-openapi *(planned; not in `pom.xml` yet)* |
+| Container / CI | GitHub Actions (built); Docker *(planned — only Testcontainers uses Docker today)* |
 | Deploy | Railway (Phase 2, after real auth) |
 
-*Spring Boot 4.1.1 and Spring AI 2.0.1 were confirmed as the latest GA releases on Maven Central on 2026-09-18. Pin exact versions at scaffold time.*
+*Spring Boot 4.1.1, Spring AI 2.0.1 and Java 25 are **pinned** in `pom.xml`. Maven moved to 3.10.0 and Spotless to 3.10.3 via Dependabot on 2026-10-02.*
 
 ---
 
@@ -270,13 +281,23 @@ because the available time was days-to-a-week and including them produces a
 half-finished everything, which the same research says is worse than a small
 complete thing. They're scheduled as Phases 2–3.
 
-**Interview talking point:** "I had about a week, and the checklist I was working
-from had more on it than fits in a week. So I scoped Phase 1 to be genuinely
-*done* — domain, REST, real integration tests, the MCP tools and their evidence
-artifacts — and pushed Kafka and the observability stack to later phases. The
-thing I protected was the concurrency tests, the credential separation and the
-MCP failure log, because those are the parts that are actually differentiating.
+**Interview talking point:** "The checklist I was working
+from had more on it than fits in the time available, so I scoped Phase 1 to be
+genuinely *done* rather than broad — domain, REST, real integration tests, the
+MCP tools and their evidence artifacts — and pushed Kafka and the observability
+stack to later phases. What I decided to protect, if time ran short, was the
+concurrency tests, the credential separation and the MCP failure log, because
+those are the differentiating parts.
 The cuttable parts were the organiser endpoints and the breadth of seed data."
+
+**Be ready for the timeline question, because the honest answer is better than a
+dodge.** The spec estimated "a full focused week" for Phase 1. Two weeks in, the
+foundation is built and the domain is not. The reason is not drift: Phase 1 was
+re-planned from 3 documents into 5 after two proved too large to review, and
+every plan has gone through multi-round review before any code was written —
+which caught five defects in plan 2 alone that would each have failed at runtime
+or build time. That is a deliberate trade of calendar time against defect cost,
+and it is worth saying out loud rather than implying the estimate held.
 
 ### Design Decisions Recorded Before Code
 
@@ -336,12 +357,27 @@ version we'll pin, before it goes into a spec."
 
 ## Bugs Worth Remembering
 
-*No bugs found yet.* The code that exists — the scaffold, CI, the V1 schema
-migration, and the principal-propagation spike — has no known defect. The
-one early red check was CI configuration, not code: the first `Dependency
-review` run failed because the repository's Dependency graph setting
-wasn't enabled yet; enabling it fixed the run, no workflow or code change
-needed. This section fills in from `docs/retros/` and debugging sessions as
+*No bug has escaped to `main`.* The code that exists — the scaffold, CI, the V1
+schema migration, and the principal-propagation spike — has no known defect. But
+several real defects were caught **before** merge, and those are the ones worth
+discussing, because catching them is the claim:
+
+- **Plan 1 review, 3 blockers:** `mvnw` would have been committed without its
+  executable bit (`core.filemode=false` locally), failing CI on a file that
+  looked correct; a deprecated MCP constructor would have failed the build under
+  `-Werror`; and a claim that `protocol: STREAMABLE` was redundant was wrong —
+  without that line Spring AI starts an SSE server instead, against ADR-003.
+- **Plan 2 review, 5 blockers**, none of which had code yet. See *Review as the
+  Deliverable* below.
+- **A Dependabot PR stored `mvnw.cmd` with CRLF**, defeating the repository's own
+  `.gitattributes` normalization and turning a 2-line version bump into a
+  190-line diff. Fixed with `git add --renormalize` before merge.
+
+The one early red check was CI configuration, not code: the first `Dependency
+review` run (`35783056327`) failed because the repository's Dependency graph
+setting wasn't enabled yet; enabling it fixed the run, with no workflow or code
+change. GitHub overwrites a run's conclusion on re-run, so the history now shows
+it green — the evidence is that run id and the 2026-10-02 journal entry. This section fills in from `docs/retros/` and debugging sessions as
 more of Phase 1 is implemented.
 
 ---
@@ -363,12 +399,94 @@ idempotent in-process sweeper). What an interviewer could still press on:
 
 ---
 
+## Review as the Deliverable (2026-10-02)
+
+Four of Phase 1's five plans are documents, and the review of those documents is
+where most defects have been caught so far. Everything here is a **review or
+design outcome, not shipped code** — say so if asked.
+
+**The mutation test, which *is* shipped.** Deleting `uq_claimed_seat` from the
+migration fails exactly three tests, and a reviewer independently checked every
+other test for hidden dependence on the index and found none.
+
+*Follow-up to expect:* "Three tests prove the index exists, not that it holds
+under concurrency." Correct. The concurrency tests are plan 3 and are not built.
+The schema tests prove the constraint rejects the state; they do not prove the
+service translates the violation into the right error.
+
+**Five defects caught in plan 2 before a line of its code existed.** Each would
+have failed at runtime or build time:
+
+- `rs.getObject(column, Instant.class)` — pgjdbc 42.7.13 has no `Instant` branch,
+  so every locking read would have thrown.
+- Binding a bare `Instant` fails the same way; the test seed would not insert.
+- `currency char(3)` mapped as a plain `String` fails Hibernate's
+  `ddl-auto: validate` at startup (`bpchar` versus `varchar`).
+- A JPA `@IdClass` without `serialVersionUID` fails the build: `-Xlint:all`
+  includes `serial`, and `-Werror` makes it fatal.
+- The lock-wait tests could have passed **vacuously** — on a 2-core machine the
+  common ForkJoinPool never schedules the waiting task, so the test times out for
+  a scheduling reason and concludes that the lock waits.
+
+*Follow-up:* "Why didn't you catch those yourself?" They are version-specific
+library behaviours, and the reviewers verified rather than reasoned — one ran a
+real `postgres:18-alpine` container, another compiled the class under the
+project's own compiler flags.
+
+*Follow-up:* "How is the vacuous pass fixed?" Waiters run on a dedicated
+virtual-thread executor rather than the common pool, and the test asserts the
+wait by reading `pg_stat_activity.wait_event_type = 'Lock'` — observing the wait
+instead of inferring it from a timeout.
+
+**A security finding, now in ADR-002 (design; not built).** Declaring any
+`SecurityFilterChain` bean removes Spring Boot's default chain, and
+`FilterChainProxy` passes a request matching **no** chain straight through with no
+security applied — it does not deny it. So two `securityMatcher`-scoped chains
+would leave every other path unauthenticated, silently: no test fails and nothing
+logs above TRACE.
+
+*Follow-up:* "Why not default to permit and secure each chain?" Because that is
+fail-open and the failure is invisible. The required fix is a catch-all chain
+evaluated last with `anyRequest().denyAll()`, plus a test that hits an unmatched
+path and expects 401 or 403.
+
+*Follow-up:* "Is it built?" No — plan 4 owns it.
+
+**The persistence split (design; its ADR is owed).** JPA for ordinary reads and
+writes, explicit `JdbcClient` SQL for locking reads and lazy expiry. Hibernate
+flushes inserts before updates, so an expiry left as a dirty entity would run
+*after* the new hold's insert and trip the unique index on a seat that is
+actually free.
+
+*Follow-up:* "Why not JDBC throughout?" It would remove the trap entirely, but
+the project exists partly to evidence JPA, which is a common requirement.
+
+*Follow-up:* "Why not refresh the entity instead?" The spec allows it; the plan
+chose JDBC so lock semantics do not depend on how a Hibernate dialect translates
+a lock mode — a version-specific assumption that had already cost this project a
+review round once.
+
+**The spike (shipped as a test; ADR-004).** Both candidate mechanisms carry the
+authenticated principal into an `@McpTool` method. `McpTransportContext` was
+chosen anyway, because `SecurityContextHolder` works there only thanks to Spring
+AI setting `immediateExecution(true)` for servlet SYNC servers — a threading
+detail an upgrade could change silently.
+
+*Follow-up:* "If both work, why does the choice matter?" Be precise: mechanism B
+removes the dependency on *which thread* runs the tool, not the dependency on
+Spring Security — the principal still resolves through the filter chain at
+extraction time. The losing test stays in the suite as a tripwire.
+
+---
+
 ## Revision Notes
 
 | Date | Change | Accuracy-drift check |
 |---|---|---|
 | 2026-09-17 | Created at design stage from the spec and journal. No code, ADRs, retros, or PRs existed to read. | **DRIFT FOUND** — 2 real defects, 3 minor. Fixed inline; see below. |
 | 2026-09-18 | Synced to spec revisions 2 through 2.4: claim-index predicate, transport and identity model, trim order, open questions, and the rev-1 self-review talking point (its "caps get dropped" claim no longer matches the spec). Still design-stage — no shipped claims added. | Cold reviewer flagged the stale talking point and version note; both fixed |
+| 2026-09-22 | Added the Phase 1 banner when plan 1 merged — the first update where shipped work existed. | No separate accuracy check was recorded at the time; this row corrects that omission |
+| 2026-10-02 (wrap-up) | Plan 1 executed and merged, plan 2 written and merged, Dependabot's first two bumps merged. Added *Review as the Deliverable*, corrected the stack table, and took the scoping talking point out of the past tense. | **DRIFT FOUND** — 12 items, the sharpest being the inverse of this guide's usual risk: "What We Built — *(Nothing yet.)*" **denied** work that exists. Also: the banner read as "Phase 1 landed" when plan 1 of 5 landed; the not-built list omitted entities, repositories, security chains, seed data and Docker; "JUnit 5" contradicted `CLAUDE.md`; springdoc and Docker were listed as if present; "pin versions at scaffold time" was stale; and the scoping point described a finished week in the past tense on day 15 with no domain code |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
