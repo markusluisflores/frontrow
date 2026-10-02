@@ -1,0 +1,46 @@
+# CodeQL static security analysis for Java.
+# Secrets: none. Needs security-events: write to upload results.
+# Manual trigger: gh workflow run codeql.yml --ref <branch>
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (java-kotlin)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Temurin JDK 25 with Maven cache
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Initialize CodeQL for java-kotlin
+        uses: github/codeql-action/init@v4
+        with:
+          languages: java-kotlin
+          build-mode: manual
+
+      - name: Compile for CodeQL (tests skipped; CI runs them)
+        run: ./mvnw -B -ntp -DskipTests -Dspotless.check.skip=true -Dspotbugs.skip=true package
+
+      - name: Run CodeQL analysis and upload results
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:java-kotlin
