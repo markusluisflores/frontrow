@@ -1988,7 +1988,8 @@ Body must record the pinned advisory-lock key value and state that the concurren
   container to confirm the rewritten `lockOwner` does take the advisory lock (visible in `pg_locks`) and that
   `pg_stat_activity` reports `Lock/advisory` and `Lock/transactionid` for the two waits the tests assert on. It also
   audited every JDBC boundary rather than only the two round 1 named, and confirmed `instantAt`'s unguarded
-  `toInstant()` is safe because all four columns it reads are `NOT NULL` in V1.
+  `toInstant()` is safe because the three columns it reads — `sales_open_at`, `sales_close_at` and `expires_at` —
+  are all `NOT NULL` in V1.
   - Its findings were numbering drift in the decisions list, an import left unused by the fix pass, READ COMMITTED
     stated two ways, a holder-latch budget with no flake margin, and a self-review line that contradicted its own
     round-1 bullet about compiling.
