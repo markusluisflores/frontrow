@@ -41,7 +41,8 @@
   checks required on `main`.
 - The `V1__core_schema.sql` migration, which carries the whole domain model and
   the seat-claim invariant.
-- 21 constraint tests, each inserting a violating row.
+- 22 constraint test runs (21 methods). 19 insert a violating row and expect a
+  rejection, and 3 check that a legal row is still accepted.
 - A principal-propagation spike test.
 
 **Plan 2, the domain foundations** (PR #10, merged 2026-10-05):
@@ -106,8 +107,10 @@ index — `CREATE UNIQUE INDEX ON seat_hold (event_seat_id) WHERE status IN ('AC
 `CONVERTED` (sold) as well as `ACTIVE`: with `ACTIVE` alone, a sold seat has no
 active hold, so the schema would stop a double *sale* but not a new hold on an
 already-sold seat. That gap was caught in the spec's revision-2 review. Application code
-catches the resulting constraint violation and translates it into a structured
-`seat_taken` error rather than leaking a 500. The alternatives considered were
+is designed to catch the resulting constraint violation and translate it into a structured
+`seat_taken` error rather than leaking a 500. Plan 2 built both halves of that: the
+lookup that reads the constraint name from the driver (`PostgresErrors`) and the
+`SEAT_TAKEN` code. The service that does the translation is plan 3, and is not built. The alternatives considered were
 optimistic locking with a version column and pessimistic `SELECT ... FOR UPDATE`
 as the *primary* guarantee. Both work, but both place the guarantee in
 application logic, which means a bug in that logic silently becomes a
@@ -329,8 +332,8 @@ across the two phases, so the design claims seats one at a time. What's built
 today is the gateway itself. Every lock lives in one file, so 'one global order'
 is something you can check by reading that file. The event and per-owner locks
 are proven with concurrent transactions. A reviewer mutation-tested the seat-row
-locks and showed nothing yet proves they block, so that's the first test the
-next plan adds."
+locks and showed nothing yet proves they block. That test is carried to the next
+plan."
 
 ---
 
@@ -346,8 +349,10 @@ noticing.
 
 Both now complain loudly the moment they're misused.
 
-**The longer version:** Both were found by the final whole-branch review of
-plan 2, and both are built and tested.
+**The longer version:** The Task 4 review first raised the unbounded timeout as a
+Minor finding. The final whole-branch review of plan 2 escalated it to Important,
+and separately found the missing transaction guard. Both fixes are built and
+tested.
 - **The timeout.** `SET LOCAL lock_timeout` is written as a literal, because
   Postgres won't take a bind parameter there. The value comes from
   configuration.
@@ -440,7 +445,9 @@ record. Three more rounds (2.2–2.4) found smaller protocol bugs:
 - a Hibernate flush-order trap in lazy expiry;
 - a release path whose outcome depended on the sweeper.
 
-These are design findings; none of it has been implemented or tested yet.
+These were design findings. Plan 2 (PR #10) built the lock-order primitives and
+lazy expiry as an immediate guarded `UPDATE`, both with tests. The cancel, confirm
+and release paths that use them are plan 3, and are not built.
 
 ### Reviewing Until the Rule Is Met, and a Claim I Got Wrong
 
@@ -630,9 +637,11 @@ extraction time. The losing test stays in the suite as a tripwire.
   found 2 more, both silent failures (concept 8). Every round after the fix wave
   had 0 blockers.
 
-**What went wrong.** PR #10 opened with no review on it at all. Every one of the
-12 review dispatches carried an instruction, written by the controlling session
-itself, not to post to GitHub. That broke a standing rule: posting the review is
+**What went wrong.** PR #10 opened with no review on it at all. The controlling
+session wrote a "do not post to GitHub" line into 10 review instructions: 9
+reviewers, plus one of them resumed for a second round. The eleventh review, the
+`/security-review` pass, carried no posting instruction either way, and also
+posted nothing. That broke a standing rule: posting the review is
 unconditional, because it's the evidence a review happened. It was the fourth
 recorded failure of that rule. Three of the four were caught by the user asking
 "where are the reviews?", not by any check.
@@ -646,10 +655,10 @@ The causes were specific:
   corrected one note and never searched the others.
 
 **The recovery:**
-- All 12 reports were still in the subagent transcripts. They were posted
-  verbatim, with dispositions.
+- All 11 review reports were still in the subagent transcripts. They were posted
+  verbatim, in 8 comments, with dispositions.
 - A fresh reviewer then posted a proper inline review itself.
-- That review found what all 12 earlier ones missed: it mutation-tested the
+- That review found what all 11 earlier ones missed: it mutation-tested the
   seat-row locks and showed no test proves they block.
 
 **Interview talking point:** "The most useful failure in this project wasn't in
@@ -675,7 +684,7 @@ process queue, not built**.
 | 2026-09-18 | Synced to spec revisions 2 through 2.4: claim-index predicate, transport and identity model, trim order, open questions, and the rev-1 self-review talking point (its "caps get dropped" claim no longer matches the spec). Still design-stage — no shipped claims added. | Cold reviewer flagged the stale talking point and version note; both fixed |
 | 2026-09-22 | Added the Phase 1 banner when plan 1 merged — the first update where shipped work existed. | No separate accuracy check was recorded at the time; this row corrects that omission |
 | 2026-10-02 (wrap-up) | Plan 1 executed and merged, plan 2 written and merged, Dependabot's first two bumps merged. Added *Review as the Deliverable*, corrected the stack table, and took the scoping talking point out of the past tense. | **DRIFT FOUND** — 12 items, the sharpest being the inverse of this guide's usual risk: "What We Built — *(Nothing yet.)*" **denied** work that exists. Also: the banner read as "Phase 1 landed" when plan 1 of 5 landed; the not-built list omitted entities, repositories, security chains, seed data and Docker; "JUnit 5" contradicted `CLAUDE.md`; springdoc and Docker were listed as if present; "pin versions at scaffold time" was stale; and the scoping point described a finished week in the past tense on day 15 with no domain code |
-| 2026-10-05 (wrap-up) | Plan 2 executed and merged (PR #10). Rewrote the banner and *What We Built* to cover the domain foundations, added a persistence row to the stack table, added "built" evidence to concepts 4 and 7 (with the unproven seat-row locks stated), added concept 8 (silent failures made loud), two bug stories, a *now built* note on the plan-2 review findings, and the subagent-execution / posting-failure section. | *pending — see the row below once the check runs* |
+| 2026-10-05 (wrap-up) | Plan 2 executed and merged (PR #10). Rewrote the banner and *What We Built* to cover the domain foundations, added a persistence row to the stack table, added "built" evidence to concepts 4 and 7 (with the unproven seat-row locks stated), added concept 8 (silent failures made loud), two bug stories, a *now built* note on the plan-2 review findings, and the subagent-execution / posting-failure section. | **DRIFT FOUND** by a fresh check posted to PR #11 (review 5420599658): 3 drift, 5 nits, all fixed. The sharpest drift was the author's own count: "12 review dispatches" told not to post was really 10 instructions to 9 agents, with the 11th review carrying no posting line at all. The other two drifts were stale: "21 constraint tests, each inserting a violating row" (really 22 runs, 3 of them acceptance checks), and "none of it implemented" in the review-history section after plan 2 built part of it |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
