@@ -17,10 +17,11 @@ No write path, REST endpoint or MCP tool exists yet.**
 them concurrent-transaction lock proofs), 4 configuration-bounds tests, and the
 domain, error, mapping, advisory-key and spike tests. The migration itself
 is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
-`docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.1; 2.6
-reviewed and merged 2026-09-18, 2.6.1 a wording fix). Four ADRs are in
-`docs/adr/` — the three from spec §13 plus ADR-004, recorded by
-plan 1's spike. Plan 1 was executed on `feat/phase-1-foundation`:
+`docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.2; 2.6
+reviewed and merged 2026-09-18, 2.6.1 a wording fix, 2.6.2 a post-implementation
+sync). Five ADRs are in `docs/adr/`: the three from spec §13; ADR-004, recorded
+by plan 1's spike; and ADR-005, the JPA-plus-JDBC persistence split behind the
+lock rule below. Plan 1 was executed on `feat/phase-1-foundation`:
 `docs/superpowers/plans/2026-09-18-phase-1-plan-1-foundation.md`. Plan 2 was
 executed on `feat/phase-1-domain-foundations` and merged as PR #10 (`e432c3c`,
 2026-10-05): `docs/superpowers/plans/2026-10-02-phase-1-plan-2-domain-foundations.md`.
@@ -49,7 +50,7 @@ bootstrap. The scaffold task must land all of them, not just the build:
 - Double-booking is prevented by Postgres constraints, not application logic
   (ADR-001). Integration and concurrency tests run against real Postgres
   (Testcontainers) — never H2, never a mocked repository.
-- All lock SQL lives in `persistence/LockingGateway.java` — `FOR UPDATE`, `FOR SHARE`
+- All lock SQL lives in `persistence/LockingGateway.java` (why: ADR-005) — `FOR UPDATE`, `FOR SHARE`
   and `pg_advisory_xact_lock` appear nowhere else in `src/main`. A service that writes
   its own lock SQL breaks the single global lock order (spec §5) — that is a review
   BLOCKER. Check with:
