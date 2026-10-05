@@ -6,6 +6,7 @@ import io.github.markusluisflores.frontrow.TestcontainersConfiguration;
 import io.github.markusluisflores.frontrow.domain.EventStatus;
 import io.github.markusluisflores.frontrow.domain.HoldStatus;
 import io.github.markusluisflores.frontrow.domain.OrderStatus;
+import jakarta.persistence.EntityManager;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
@@ -22,6 +23,9 @@ import org.springframework.transaction.annotation.Transactional;
 class PersistenceMappingTest {
 
     private static final Instant NOW = Instant.parse("2026-10-01T12:00:00Z");
+
+    @Autowired
+    EntityManager entityManager;
 
     @Autowired
     VenueRepository venues;
@@ -69,7 +73,7 @@ class PersistenceMappingTest {
         orderLines.save(new OrderLine(order, eventSeat, 5000L));
         holdRequests.save(new HoldRequest("alice", "key-1", "hash-1", group, "{\"ok\":true}", NOW));
 
-        seatHolds.flush();
+        flushAndClear();
 
         assertThat(hold.getId()).isNotNull();
         assertThat(seatHolds.findById(hold.getId()).orElseThrow().getStatus()).isEqualTo(HoldStatus.ACTIVE);
@@ -80,6 +84,11 @@ class PersistenceMappingTest {
                         .orElseThrow()
                         .getHoldGroupId())
                 .isEqualTo(group);
+        assertThat(holdRequests
+                        .findById(new HoldRequestId("alice", "key-1"))
+                        .orElseThrow()
+                        .getResponseJson())
+                .isEqualTo("{\"ok\": true}");
     }
 
     @Test
@@ -88,7 +97,7 @@ class PersistenceMappingTest {
         Instant odd = Instant.parse("2026-10-01T12:34:56.789Z");
         Event event = events.save(
                 new Event(venue, "Precise", odd, odd.minusSeconds(60), odd.plusSeconds(60), EventStatus.DRAFT, "CAD"));
-        events.flush();
+        flushAndClear();
 
         assertThat(events.findById(event.getId()).orElseThrow().getStartsAt()).isEqualTo(odd);
     }
@@ -98,9 +107,15 @@ class PersistenceMappingTest {
         Venue venue = venues.save(new Venue("Text Hall"));
         Event event = events.save(new Event(
                 venue, "Textual", NOW, NOW.minusSeconds(1), NOW.plusSeconds(1), EventStatus.CANCELLED, "CAD"));
-        events.flush();
+        flushAndClear();
 
         String stored = events.findStatusTextById(event.getId());
         assertThat(stored).isEqualTo("CANCELLED");
+    }
+
+    /** Forces the next findById to issue a SELECT instead of returning the cached managed instance. */
+    private void flushAndClear() {
+        entityManager.flush();
+        entityManager.clear();
     }
 }
