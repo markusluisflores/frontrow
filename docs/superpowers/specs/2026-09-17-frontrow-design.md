@@ -1,11 +1,15 @@
 # FrontRow — Design Spec
 
 **Date:** 2026-09-17 · **Revised:** 2026-09-18 (revision 2 — see §14)
-**Status:** Reviewed by the user 2026-09-18. Not yet implemented — no code exists.
+**Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 plans 1 and 2 of 5 are merged.
+- Plan 1 (PR #5) built the build, CI, the V1 schema and the MCP spike.
+- Plan 2 (PR #10) built the domain core, the error contract, the JPA persistence model and the locking gateway (ADR-005).
+
+Not yet built: the write paths and the seven §5 concurrency tests (plan 3), REST and the security chains (plan 4), and the MCP tools (plan 5).
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
-**Revisions 2.1–2.6.1** (same day) apply the review rounds — see §14.
+**Revisions 2.1–2.6.1** (same day) apply the review rounds; **2.6.2** (2026-10-05) is a post-implementation sync — see §14.
 
 ---
 
@@ -400,14 +404,14 @@ path, the only place a `lock_timeout` is set.
 - **A concurrent retry** (an agent retrying after a timeout while the first call
   is still running) waits in step 1. If the first call commits, the retry's
   insert conflicts, and the retry reads the stored row in a fresh statement:
-  - a matching hash returns the stored response verbatim;
+  - a matching hash returns the stored response. It is JSON-equal to the original, not byte-identical, because `response_json` is `jsonb` and Postgres normalises whitespace and key order on storage (`{"ok":true}` reads back as `{"ok": true}`). Tests must compare parsed JSON, never raw strings;
   - a different hash returns `idempotency_key_reused`.
 
   If the first call rolled back, the retry's insert succeeds and it proceeds
   normally. A retry never collides with its own first attempt on
   `uq_claimed_seat`.
 - **A replay after the group has expired** returns the original response
-  unchanged, including its original `expires_at`, so the agent can see the
+  unchanged in content (JSON-equal, as above), including its original `expires_at`, so the agent can see the
   hold lapsed. Replays report what happened; they do not re-check current
   state.
 
@@ -821,3 +825,4 @@ redundant and should not be merged.
 | 2.5 | 2026-09-18 | Fifth review round: no blockers. Implementation traps pinned down: an explicit 401 filter for bearer tokens on `/api/**`, because Spring's Basic filter ignores them; `SET LOCAL lock_timeout` at the top of the PATCH transaction; constraint names read from the driver's structured error. The READ COMMITTED dependency list is completed |
 | 2.6 | 2026-09-18 | Final review pass. Corrected a false claim from 2.5: Hibernate 7.x (7.4.5 under Spring Boot 4.1.1) *does* apply a positive lock timeout on PostgreSQL, via the connection. The source was checked. `SET LOCAL` is kept for a version-independent reason: it covers every lock in the transaction. Also added confirm's existing-order check to the READ COMMITTED list, and cause-chain / `BatchUpdateException` handling for the constraint lookup |
 | 2.6.1 | 2026-09-18 | Wording only: the Hibernate 7 lock-timeout note now describes only the checked 7.4.5 behaviour (a `SET LOCAL` around one query, then restored), not "7.x … on the connection". This was the closing review pair's deferred nit |
+| 2.6.2 | 2026-10-05 | Post-implementation sync, with no design change. The header now gives the implementation status: plans 1 and 2 of 5 are merged, PRs #5 and #10. Idempotent replay is specified as **JSON-equal, not byte-verbatim**. PR #10 showed that `jsonb` normalises stored responses (`{"ok":true}` comes back as `{"ok": true}`), so "verbatim" was unachievable, and a byte-comparing test would fail. The persistence split this section implies is now recorded as ADR-005 |

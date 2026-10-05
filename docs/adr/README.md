@@ -6,3 +6,4 @@
 | [ADR-002](ADR-002-agents-hold-humans-buy.md) | Agents hold, humans buy: no `confirm_order` tool, disjoint credential chains | Accepted | 2026-09-18 |
 | [ADR-003](ADR-003-streamable-http-only-transport.md) | Serve MCP over Streamable HTTP only | Accepted | 2026-09-18 |
 | [ADR-004](ADR-004-mcp-principal-propagation.md) | MCP tools get the caller from McpTransportContext | Accepted | 2026-09-22 |
+| [ADR-005](ADR-005-jpa-plus-jdbc-for-locks.md) | JPA for ordinary persistence, explicit JDBC for every lock | Accepted | 2026-10-02 |
