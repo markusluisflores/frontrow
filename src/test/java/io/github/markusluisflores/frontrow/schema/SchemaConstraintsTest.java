@@ -1,7 +1,10 @@
 package io.github.markusluisflores.frontrow.schema;
 
-import static io.github.markusluisflores.frontrow.schema.SchemaFixtures.constraintName;
-import static io.github.markusluisflores.frontrow.schema.SchemaFixtures.sqlState;
+import static io.github.markusluisflores.frontrow.error.PostgresErrors.CHECK_VIOLATION;
+import static io.github.markusluisflores.frontrow.error.PostgresErrors.FOREIGN_KEY_VIOLATION;
+import static io.github.markusluisflores.frontrow.error.PostgresErrors.UNIQUE_VIOLATION;
+import static io.github.markusluisflores.frontrow.error.PostgresErrors.constraintName;
+import static io.github.markusluisflores.frontrow.error.PostgresErrors.sqlState;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -27,10 +30,6 @@ import org.springframework.transaction.annotation.Transactional;
 @Import(TestcontainersConfiguration.class)
 @Transactional
 class SchemaConstraintsTest {
-
-    private static final String UNIQUE_VIOLATION = "23505";
-    private static final String FK_VIOLATION = "23503";
-    private static final String CHECK_VIOLATION = "23514";
 
     @Autowired
     JdbcTemplate jdbc;
@@ -105,14 +104,16 @@ class SchemaConstraintsTest {
     void eventCannotOfferASeatFromAnotherVenue() {
         long otherVenue = db.venue("Annex");
         long foreignSeat = db.seat(otherVenue, "Floor", "A", 1);
-        assertViolation(() -> db.eventSeat(eventId, foreignSeat, venueId), FK_VIOLATION, "fk_event_seat_seat_venue");
+        assertViolation(
+                () -> db.eventSeat(eventId, foreignSeat, venueId), FOREIGN_KEY_VIOLATION, "fk_event_seat_seat_venue");
     }
 
     @Test
     void eventSeatCannotClaimTheWrongVenueForItsEvent() {
         long otherVenue = db.venue("Annex");
         long otherSeat = db.seat(otherVenue, "Floor", "B", 1);
-        assertViolation(() -> db.eventSeat(eventId, otherSeat, otherVenue), FK_VIOLATION, "fk_event_seat_event_venue");
+        assertViolation(
+                () -> db.eventSeat(eventId, otherSeat, otherVenue), FOREIGN_KEY_VIOLATION, "fk_event_seat_event_venue");
     }
 
     @Test

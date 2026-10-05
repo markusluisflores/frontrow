@@ -1,12 +1,9 @@
 package io.github.markusluisflores.frontrow.schema;
 
-import java.sql.BatchUpdateException;
-import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
-import org.postgresql.util.PSQLException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /** Row inserts for schema tests. Times are fixed, never the database clock (spec §4). */
@@ -77,34 +74,5 @@ final class SchemaFixtures {
 
     static Timestamp ts(Instant instant) {
         return Timestamp.from(instant);
-    }
-
-    /** Constraint name from the driver's structured error, never from message text (spec §5). */
-    static String constraintName(Throwable thrown) {
-        PSQLException psql = findPsqlException(thrown);
-        return psql == null || psql.getServerErrorMessage() == null
-                ? null
-                : psql.getServerErrorMessage().getConstraint();
-    }
-
-    static String sqlState(Throwable thrown) {
-        PSQLException psql = findPsqlException(thrown);
-        return psql == null ? null : psql.getSQLState();
-    }
-
-    private static PSQLException findPsqlException(Throwable thrown) {
-        for (Throwable t = thrown; t != null; t = t.getCause()) {
-            if (t instanceof PSQLException psql) {
-                return psql;
-            }
-            if (t instanceof BatchUpdateException batch) {
-                for (SQLException next = batch.getNextException(); next != null; next = next.getNextException()) {
-                    if (next instanceof PSQLException psql) {
-                        return psql;
-                    }
-                }
-            }
-        }
-        return null;
     }
 }
