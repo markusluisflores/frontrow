@@ -1234,6 +1234,8 @@ public record FrontRowProperties(
 
 *Corrected 2026-10-05 (see decision 4's erratum):* the `Duration` bounds were missing from this block as first written. Jakarta `@Min`/`@Max` would not have worked on these fields; `@DurationMin`/`@DurationMax` do. A 1 ms floor matters for `lockTimeout` in particular: `0s`, or any sub-millisecond value that rounds down, would otherwise render as `'0ms'`, which disables the timeout.
 
+**The covering test was added during execution, not specified here.** `src/test/java/.../config/FrontRowPropertiesTest.java` came in with `22759c0` (PR #10). It is a database-free `ApplicationContextRunner` test with four cases: the shipped defaults bind; a `0s` lock timeout fails startup; an over-long lock timeout fails startup; and a zero or over-long hold TTL fails startup. Re-executing this plan from scratch means adding that test alongside this block. The bounds alone are not the fix.
+
 `TimeConfig.java`:
 
 ```java
