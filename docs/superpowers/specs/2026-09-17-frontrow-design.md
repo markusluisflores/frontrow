@@ -1,6 +1,6 @@
 # FrontRow — Design Spec
 
-**Date:** 2026-09-17 · **Revised:** 2026-09-18 (revision 2 — see §14)
+**Date:** 2026-09-17 · **Revised:** 2026-10-05 (revision 2.6.2 — see §14)
 **Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 plans 1 and 2 of 5 are merged.
 - Plan 1 (PR #5) built the build, CI, the V1 schema and the MCP spike.
 - Plan 2 (PR #10) built the domain core, the error contract, the JPA persistence model and the locking gateway (ADR-005).
