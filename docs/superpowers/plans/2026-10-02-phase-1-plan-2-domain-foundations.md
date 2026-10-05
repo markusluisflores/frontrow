@@ -47,7 +47,13 @@ Each is listed so a reviewer can reject it individually.
    bought" is not "lapsed". The branch is also unreachable in practice: confirm step 2 returns the existing order
    before the state check. If a reviewer prefers the literal reading, only `HoldRules.confirmOutcome` changes.
 
-4. **`SET LOCAL lock_timeout` is formatted as a literal, not bound.** Postgres does not accept bind parameters in `SET`. The value comes from validated configuration (`@Min`/`@Max` on a `Duration`), never from a request, and the plan's code converts it to milliseconds with `toMillis()` so no string from outside the application ever reaches that statement.
+4. **`SET LOCAL lock_timeout` is formatted as a literal, not bound.** Postgres does not accept bind parameters in `SET`. The value comes from validated configuration (Hibernate Validator's `@DurationMin`/`@DurationMax` on a `Duration`), never from a request, and the plan's code converts it to milliseconds with `toMillis()` so no string from outside the application ever reaches that statement.
+
+   > **Erratum (2026-10-05).** This decision first said "`@Min`/`@Max` on a `Duration`". That cannot work, and Task 3's code block didn't even attempt it: it put only `@NotNull` on both `Duration` fields.
+   > - **Why it can't work:** Jakarta `@Min`/`@Max` have no validator for `java.time.Duration` in the pinned Hibernate Validator 9.1.3.Final. That was confirmed with `javap` against the jar, which contains `DurationMinValidator` and no `Duration` `@Min` validator.
+   > - **What went wrong:** the gap left `frontrow.lock-timeout: 0s` valid. It reached Postgres as `SET LOCAL lock_timeout = '0ms'`, which means *no* timeout, and that silently removed spec §5's liveness bound on the event PATCH path.
+   > - **Who caught it:** the Task 4 review raised it as a Minor, and the final whole-branch review escalated it to Important.
+   > - **The fix, as shipped in PR #10** (`22759c0`): `lockTimeout` is bounded to 1 ms–1 min and `holdTtl` to 1 s–1 h, both with `@DurationMin`/`@DurationMax`. `FrontRowPropertiesTest` proves that `0s` fails startup. Task 3's code block below is corrected to match.
 5. **`Instant` is converted to `OffsetDateTime` at the JDBC boundary, in both directions.** The pinned driver,
    pgjdbc 42.7.13, has **no `Instant` branch** in `PgResultSet.getObject(int, Class)` — the supported temporal types
    are `LocalDate`, `LocalTime`, `LocalDateTime`, `OffsetDateTime` and `OffsetTime`, and anything else falls through
@@ -1209,6 +1215,8 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import java.time.Duration;
+import org.hibernate.validator.constraints.time.DurationMax;
+import org.hibernate.validator.constraints.time.DurationMin;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -1216,11 +1224,17 @@ import org.springframework.validation.annotation.Validated;
 @Validated
 @ConfigurationProperties(prefix = "frontrow")
 public record FrontRowProperties(
-        @NotNull Duration holdTtl,
+        @NotNull @DurationMin(seconds = 1) @DurationMax(hours = 1)
+        Duration holdTtl,
         @Min(1) @Max(100) int maxActiveHoldGroups,
         @Min(1) @Max(100) int maxSeatsPerHold,
-        @NotNull Duration lockTimeout) {}
+        @NotNull @DurationMin(millis = 1) @DurationMax(minutes = 1)
+        Duration lockTimeout) {}
 ```
+
+*Corrected 2026-10-05 (see decision 4's erratum):* the `Duration` bounds were missing from this block as first written. Jakarta `@Min`/`@Max` would not have worked on these fields; `@DurationMin`/`@DurationMax` do. A 1 ms floor matters for `lockTimeout` in particular: `0s`, or any sub-millisecond value that rounds down, would otherwise render as `'0ms'`, which disables the timeout.
+
+**The covering test was added during execution, not specified here.** `src/test/java/.../config/FrontRowPropertiesTest.java` came in with `22759c0` (PR #10). It is a database-free `ApplicationContextRunner` test with four cases: the shipped defaults bind; a `0s` lock timeout fails startup; an over-long lock timeout fails startup; and a zero or over-long hold TTL fails startup. Re-executing this plan from scratch means adding that test alongside this block. The bounds alone are not the fix.
 
 `TimeConfig.java`:
 
@@ -1996,3 +2010,9 @@ Body must record the pinned advisory-lock key value and state that the concurren
   - Still open by design: SpotBugs on the new `src/main`, Spotless reformatting, and Hibernate's runtime CHAR
     binding — none observable until execution.
 - **Verification-matrix crossing check:** the lock tests cross *lock mode* (share, exclusive, advisory) with *contention* (uncontended, contended, contended with a timeout). Those two are the pair most likely to interact, because a lock that looks correct uncontended is exactly the bug a single-threaded test cannot see — which is why every lock assertion here runs in a second transaction on another thread.
+- **Post-execution erratum (2026-10-05, revised on `docs/plan-2-decision-4-erratum` after PR #10 merged):**
+  decision 4 and Task 3's `FrontRowProperties` block are corrected to the `@DurationMin`/`@DurationMax` bounds the
+  code shipped with. The other execution-time deviations from this plan's text are recorded in PR #10's
+  description rather than revised here: `DomainException#errorCode()`, the mapping test's flush-and-clear,
+  `@Transactional(MANDATORY)` on the gateway, `expireHold(long, Instant)`, and the wider lock grep. Markus asked
+  only for decision 4 to be revised.
