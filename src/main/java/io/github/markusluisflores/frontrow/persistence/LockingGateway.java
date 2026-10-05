@@ -13,6 +13,8 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Every lock in the system, taken through explicit SQL in the one global order spec §5 defines: the hold_request key,
@@ -23,6 +25,7 @@ import org.springframework.stereotype.Component;
  * depends on it — Hibernate flushes inserts before updates (spec §5).
  */
 @Component
+@Transactional(propagation = Propagation.MANDATORY)
 public class LockingGateway {
 
     private static final String EVENT_COLUMNS = "id, venue_id, status, sales_open_at, sales_close_at, currency";
@@ -37,9 +40,10 @@ public class LockingGateway {
     }
 
     /**
-     * Bounds every lock wait in this transaction. Used by the event PATCH path, where a steady stream of FOR SHARE
+     * Bounds every lock wait in this transaction. The value is bounded configuration (1 ms to 1 minute, enforced on
+     * {@code FrontRowProperties}), so zero, which Postgres reads as "no timeout", cannot reach it. Used by the event PATCH path, where a steady stream of FOR SHARE
      * holders could otherwise starve a FOR UPDATE indefinitely (spec §5, Liveness). Postgres does not accept bind
-     * parameters in SET, so the validated configuration value is formatted as a literal; no request data reaches it.
+     * parameters in SET, so the validated, bounded configuration value is formatted as a literal; no request data reaches it.
      */
     public void setLockTimeout() {
         long millis = properties.lockTimeout().toMillis();
@@ -92,9 +96,11 @@ public class LockingGateway {
      * Lazy expiry, as an immediate SQL UPDATE (spec §5). Returns true when this call expired the row; false means it
      * was no longer ACTIVE, which is a legal race outcome, not an error.
      */
-    public boolean expireHold(long holdId) {
-        return jdbc.sql("UPDATE seat_hold SET status = 'EXPIRED' WHERE id = :id AND status = 'ACTIVE'")
+    public boolean expireHold(long holdId, Instant now) {
+        return jdbc.sql("UPDATE seat_hold SET status = 'EXPIRED'"
+                                + " WHERE id = :id AND status = 'ACTIVE' AND expires_at <= :now")
                         .param("id", holdId)
+                        .param("now", OffsetDateTime.ofInstant(now, ZoneOffset.UTC))
                         .update()
                 == 1;
     }

@@ -26,6 +26,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -84,6 +85,12 @@ class LockingGatewayTest {
     @AfterEach
     void shutDownPool() {
         pool.shutdownNow();
+    }
+
+    @Test
+    void refusesToRunOutsideATransaction() {
+        assertThat(catchThrowable(() -> gateway.lockOwner("alice")))
+                .isInstanceOf(IllegalTransactionStateException.class);
     }
 
     @Test
@@ -213,10 +220,20 @@ class LockingGatewayTest {
         long holdId = insertHold(eventSeatId, group, "alice", HoldStatus.ACTIVE, NOW.minusSeconds(1));
 
         tx.executeWithoutResult(status -> {
-            assertThat(gateway.expireHold(holdId)).isTrue();
+            assertThat(gateway.expireHold(holdId, NOW)).isTrue();
             // Read back through SQL inside the same transaction: the UPDATE already reached the database.
             assertThat(statusOf(holdId)).isEqualTo("EXPIRED");
-            assertThat(gateway.expireHold(holdId)).isFalse();
+            assertThat(gateway.expireHold(holdId, NOW)).isFalse();
+        });
+    }
+
+    @Test
+    void aStillLiveHoldIsNotExpired() {
+        long holdId = insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.plusSeconds(1));
+
+        tx.executeWithoutResult(status -> {
+            assertThat(gateway.expireHold(holdId, NOW)).isFalse();
+            assertThat(statusOf(holdId)).isEqualTo("ACTIVE");
         });
     }
 
@@ -259,6 +276,29 @@ class LockingGatewayTest {
         insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
         insertHold(secondEventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.minusSeconds(1));
         assertThat(tx.<Integer>execute(status -> gateway.countActiveHoldGroups("alice", NOW)))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void theCountExcludesEndedRowsAndOtherOwnersAndCountsAMixedGroupOnce() {
+        long[] seats = new long[5];
+        for (int i = 0; i < seats.length; i++) {
+            seats[i] = insertEventSeat(insertSeat("B", i + 1));
+        }
+        UUID mixed = UUID.randomUUID();
+        // One group with a live row and a lapsed row: DISTINCT must count it once.
+        insertHold(seats[0], mixed, "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        insertHold(seats[1], mixed, "alice", HoldStatus.ACTIVE, NOW.minusSeconds(1));
+        // A RELEASED row with a future expiry is not live.
+        insertHold(seats[2], UUID.randomUUID(), "alice", HoldStatus.RELEASED, NOW.plusSeconds(600));
+        // A live group of another owner is not alice's.
+        insertHold(seats[3], UUID.randomUUID(), "bob", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        // A lapsed-only group is not live.
+        insertHold(seats[4], UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.minusSeconds(5));
+
+        assertThat(tx.<Integer>execute(status -> gateway.countActiveHoldGroups("alice", NOW)))
+                .isEqualTo(1);
+        assertThat(tx.<Integer>execute(status -> gateway.countActiveHoldGroups("bob", NOW)))
                 .isEqualTo(1);
     }
 
