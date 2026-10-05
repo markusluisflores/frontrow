@@ -22,8 +22,9 @@ reviewed and merged 2026-09-18, 2.6.1 a wording fix). Four ADRs are in
 `docs/adr/` — the three from spec §13 plus ADR-004, recorded by
 plan 1's spike. Plan 1 was executed on `feat/phase-1-foundation`:
 `docs/superpowers/plans/2026-09-18-phase-1-plan-1-foundation.md`. Plan 2 was
-executed on `feat/phase-1-domain-foundations`:
-`docs/superpowers/plans/2026-10-02-phase-1-plan-2-domain-foundations.md`.
+executed on `feat/phase-1-domain-foundations` and merged as PR #10 (`e432c3c`,
+2026-10-05): `docs/superpowers/plans/2026-10-02-phase-1-plan-2-domain-foundations.md`.
+PR #10's description carries the plan deviations and the list Plan 3 must address.
 
 ## Deferred bootstrap items — owed by the Phase 1 scaffold task
 
