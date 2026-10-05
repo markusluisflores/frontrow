@@ -6,21 +6,24 @@ the user-level CLAUDE.md and apply here.
 
 ## Current state
 
-**Phase 1 plans 1 (foundation) and 2 (domain foundations) are complete: a
+**Phase 1 plan 1 (foundation) is complete; plan 2 (domain foundations) is
+implemented, pending review and merge. Together they provide: a
 Maven build, CI, the V1 schema migration, a principal-propagation spike, a pure
 `domain` package (money, statuses, sales window, hold rules), the shared error
 contract (`error`), JPA entities and repositories over all eight V1 tables
 (`persistence`), and the locking gateway (`persistence/LockingGateway.java`).
 No write path, REST endpoint or MCP tool exists yet.**
-88 test runs pass: 22 schema constraint tests, 11 concurrent-transaction lock
-tests, and the domain, error, mapping and spike tests. The migration itself
+88 test runs pass: 22 schema constraint tests, 11 locking-gateway tests (4 of
+them concurrent-transaction lock proofs), and the domain, error, mapping,
+advisory-key and spike tests. The migration itself
 is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
 `docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.1; 2.6
 reviewed and merged 2026-09-18, 2.6.1 a wording fix). Four ADRs are in
 `docs/adr/` — the three from spec §13 plus ADR-004, recorded by this
-branch's spike. Plan 1 was executed on `feat/phase-1-foundation`:
+plan 1's spike. Plan 1 was executed on `feat/phase-1-foundation`:
 `docs/superpowers/plans/2026-09-18-phase-1-plan-1-foundation.md`. Plan 2 is
-being executed on `feat/phase-1-domain-foundations`.
+implemented on `feat/phase-1-domain-foundations`, pending review and merge:
+`docs/superpowers/plans/2026-10-02-phase-1-plan-2-domain-foundations.md`.
 
 ## Deferred bootstrap items — owed by the Phase 1 scaffold task
 
