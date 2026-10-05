@@ -1,16 +1,24 @@
 # FrontRow — Project Reviewer & Interview Guide
 
 > **Living document.** Updated as new concepts are added or lessons are learned.
-> Last updated: 2026-10-02
+> Last updated: 2026-10-05
 
-> ⚠️ **Phase 1 plan 1 of 5 (foundation) landed; the domain is still
-> design-only.** The Maven build, CI (build/CodeQL/dependency-review/Dependabot),
-> the V1 schema migration with its constraint tests, and the
-> principal-propagation spike (ADR-004) now exist and are proven by
-> `./mvnw verify`. **Plan 2 (domain foundations) is a merged plan document with
-> zero code from it.** What does **not** exist: domain classes, JPA entities,
-> repositories, application services, the security chains, REST endpoints, MCP
-> tools, concurrency tests, seed data, a Dockerfile or compose file; nothing is
+> ⚠️ **Phase 1 plans 1 and 2 of 5 have landed. Nothing can reserve a seat yet.**
+>
+> **Built**, and proven by `./mvnw verify`:
+> - the Maven build and CI (build, CodeQL, dependency review, Dependabot);
+> - the V1 schema migration and its constraint tests;
+> - the principal-propagation spike (ADR-004);
+> - the domain foundations (plan 2, PR #10):
+>   - a framework-free `domain` package;
+>   - the shared error contract;
+>   - JPA entities and repositories over V1;
+>   - a `LockingGateway` whose event and advisory locks are proven with concurrent
+>     transactions.
+>
+> **Not built:** application services (no hold, confirm, release or cancel path),
+> the expiry sweeper, the seven §5 concurrency tests, the security chains, REST
+> endpoints, MCP tools, seed data, and a Dockerfile or compose file. Nothing is
 > deployed. Entries below that describe
 > unbuilt work are still *design decisions* supported by
 > `docs/superpowers/specs/2026-09-17-frontrow-design.md` — do not claim those
@@ -23,13 +31,34 @@
 
 ## What We Built
 
-**What exists, as of 2026-10-02:** a Maven build on Java 25 (wrapper pinned to
-Maven 3.10.0 with its distribution checksum) gated by Spotless, SpotBugs and
-`-Xlint:all -Werror`; CI running build-and-test, CodeQL, dependency review and
-Dependabot, with two checks required on `main`; the `V1__core_schema.sql`
-migration carrying the whole domain model and the seat-claim invariant; 21
-constraint tests that each insert a violating row; a principal-propagation spike
-test; 27 test runs in total. **No domain code, and no code at all from plan 2.**
+**What exists, as of 2026-10-05:**
+
+**Plan 1, the foundation:**
+- A Maven build on Java 25. The wrapper is pinned to Maven 3.10.0 with its
+  distribution checksum. The build is gated by Spotless, SpotBugs and
+  `-Xlint:all -Werror`.
+- CI running build-and-test, CodeQL, dependency review and Dependabot, with two
+  checks required on `main`.
+- The `V1__core_schema.sql` migration, which carries the whole domain model and
+  the seat-claim invariant.
+- 22 constraint test runs (21 methods). 19 insert a violating row and expect a
+  rejection, and 3 check that a legal row is still accepted.
+- A principal-propagation spike test.
+
+**Plan 2, the domain foundations** (PR #10, merged 2026-10-05):
+- A `domain` package that imports only `java.*`: `Money`, the status enums, the
+  half-open `SalesWindow`, and `HoldRules` (the live-hold predicate and the
+  confirm precedence).
+- An `error` package: the 11 spec error codes with recovery hints, and a lookup
+  that reads SQLState and constraint name from the Postgres driver's structured
+  error.
+- JPA entities and repositories over all eight V1 tables. `ddl-auto: validate`
+  makes the app refuse to start on a schema mismatch.
+- Bounded configuration and an injected `Clock`.
+- The `LockingGateway`, which holds every lock SQL statement in the codebase.
+
+There are **95 test runs** in total. Still missing: any code path that writes a
+hold, an order or a release.
 
 The *designed* system, most of which is not built: an event ticketing and
 seat-reservation service in Spring Boot, exposed through two inbound adapters
@@ -50,6 +79,7 @@ already covers the consumer side.
 | Framework | Spring Boot 4.1 |
 | MCP | Spring AI 2.0 (`@McpTool`), Streamable HTTP transport with bearer-token auth |
 | Database | Postgres + Flyway |
+| Persistence | Spring Data JPA (Hibernate 7.4.5) for ordinary reads/writes; explicit `JdbcClient` SQL for every lock and for lazy expiry *(built in plan 2)* |
 | Build | Maven |
 | Testing | JUnit Jupiter 6 (Boot-managed; the spec says "JUnit 5", same API), AssertJ, Testcontainers |
 | API docs | springdoc-openapi *(planned; not in `pom.xml` yet)* |
@@ -77,8 +107,10 @@ index — `CREATE UNIQUE INDEX ON seat_hold (event_seat_id) WHERE status IN ('AC
 `CONVERTED` (sold) as well as `ACTIVE`: with `ACTIVE` alone, a sold seat has no
 active hold, so the schema would stop a double *sale* but not a new hold on an
 already-sold seat. That gap was caught in the spec's revision-2 review. Application code
-catches the resulting constraint violation and translates it into a structured
-`seat_taken` error rather than leaking a 500. The alternatives considered were
+is designed to catch the resulting constraint violation and translate it into a structured
+`seat_taken` error rather than leaking a 500. Plan 2 built both halves of that: the
+lookup that reads the constraint name from the driver (`PostgresErrors`) and the
+`SEAT_TAKEN` code. The service that does the translation is plan 3, and is not built. The alternatives considered were
 optimistic locking with a version column and pessimistic `SELECT ... FOR UPDATE`
 as the *primary* guarantee. Both work, but both place the guarantee in
 application logic, which means a bug in that logic silently becomes a
@@ -172,6 +204,11 @@ accumulate across arithmetic. `BigDecimal` is correct but drags in a rounding-mo
 decision at every operation, and at ticket-price scale that complexity buys
 nothing. Integer cents sidesteps both.
 
+**Built (plan 2):** `domain/Money.java` is a record of `long cents` and a currency
+that must be three uppercase letters, the same rule as V1's `CHECK` constraints.
+Arithmetic uses `Math.addExact` and `Math.multiplyExact`, so an overflow throws
+instead of wrapping silently. Adding CAD to USD is rejected.
+
 **Interview talking point:** "Money is `long` cents with a currency code in a
 value object. Not `double` — binary floating point can't hold most decimal
 fractions exactly. I could have used `BigDecimal`, and I would in a system doing
@@ -257,8 +294,32 @@ Two consequences took review rounds to find:
   the order across the two phases.
 
 Lazy expiry must also be an immediate SQL `UPDATE`, because Hibernate flushes
-inserts before updates. **All of this is design; none of it is implemented or
-tested yet.**
+inserts before updates.
+
+**What plan 2 built, and what it proved:**
+- **One file holds the lock vocabulary.** `persistence/LockingGateway.java`
+  contains:
+  - the per-owner advisory lock (step 2);
+  - `FOR SHARE` / `FOR UPDATE` on the event (step 3);
+  - seat_hold row locks, ascending by `event_seat_id` (step 4);
+  - lazy expiry as an immediate guarded `UPDATE`;
+  - `SET LOCAL lock_timeout`.
+
+  A `CLAUDE.md` rule, with a grep to check it, forbids lock SQL anywhere else in
+  `src/main`.
+- **Proven with real concurrent transactions:**
+  - two share locks on an event don't block each other;
+  - an exclusive lock makes a share lock wait;
+  - a second advisory lock for the same owner waits, while a different owner's
+    doesn't;
+  - `lock_timeout` surfaces as SQLState `55P03`.
+
+  Waits are observed in `pg_stat_activity`, not inferred from a timeout.
+- **Not proven, and worth admitting:** the seat_hold row locks. A reviewer
+  deleted both `FOR UPDATE` clauses and all 14 gateway tests still passed.
+  Plan 3 owns that test.
+- **Still design (plan 3):** hold creation's lock-expire-insert-flush per seat,
+  cancellation's ordering, and every service that calls the gateway.
 
 **Interview talking point:** "The index guarantees no seat is ever claimed
 twice. The lock order keeps the other state transitions correct and
@@ -267,7 +328,59 @@ state. I wrote down one lock order that every transaction follows, so
 deadlock-freedom is a property I can argue from the order rather than hope for.
 The subtle part was that hold creation interleaves locks and inserts. Taking
 all the locks first and then inserting sounds safe, but it breaks the ordering
-across the two phases, so the design claims seats one at a time."
+across the two phases, so the design claims seats one at a time. What's built
+today is the gateway itself. Every lock lives in one file, so 'one global order'
+is something you can check by reading that file. The event and per-owner locks
+are proven with concurrent transactions. A reviewer mutation-tested the seat-row
+locks and showed nothing yet proves they block. That test is carried to the next
+plan."
+
+---
+
+### 8. Making Silent Failures Loud: a Zero Timeout and a Lock With No Transaction
+
+**Simple version:** Two settings in the box office could fail without anyone
+noticing.
+- **The waiting rule.** The rule is "wait at most 5 seconds for a lock". If
+  someone typed 0, Postgres reads that as "wait forever", not "don't wait".
+- **The bouncer.** The lock helper is like a bouncer who only works inside the
+  building. Call him from the street and he waves everyone through and says
+  nothing.
+
+Both now complain loudly the moment they're misused.
+
+**The longer version:** The Task 4 review first raised the unbounded timeout as a
+Minor finding. The final whole-branch review of plan 2 escalated it to Important,
+and separately found the missing transaction guard. Both fixes are built and
+tested.
+- **The timeout.** `SET LOCAL lock_timeout` is written as a literal, because
+  Postgres won't take a bind parameter there. The value comes from
+  configuration.
+  - The plan promised "validated configuration" but only had `@NotNull`. So
+    `frontrow.lock-timeout: 0s` became `'0ms'`, which Postgres treats as
+    disabled. That silently removes the spec's guarantee that an event change
+    can't be starved by a stream of seat holds.
+  - The plan's `@Min`/`@Max` couldn't have worked anyway: Hibernate Validator
+    9.1.3 has no `@Min` validator for `Duration`, confirmed against the jar.
+  - The fix is `@DurationMin`/`@DurationMax`: lock timeout 1 ms–1 min, hold TTL
+    1 s–1 h. A test proves `0s` fails startup.
+- **The transaction guard.** Outside a transaction, an advisory lock and a
+  `FOR UPDATE` both release when the statement ends, and `SET LOCAL` does
+  nothing.
+  - A future service that forgot `@Transactional` would lose every lock with no
+    error, and single-threaded tests can't see that.
+  - The gateway is now `@Transactional(propagation = MANDATORY)`, and a test
+    proves a bare call throws `IllegalTransactionStateException`.
+
+**Interview talking point:** "Two of the bugs I care most about in this project
+never threw an error. A zero lock timeout reads to Postgres as 'no timeout', and
+a lock taken outside a transaction is released the instant it's acquired. Both
+would have passed every test I had. So the fixes aren't extra checks so much as
+turning a silent wrong answer into a loud failure. The config has bounds that
+fail at startup, and the lock gateway refuses to run unless a transaction
+already exists. The plan's own validation idea was wrong too: plain `@Min`
+doesn't apply to a `Duration`, which I only knew after checking the validator
+jar we actually ship."
 
 ---
 
@@ -291,8 +404,9 @@ those are the differentiating parts.
 The cuttable parts were the organiser endpoints and the breadth of seed data."
 
 **Be ready for the timeline question, because the honest answer is better than a
-dodge.** The spec estimated "a full focused week" for Phase 1. Two weeks in, the
-foundation is built and the domain is not. The reason is not drift: Phase 1 was
+dodge.** The spec estimated "a full focused week" for Phase 1. Eighteen days in,
+the foundation and the domain foundations are built. No write path exists yet,
+so nothing can hold or buy a seat. The reason is not drift: Phase 1 was
 re-planned from 3 documents into 5 after two proved too large to review, and
 every plan has gone through multi-round review before any code was written —
 which caught five defects in plan 2 alone that would each have failed at runtime
@@ -331,7 +445,9 @@ record. Three more rounds (2.2–2.4) found smaller protocol bugs:
 - a Hibernate flush-order trap in lazy expiry;
 - a release path whose outcome depended on the sweeper.
 
-These are design findings; none of it has been implemented or tested yet.
+These were design findings. Plan 2 (PR #10) built the lock-order primitives and
+lazy expiry as an immediate guarded `UPDATE`, both with tests. The cancel, confirm
+and release paths that use them are plan 3, and are not built.
 
 ### Reviewing Until the Rule Is Met, and a Claim I Got Wrong
 
@@ -357,9 +473,15 @@ version we'll pin, before it goes into a spec."
 
 ## Bugs Worth Remembering
 
-*No bug has escaped to `main`.* The code that exists — the scaffold, CI, the V1
-schema migration, and the principal-propagation spike — has no known defect. But
-several real defects were caught **before** merge, and those are the ones worth
+*No runtime defect is known on `main`.* That covers plans 1 and 2: the scaffold,
+CI, the V1 schema, the spike, the domain foundations and the locking gateway.
+Two things did reach `main`, and they should be named rather than hidden:
+- **A known test gap:** nothing proves the seat_hold row locks block. Plan 3 owns
+  it.
+- **One wrong commit message:** `a648936` claims a javadoc reflow it never did.
+  PR #10 discloses it.
+
+Several real defects were caught **before** merge, and those are the ones worth
 discussing, because catching them is the claim:
 
 - **Plan 1 review, 3 blockers:** `mvnw` would have been committed without its
@@ -369,6 +491,19 @@ discussing, because catching them is the claim:
   without that line Spring AI starts an SSE server instead, against ADR-003.
 - **Plan 2 review, 5 blockers**, none of which had code yet. See *Review as the
   Deliverable* below.
+- **Plan 2 execution, a test that tested nothing.** `PersistenceMappingTest`
+  claimed to round-trip every entity through Postgres.
+  - **Symptom:** none. It passed.
+  - **Root cause:** the class is `@Transactional`, so `findById` straight after
+    `save` returned Hibernate's cached instance and issued no SELECT. The
+    timestamp-drift test got back the very `Instant` it had passed in.
+  - **Fix:** `flush()` then `clear()` the persistence context before every
+    read-back.
+  - **Proof:** with SQL logging on, SELECTs now appear after the clear. A
+    placeholder assertion failed with `{"ok": true}`, the value as Postgres
+    normalised it, which shows the read really came from the database.
+- **Plan 2 execution, two silent failures:** the zero lock timeout and the
+  gateway running outside a transaction. See concept 8.
 - **A Dependabot PR stored `mvnw.cmd` with CRLF**, defeating the repository's own
   `.gitattributes` normalization and turning a 2-line version bump into a
   190-line diff. Fixed with `git add --renormalize` before merge.
@@ -401,16 +536,20 @@ idempotent in-process sweeper). What an interviewer could still press on:
 
 ## Review as the Deliverable (2026-10-02)
 
-Four of Phase 1's five plans are documents, and the review of those documents is
-where most defects have been caught so far. Everything here is a **review or
-design outcome, not shipped code** — say so if asked.
+*Written when plans 2-5 were still documents. As of 2026-10-05, plan 2 is built
+(PR #10), and the plan-2 items below carry "now built" notes. Plans 3-5 are still
+documents or unwritten.* The review of those documents is where most defects
+were caught before code existed. Unless an item says "now built", treat it as a
+**review or design outcome, not shipped code**, and say so if asked.
 
 **The mutation test, which *is* shipped.** Deleting `uq_claimed_seat` from the
 migration fails exactly three tests, and a reviewer independently checked every
 other test for hidden dependence on the index and found none.
 
 *Follow-up to expect:* "Three tests prove the index exists, not that it holds
-under concurrency." Correct. The concurrency tests are plan 3 and are not built.
+under concurrency." Correct. Spec §5's seven concurrency tests (racing holds,
+confirms and cancels) are plan 3 and are not built. Plan 2's lock tests prove the
+locks behave; they never race two writers for one seat.
 The schema tests prove the constraint rejects the state; they do not prove the
 service translates the violation into the right error.
 
@@ -438,6 +577,12 @@ virtual-thread executor rather than the common pool, and the test asserts the
 wait by reading `pg_stat_activity.wait_event_type = 'Lock'` — observing the wait
 instead of inferring it from a timeout.
 
+**Now built (PR #10):** all five fixes are in the code. That covers the
+`OffsetDateTime` conversion at every JDBC boundary,
+`@JdbcTypeCode(SqlTypes.CHAR)` on both currency fields, `serialVersionUID` on
+`HoldRequestId`, and the virtual-thread executor with the `pg_stat_activity`
+wait check. The build and the lock tests pass on CI.
+
 **A security finding, now in ADR-002 (design; not built).** Declaring any
 `SecurityFilterChain` bean removes Spring Boot's default chain, and
 `FilterChainProxy` passes a request matching **no** chain straight through with no
@@ -452,7 +597,7 @@ path and expects 401 or 403.
 
 *Follow-up:* "Is it built?" No — plan 4 owns it.
 
-**The persistence split (design; its ADR is owed).** JPA for ordinary reads and
+**The persistence split (built in PR #10; its ADR is still owed).** JPA for ordinary reads and
 writes, explicit `JdbcClient` SQL for locking reads and lazy expiry. Hibernate
 flushes inserts before updates, so an expiry left as a dirty entity would run
 *after* the new hold's insert and trip the unique index on a seat that is
@@ -479,6 +624,58 @@ extraction time. The losing test stays in the suite as a tripwire.
 
 ---
 
+## Executing a Plan With Subagents, and a Process Failure Worth Telling (2026-10-05)
+
+**What the process was.** Plan 2 was executed task by task.
+- **Per task:** a fresh implementer subagent built each task, and a fresh
+  reviewer checked it for spec compliance and quality. Any fix got its own
+  scoped re-review.
+- **Whole branch:** after all four tasks, the branch got a final review on the
+  strongest model, one fix wave, and then a resumed reviewer plus a fresh one.
+  A pre-PR `reviewer` agent followed, then `/security-review`.
+- **Results:** the per-task reviews found 2 Important issues. The final review
+  found 2 more, both silent failures (concept 8). Every round after the fix wave
+  had 0 blockers.
+
+**What went wrong.** PR #10 opened with no review on it at all. The controlling
+session wrote a "do not post to GitHub" line into 10 review instructions: 9
+reviewers, plus one of them resumed for a second round. The eleventh review, the
+`/security-review` pass, carried no posting instruction either way, and also
+posted nothing. That broke a standing rule: posting the review is
+unconditional, because it's the evidence a review happened. It was the fourth
+recorded failure of that rule. Three of the four were caught by the user asking
+"where are the reviews?", not by any check.
+
+The causes were specific:
+- **Process order.** Every review in this process runs before the PR exists, so
+  there was nowhere to post.
+- **A conflated rule.** "Ask before publishing" was mixed up with "a review must
+  post".
+- **A stale line.** One line in a memory file survived an earlier fix. That fix
+  corrected one note and never searched the others.
+
+**The recovery:**
+- All 11 review reports were still in the subagent transcripts. They were posted
+  verbatim, in 8 comments, with dispositions.
+- A fresh reviewer then posted a proper inline review itself.
+- That review found what all 11 earlier ones missed: it mutation-tested the
+  seat-row locks and showed no test proves they block.
+
+**Interview talking point:** "The most useful failure in this project wasn't in
+the code. My review process said every review must be posted to the PR, and for
+a whole plan it wasn't. The orchestrating session told each reviewer not to
+post, because the PR didn't exist yet. What I took from it is that a rule which
+has failed four times as prose isn't going to start working with stronger prose.
+The fixes I'm weighing are structural: open a draft PR before the first review
+so there's always somewhere to post, and a hook that flags a PR with zero review
+comments. And the review that finally got posted found a real test gap, which is
+a decent argument for the rule in the first place."
+
+*Be accurate if pressed:* the structural fixes are **candidates in the project's
+process queue, not built**.
+
+---
+
 ## Revision Notes
 
 | Date | Change | Accuracy-drift check |
@@ -487,6 +684,7 @@ extraction time. The losing test stays in the suite as a tripwire.
 | 2026-09-18 | Synced to spec revisions 2 through 2.4: claim-index predicate, transport and identity model, trim order, open questions, and the rev-1 self-review talking point (its "caps get dropped" claim no longer matches the spec). Still design-stage — no shipped claims added. | Cold reviewer flagged the stale talking point and version note; both fixed |
 | 2026-09-22 | Added the Phase 1 banner when plan 1 merged — the first update where shipped work existed. | No separate accuracy check was recorded at the time; this row corrects that omission |
 | 2026-10-02 (wrap-up) | Plan 1 executed and merged, plan 2 written and merged, Dependabot's first two bumps merged. Added *Review as the Deliverable*, corrected the stack table, and took the scoping talking point out of the past tense. | **DRIFT FOUND** — 12 items, the sharpest being the inverse of this guide's usual risk: "What We Built — *(Nothing yet.)*" **denied** work that exists. Also: the banner read as "Phase 1 landed" when plan 1 of 5 landed; the not-built list omitted entities, repositories, security chains, seed data and Docker; "JUnit 5" contradicted `CLAUDE.md`; springdoc and Docker were listed as if present; "pin versions at scaffold time" was stale; and the scoping point described a finished week in the past tense on day 15 with no domain code |
+| 2026-10-05 (wrap-up) | Plan 2 executed and merged (PR #10). Rewrote the banner and *What We Built* to cover the domain foundations, added a persistence row to the stack table, added "built" evidence to concepts 4 and 7 (with the unproven seat-row locks stated), added concept 8 (silent failures made loud), two bug stories, a *now built* note on the plan-2 review findings, and the subagent-execution / posting-failure section. | **DRIFT FOUND** by a fresh check posted to PR #11 (review 5420599658): 3 drift, 5 nits, all fixed. The sharpest drift was the author's own count: "12 review dispatches" told not to post was really 10 instructions to 9 agents, with the 11th review carrying no posting line at all. The other two drifts were stale: "21 constraint tests, each inserting a violating row" (really 22 runs, 3 of them acceptance checks), and "none of it implemented" in the review-history section after plan 2 built part of it |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
