@@ -597,7 +597,7 @@ path and expects 401 or 403.
 
 *Follow-up:* "Is it built?" No — plan 4 owns it.
 
-**The persistence split (built in PR #10; its ADR is still owed).** JPA for ordinary reads and
+**The persistence split (built in PR #10; recorded as ADR-005).** JPA for ordinary reads and
 writes, explicit `JdbcClient` SQL for locking reads and lazy expiry. Hibernate
 flushes inserts before updates, so an expiry left as a dirty entity would run
 *after* the new hold's insert and trip the unique index on a seat that is
@@ -671,8 +671,22 @@ so there's always somewhere to post, and a hook that flags a PR with zero review
 comments. And the review that finally got posted found a real test gap, which is
 a decent argument for the rule in the first place."
 
-*Be accurate if pressed:* the structural fixes are **candidates in the project's
-process queue, not built**.
+*Be accurate if pressed:* the structural fixes are **not adopted**. The draft-PR
+and post-to-PR rules were drafted as patches to the execution skill, then
+reviewed, and that review found two blockers:
+- the branch was pushed only once, so later reviews couldn't post inline;
+- the early PR clashed with the global rule that security and pre-PR checks run
+  before a PR opens.
+
+They were withdrawn and parked for a workflow audit. The merge-time hook was
+built and unit-tested, then deferred because it would apply to every project.
+None of it is live.
+
+*A second lesson from the same day, worth having ready:* the setup repo's
+working copy *is* the running configuration. Drafting the patches on a feature
+branch there made them live before anyone had reviewed them, because "unmerged"
+doesn't mean "inactive" for a config repo. Process changes now happen only during
+deliberate workflow audits, and a project session just writes them down.
 
 ---
 
@@ -684,6 +698,7 @@ process queue, not built**.
 | 2026-09-18 | Synced to spec revisions 2 through 2.4: claim-index predicate, transport and identity model, trim order, open questions, and the rev-1 self-review talking point (its "caps get dropped" claim no longer matches the spec). Still design-stage — no shipped claims added. | Cold reviewer flagged the stale talking point and version note; both fixed |
 | 2026-09-22 | Added the Phase 1 banner when plan 1 merged — the first update where shipped work existed. | No separate accuracy check was recorded at the time; this row corrects that omission |
 | 2026-10-02 (wrap-up) | Plan 1 executed and merged, plan 2 written and merged, Dependabot's first two bumps merged. Added *Review as the Deliverable*, corrected the stack table, and took the scoping talking point out of the past tense. | **DRIFT FOUND** — 12 items, the sharpest being the inverse of this guide's usual risk: "What We Built — *(Nothing yet.)*" **denied** work that exists. Also: the banner read as "Phase 1 landed" when plan 1 of 5 landed; the not-built list omitted entities, repositories, security chains, seed data and Docker; "JUnit 5" contradicted `CLAUDE.md`; springdoc and Docker were listed as if present; "pin versions at scaffold time" was stale; and the scoping point described a finished week in the past tense on day 15 with no domain code |
+| 2026-10-05 (second wrap-up) | ADR-005 and spec rev 2.6.2 merged (PR #13). The persistence-split entry now cites ADR-005 instead of "still owed". The posting-failure section now says the structural fixes were drafted, reviewed (2 BLOCKERs), withdrawn and parked, not merely "candidates", and adds the config-repo-checkout-is-live lesson. | Clean on accuracy: a fresh check posted to PR #14 (review 5422689734) found 0 drift and 1 nit, a journal citation pointing at the wrong memory file, which is now fixed. The staleness pass found nothing still calling ADR-005 owed or the posting fixes live |
 | 2026-10-05 (wrap-up) | Plan 2 executed and merged (PR #10). Rewrote the banner and *What We Built* to cover the domain foundations, added a persistence row to the stack table, added "built" evidence to concepts 4 and 7 (with the unproven seat-row locks stated), added concept 8 (silent failures made loud), two bug stories, a *now built* note on the plan-2 review findings, and the subagent-execution / posting-failure section. | **DRIFT FOUND** by a fresh check posted to PR #11 (review 5420599658): 3 drift, 5 nits, all fixed. The sharpest drift was the author's own count: "12 review dispatches" told not to post was really 10 instructions to 9 agents, with the 11th review carrying no posting line at all. The other two drifts were stale: "21 constraint tests, each inserting a violating row" (really 22 runs, 3 of them acceptance checks), and "none of it implemented" in the review-history section after plan 2 built part of it |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
