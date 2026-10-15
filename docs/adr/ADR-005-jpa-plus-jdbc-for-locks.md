@@ -51,7 +51,7 @@ How should the application talk to Postgres?
 * ✅ Every lock is visible in one file, so "one global lock order" is a property a reviewer can check by reading it.
 * ✅ Locking reads always see the committed row, and lazy expiry is a guarded `UPDATE ... AND expires_at <= :now` that reaches the database at once.
 * ✅ The JPA entities stay simple: getters, no setters, and `ddl-auto: validate` against the Flyway schema.
-* ⚠️ Two styles to keep apart. A Plan 3 service must not load `SeatHold` entities inside a locking transaction. With no `@DynamicUpdate`, a dirty entity's flush rewrites every column, and that can overwrite a status the gateway's `UPDATE` just changed. PR #10's description carries this forward.
+* ⚠️ Two styles to keep apart. A Plan 3A or 3B service must not load `SeatHold` entities inside a locking transaction. With no `@DynamicUpdate`, a dirty entity's flush rewrites every column, and that can overwrite a status the gateway's `UPDATE` just changed. PR #10's description carries this forward.
 * ⚠️ Raw JDBC sees pgjdbc's type support directly. pgjdbc 42.7.13 has no `Instant` conversion, so every JDBC boundary converts through `OffsetDateTime`. Entities keep `Instant`, because Hibernate maps it itself.
 * ⚠️ `SET LOCAL lock_timeout` cannot take a bind parameter, so its value is a literal. It is formatted from a `long` and comes from configuration bounded to 1 ms–1 min (plan 2 decision 4, as corrected in PR #12). No request data reaches it.
 * ⚠️ Not yet proven: the seat-hold row locks block a concurrent writer. In a throwaway mutation test, PR #10's posting review deleted both seat-hold `FOR UPDATE` clauses, and every test still passed. The clauses are still in the shipped code. Plan 3 owns that test.

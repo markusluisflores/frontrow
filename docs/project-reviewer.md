@@ -683,7 +683,9 @@ reviewed, and that review found two blockers:
 They were withdrawn and parked for a workflow audit. *(Updated 2026-10-15.)* That audit
 rejected the early draft PR outright. Reviews that run before the PR exists are now held,
 or summarized in one development-review comment, and posted once the PR opens. The
-merge-time hook **is** live: it was registered globally on 2026-10-11 and live-fired. It
+merge-time hook **is** live: the workflow audit registered it globally on 2026-10-11, and it
+was live-fired. The hook and its registration live in private repos; this repo's record of
+the change is the 2026-10-15 journal entry. It
 asks before `gh pr merge` or `gh pr ready` on a PR with no human review record. Its limit,
 if pressed: any one human record satisfies it, even an unrelated comment, and it doesn't
 see merges made outside Claude Code.
@@ -725,10 +727,10 @@ state, and a reviewer found a step that couldn't compile. That's why every step 
 - The review rule is: stop after **two consecutive** BLOCKER-free rounds, counting **fresh** reviewers only. A
   reviewer resumed to verify its own findings doesn't count.
 - After fresh round 1 found a BLOCKER and fresh round 2 found none, the orchestrating session told me the PR was
-  ready to merge: "two review rounds, no BLOCKER left open". It had counted a resumed-plus-fresh pair as "round 2",
-  and treated round 1, whose BLOCKER had been fixed, as if it were clean. That's one clean round, not two.
+  ready to merge: "two review rounds, no BLOCKER left open". The error was treating round 1 as clean because its
+  BLOCKER had been fixed. A fixed BLOCKER doesn't make a clean round, so there was one clean round, not two.
 - I asked whether the rule wasn't two clean rounds. It is. A third fresh round ran, found no BLOCKER (three
-  SUGGESTIONs: two fixed and verified, one partly fixed, its rest carried into the plan's Task 4), and the PR
+  SUGGESTIONs: two fixed and verified, one partly fixed, its rest to be fixed when Task 4 is executed), and the PR
   merged after that.
 - **Why the gate didn't catch it:** the checklist the session fills in before saying "ready to merge" asks for the
   round count, each round's blocker status, and whether a resumed+fresh pair followed the last fix. All three could
