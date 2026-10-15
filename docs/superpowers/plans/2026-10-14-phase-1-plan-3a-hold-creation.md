@@ -52,7 +52,7 @@ Each is listed so a reviewer can reject it individually.
    - The JPA read of `event_seat` rows (prices, and whether the event offers each seat) is fine. Those rows are never written.
 2. **No service catches a gateway exception and carries on.** The gateway is `@Transactional(propagation = MANDATORY)`, so an exception that crosses its proxy marks the whole transaction rollback-only (PR #10 carry-forward). Every caught `DataAccessException` is translated and **rethrown**. Rethrowing aborts the transaction, which spec §5 requires anyway: Postgres aborts it at the first error.
 3. **Validation order.**
-   1. Parameter shape, with no database access: the idempotency key, and a non-empty seat list.
+   1. Parameter shape, with no database access: the idempotency key, and a non-empty seat list. A null seat id is rejected earlier still, by `HoldCommand`'s constructor, as the same `invalid_request` on `event_seat_ids`. It keeps `List.copyOf`, which SpotBugs recognises as immutable. *(PR #16 round 1, S2. A first fix used `Collections.unmodifiableList(new ArrayList<>(...))`, which SpotBugs reports as `EI_EXPOSE_REP` on the record's accessor.)*
    2. The key claim, then the advisory lock, then the event lock (spec §5 steps 1-3).
    3. `not_found`, then `sales_not_open` or `sales_closed`.
    4. Duplicate seat ids, then `too_many_seats`, then seats the event doesn't offer.
@@ -62,8 +62,9 @@ Each is listed so a reviewer can reject it individually.
 
    A request with the same key as a committed one is replayed **before** any validation. Replays report what happened; they don't re-check current state (spec §5).
 4. **A seat that already has a live hold is not rejected early. The insert is left to fail on `uq_claimed_seat`.** That keeps `seat_taken` decided in exactly one place, the schema (ADR-001). It also makes the Task 4 mutation test deterministic: with the index dropped, a second racer always succeeds, so "the race needs the index" is proven rather than likely.
-5. **`expires_at` is truncated to microseconds.** `timestamptz` stores microseconds, and the injected clock can carry nanoseconds. Without truncation, the returned `expiresAt` would differ from the stored one.
-6. **The stored response is the service result, not an adapter's wire form.** `hold_request.response_json` holds `HoldResult` as Jackson 3 JSON, using the Boot-configured `JsonMapper`. A replay deserializes it back into a `HoldResult`. Plans 4 and 5 render that record their own way, so the stored form never ties the two adapters together.
+5. **`now` and `expires_at` are truncated to microseconds.** `timestamptz` stores microseconds, and the injected clock can carry nanoseconds. Without truncation, the returned `expiresAt` would differ from the stored one. And because pgjdbc rounds the instants it binds, Java's `HoldRules.isLive` and the SQL cap count could disagree within half a microsecond. `now` is therefore truncated once, at the top of `hold()`. *(PR #16 round 1, N1.)*
+6. **The stored response is the service result, not an adapter's wire form.** `hold_request.response_json` holds `HoldResult` as Jackson 3 JSON, and a replay deserializes it back into a `HoldResult`. Plans 4 and 5 render that record their own way, so the stored form never ties the two adapters together.
+   - **The stored form uses a mapper `HoldService` builds itself** (`HoldService.STORED_FORM`, a default `JsonMapper.builder().build()`), **not the Boot-configured bean**. If Plan 4 changes the application-wide Jackson settings (for example a global snake_case naming strategy, since the spec's wire names are snake_case), rows already stored inside their 24-hour replay window would otherwise stop deserializing, and a replay would become a 500. *(PR #16 round 1, S1.)*
 7. **The request fingerprint** (`hold_request.request_hash`) is SHA-256, in lowercase hex, over the text `<event_id>:` followed by each requested seat id in ascending order, each with a `,` after it. Duplicates are kept: a request with duplicates is rejected, and a rejected request is never stored, so they can't cause a false replay. The function lives in `domain`, because `java.security` is JDK-only.
 8. **Idempotency keys must be 1 to 200 characters and not blank.** The spec requires a key but sets no format. Anything outside that is `invalid_request` with `parameter: idempotency_key`.
 9. **Error detail keys**, which both adapters will render (spec §6):
@@ -73,11 +74,11 @@ Each is listed so a reviewer can reject it individually.
    - `hold_limit_exceeded` → `max_active_hold_groups`;
    - `invalid_request` → `parameter`, plus `seat_ids` when seats are the problem.
 10. **Service tests use their own Spring context, with a settable `TestClock` as the primary `Clock`.** That context starts its own Postgres container next to the one the repository tests use, because Spring caches contexts per configuration. This costs one container start, and keeps the existing tests on the real clock.
-11. **SpotBugs `EI_EXPOSE_REP2` is excluded on constructors in the `service` package only.** With no exclusion, `HoldService`'s constructor raises two Medium findings: it stores the injected `LockingGateway` and `JsonMapper`. SpotBugs 4.10.4.1 judges both mutable, apparently by name heuristics (`setLockTimeout`). This was observed when the plan's code was built in a scratch worktree on 2026-10-14. A Spring service keeping its injected singletons is intended, and copying them would be wrong.
-   - **The exclusion is narrow:** that bug pattern, `<init>` methods, `io.github.markusluisflores.frontrow.service` only.
+11. **SpotBugs `EI_EXPOSE_REP2` is excluded on the constructors of `service` classes named `*Service` only.** With no exclusion, `HoldService`'s constructor raises a Medium finding because it stores the injected `LockingGateway`. SpotBugs 4.10.4 (the analyzer run by spotbugs-maven-plugin 4.10.4.1) judges it mutable, apparently by a name heuristic (`setLockTimeout`). The draft also stored the Boot `JsonMapper`, which drew a second finding; decision 6 removed that field. This was observed when the plan's code was built in a scratch worktree on 2026-10-14. A Spring service keeping its injected singletons is intended, and copying them would be wrong.
+   - **The exclusion is narrow:** that bug pattern, `<init>` methods, classes matching `io.github.markusluisflores.frontrow.service.*Service`. Records in that package (`HoldCommand`, `HoldResult`) stay covered. Round 1 found that the first version, matching the whole package, also silenced record constructors. *(PR #16 round 1, N2.)*
    - **Probe:** a temporary non-constructor setter and getter on `HoldService`, storing and returning a `java.util.Date`, were both still reported (`EI_EXPOSE_REP2` and `EI_EXPOSE_REP`).
    - **Rejected alternatives:**
-     - Renaming `setLockTimeout` to dodge the heuristic would be gaming the tool, and wouldn't cover `JsonMapper`.
+     - Renaming `setLockTimeout` to dodge the heuristic would be gaming the tool, and the next service with an injected collaborator would hit the same finding.
      - `@SuppressFBWarnings` would need a new annotations dependency on the main classpath.
 
 ## File Structure
@@ -91,6 +92,7 @@ Each is listed so a reviewer can reject it individually.
 | `src/main/java/.../persistence/LockingGateway.java` | Javadoc reflow (Task 1); key claim, stored response, seat insert (Task 2) | 1, 2 |
 | `src/main/java/.../persistence/StoredHoldRequest.java` | A `hold_request` row as committed: hash and response | 2 |
 | `CLAUDE.md` | Lock grep gains `lock table` (Task 1); current state (Task 4) | 1, 4 |
+| `docs/adr/ADR-005-jpa-plus-jdbc-for-locks.md` | Row locks marked proven; amendment for the gateway's new boundary | 2 |
 | `src/main/java/.../domain/HoldRequestFingerprint.java` | The canonical request hash | 3 |
 | `src/main/java/.../persistence/EventSeatRepository.java` | `findOfferedSeats` | 3 |
 | `src/main/java/.../service/HoldCommand.java`, `HoldResult.java` | The service's input and its (stored, replayable) result | 3 |
@@ -706,7 +708,28 @@ In `LockingGateway.java`:
 Run: `./mvnw -q test -Dtest=LockingGatewayTest`
 Expected: PASS, 26 tests (Task 1's 18 plus these 8).
 
-- [ ] **Step 5: Check the lock grep and the build, then commit**
+- [ ] **Step 5: Amend ADR-005 to match the gateway's new boundary**
+
+ADR-005 describes the gateway as holding locking reads, lazy expiry and `SET LOCAL`. Decision 1 widens that to the statements that wait on a lock implicitly, and Task 1 has now proven what ADR-005 lists as unproven. An ADR records a decision, so it is amended rather than rewritten. *(PR #16 round 1, S3.)*
+
+In `docs/adr/ADR-005-jpa-plus-jdbc-for-locks.md`, replace the consequence bullet that begins `* ⚠️ Not yet proven:` with:
+
+```markdown
+* ✅ The seat-hold row locks are proven to block a concurrent writer (Plan 3A, Task 1). `LockingGatewayTest#aLockedActiveHoldMakesASecondLockerWait` and `#aLockedGroupMakesASecondGroupLockerWait` each fail with `did not block on a lock within 10s` when their `FOR UPDATE` clause is removed. *(Until Plan 3A this line read "Not yet proven": PR #10's posting review had deleted both clauses in a throwaway export and every test still passed.)*
+```
+
+Then append this section at the end of the file:
+
+```markdown
+## Amendment — Plan 3A (hold creation)
+
+The gateway also holds the statements that wait on a lock **implicitly**: the `hold_request` key insert (`ON CONFLICT DO NOTHING`, lock-order step 1, which waits on an in-flight duplicate key) and the `seat_hold` insert (step 4, which waits on `uq_claimed_seat` behind an uncommitted claim). The stored-response read and write that complete the `hold_request` protocol sit beside them. Hold creation therefore makes **no JPA write at all**, which is how it meets this ADR's warning about dirty `SeatHold` entities. Ordinary reads, such as `event_seat` prices, still go through JPA. Source: `docs/superpowers/plans/2026-10-14-phase-1-plan-3a-hold-creation.md`, decision 1.
+```
+
+Run: `grep -n "Not yet proven\|Amendment" docs/adr/ADR-005-jpa-plus-jdbc-for-locks.md`
+Expected: exactly two lines. One is the new `* ✅` bullet, which matches because its parenthesis quotes the old wording. The other is the `## Amendment — Plan 3A (hold creation)` heading. No line may begin `* ⚠️ Not yet proven`.
+
+- [ ] **Step 6: Check the lock grep and the build, then commit**
 
 Run the `CLAUDE.md` lock grep.
 Expected: only `LockingGateway.java`. `ON CONFLICT` is not lock vocabulary.
@@ -717,7 +740,8 @@ Expected: BUILD SUCCESS, SpotBugs 0.
 ```bash
 git add src/main/java/io/github/markusluisflores/frontrow/persistence/StoredHoldRequest.java \
   src/main/java/io/github/markusluisflores/frontrow/persistence/LockingGateway.java \
-  src/test/java/io/github/markusluisflores/frontrow/persistence/LockingGatewayTest.java
+  src/test/java/io/github/markusluisflores/frontrow/persistence/LockingGatewayTest.java \
+  docs/adr/ADR-005-jpa-plus-jdbc-for-locks.md
 git commit -m "feat(persistence): add the key claim and seat insert to the gateway"
 ```
 
@@ -851,51 +875,10 @@ class SqlFailuresTest {
 }
 ```
 
-`src/test/java/io/github/markusluisflores/frontrow/service/TransactionIsolationTest.java`:
-
-```java
-package io.github.markusluisflores.frontrow.service;
-
-import static org.assertj.core.api.Assertions.assertThat;
-
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.util.List;
-import org.junit.jupiter.api.Test;
-import org.springframework.transaction.annotation.Isolation;
-import org.springframework.transaction.annotation.Transactional;
-
-/**
- * Postgres defaults to READ COMMITTED, so a forgotten setting fails no behavioural test — which is why spec §5's
- * requirement is checked here instead. Plan 3B appends its services to the list.
- */
-class TransactionIsolationTest {
-
-    private static final List<Class<?>> SERVICES = List.of(HoldService.class);
-
-    @Test
-    void everyPublicServiceMethodRunsReadCommitted() {
-        for (Class<?> service : SERVICES) {
-            for (Method method : service.getDeclaredMethods()) {
-                if (!Modifier.isPublic(method.getModifiers())) {
-                    continue;
-                }
-                Transactional transactional = method.getAnnotation(Transactional.class);
-                assertThat(transactional).as("%s#%s is @Transactional", service.getSimpleName(), method.getName())
-                        .isNotNull();
-                assertThat(transactional.isolation())
-                        .as("%s#%s isolation", service.getSimpleName(), method.getName())
-                        .isEqualTo(Isolation.READ_COMMITTED);
-            }
-        }
-    }
-}
-```
-
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `./mvnw -q test -Dtest='HoldRequestFingerprintTest,SqlFailuresTest,TransactionIsolationTest'`
-Expected: compilation FAILS: `cannot find symbol: class HoldRequestFingerprint`, `SqlFailures`, `HoldService`.
+Run: `./mvnw -q test -Dtest='HoldRequestFingerprintTest,SqlFailuresTest'`
+Expected: compilation FAILS: `cannot find symbol: class HoldRequestFingerprint`, `SqlFailures`.
 
 - [ ] **Step 3: Implement the fingerprint, the translator, the sales gate and the records**
 
@@ -1016,7 +999,10 @@ final class SalesGate {
 ```java
 package io.github.markusluisflores.frontrow.service;
 
+import io.github.markusluisflores.frontrow.error.DomainException;
+import io.github.markusluisflores.frontrow.error.ErrorCode;
 import java.util.List;
+import java.util.Map;
 
 /** A request to hold specific seats. The owner always comes from the authenticated principal, never a parameter. */
 public record HoldCommand(String owner, long eventId, List<Long> eventSeatIds, String idempotencyKey) {
@@ -1025,7 +1011,17 @@ public record HoldCommand(String owner, long eventId, List<Long> eventSeatIds, S
         if (owner == null || owner.isBlank()) {
             throw new IllegalArgumentException("owner comes from the authenticated principal and must be present");
         }
-        eventSeatIds = eventSeatIds == null ? List.of() : List.copyOf(eventSeatIds);
+        if (eventSeatIds == null) {
+            eventSeatIds = List.of();
+        }
+        // A null id must be invalid_request, not the NullPointerException List.copyOf would throw. A loop, because
+        // List.of(...).contains(null) itself throws.
+        for (Long id : eventSeatIds) {
+            if (id == null) {
+                throw new DomainException(ErrorCode.INVALID_REQUEST, Map.of("parameter", "event_seat_ids"));
+            }
+        }
+        eventSeatIds = List.copyOf(eventSeatIds);
     }
 }
 ```
@@ -1057,7 +1053,7 @@ public record HoldResult(
 - [ ] **Step 4: Run the unit tests**
 
 Run: `./mvnw -q test -Dtest='HoldRequestFingerprintTest,SqlFailuresTest'`
-Expected: PASS, 9 tests. (`TransactionIsolationTest` still doesn't compile until Step 7.)
+Expected: PASS, 9 tests. Nothing in `src/test` refers to `HoldService` yet. Maven compiles every test file whatever `-Dtest` selects, which is why `TransactionIsolationTest` waits until Step 6.
 
 - [ ] **Step 5: Create the service-test support**
 
@@ -1270,6 +1266,47 @@ public final class HoldFixtures {
 
 - [ ] **Step 6: Write the failing service tests**
 
+`src/test/java/io/github/markusluisflores/frontrow/service/TransactionIsolationTest.java`:
+
+```java
+package io.github.markusluisflores.frontrow.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
+
+/**
+ * Postgres defaults to READ COMMITTED, so a forgotten setting fails no behavioural test — which is why spec §5's
+ * requirement is checked here instead. Plan 3B appends its services to the list.
+ */
+class TransactionIsolationTest {
+
+    private static final List<Class<?>> SERVICES = List.of(HoldService.class);
+
+    @Test
+    void everyPublicServiceMethodRunsReadCommitted() {
+        for (Class<?> service : SERVICES) {
+            for (Method method : service.getDeclaredMethods()) {
+                if (!Modifier.isPublic(method.getModifiers())) {
+                    continue;
+                }
+                Transactional transactional = method.getAnnotation(Transactional.class);
+                assertThat(transactional).as("%s#%s is @Transactional", service.getSimpleName(), method.getName())
+                        .isNotNull();
+                assertThat(transactional.isolation())
+                        .as("%s#%s isolation", service.getSimpleName(), method.getName())
+                        .isEqualTo(Isolation.READ_COMMITTED);
+            }
+        }
+    }
+}
+```
+
 `src/test/java/io/github/markusluisflores/frontrow/service/HoldServiceTest.java`:
 
 ```java
@@ -1286,6 +1323,7 @@ import io.github.markusluisflores.frontrow.support.ServiceTestConfiguration;
 import io.github.markusluisflores.frontrow.support.TestClock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.BeforeEach;
@@ -1294,7 +1332,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import tools.jackson.databind.json.JsonMapper;
 
 @SpringBootTest
 @Import(ServiceTestConfiguration.class)
@@ -1307,9 +1344,6 @@ class HoldServiceTest {
 
     @Autowired
     JdbcClient jdbc;
-
-    @Autowired
-    JsonMapper json;
 
     @Autowired
     TestClock clock;
@@ -1348,7 +1382,8 @@ class HoldServiceTest {
         // The stored response is the result. Read it back the way replay does, never as raw text (spec §5, rev 2.6.2).
         // Not readTree-vs-valueToTree: parsing yields IntNode for small numbers, valueToTree keeps the long fields as
         // LongNode, and IntNode(9) is not equal to LongNode(9) — observed with Jackson 3.1.5.
-        assertThat(json.readValue(fixtures.storedResponse("alice", "k1"), HoldResult.class)).isEqualTo(result);
+        assertThat(HoldService.STORED_FORM.readValue(fixtures.storedResponse("alice", "k1"), HoldResult.class))
+                .isEqualTo(result);
     }
 
     @Test
@@ -1523,6 +1558,9 @@ class HoldServiceTest {
         }
         DomainException noSeats = rejection(() -> holds.hold(command("alice", List.of(), "k1")));
         assertThat(noSeats.details()).containsEntry("parameter", "event_seat_ids");
+        DomainException nullSeat = rejection(() -> holds.hold(command("alice", Arrays.asList(seat, null), "k1")));
+        assertThat(nullSeat.errorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+        assertThat(nullSeat.details()).containsEntry("parameter", "event_seat_ids");
         assertThat(fixtures.holdRequestsOwnedBy("alice")).isZero();
     }
 
@@ -1538,7 +1576,7 @@ class HoldServiceTest {
 }
 ```
 
-Run: `./mvnw -q test -Dtest=HoldServiceTest`
+Run: `./mvnw -q test -Dtest='TransactionIsolationTest,HoldServiceTest'`
 Expected: compilation FAILS: `cannot find symbol: class HoldService`.
 
 - [ ] **Step 7: Implement the service and the seat lookup**
@@ -1603,30 +1641,31 @@ public class HoldService {
 
     static final int MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 
+    /**
+     * The stored replay form, deliberately independent of the application's Jackson configuration: a later global
+     * setting (a naming strategy, say) must not break replay of rows stored before it (plan 3A decision 6).
+     */
+    static final JsonMapper STORED_FORM = JsonMapper.builder().build();
+
     private final LockingGateway gateway;
     private final EventSeatRepository eventSeats;
     private final FrontRowProperties properties;
     private final Clock clock;
-    private final JsonMapper json;
 
     public HoldService(
-            LockingGateway gateway,
-            EventSeatRepository eventSeats,
-            FrontRowProperties properties,
-            Clock clock,
-            JsonMapper json) {
+            LockingGateway gateway, EventSeatRepository eventSeats, FrontRowProperties properties, Clock clock) {
         this.gateway = gateway;
         this.eventSeats = eventSeats;
         this.properties = properties;
         this.clock = clock;
-        this.json = json;
     }
 
     /** READ COMMITTED, explicitly: every check after a lock wait must see what committed during the wait (spec §5). */
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public HoldResult hold(HoldCommand command) {
         requireWellFormed(command);
-        Instant now = clock.instant();
+        // timestamptz keeps microseconds; one truncation here keeps every Java check and SQL bind on one instant.
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         String fingerprint = HoldRequestFingerprint.of(command.eventId(), command.eventSeatIds());
         try {
             if (!gateway.claimIdempotencyKey(command.owner(), command.idempotencyKey(), fingerprint, now)) {
@@ -1641,13 +1680,13 @@ public class HoldService {
             requireUnderGroupCap(command.owner(), now);
 
             UUID groupId = UUID.randomUUID();
-            // timestamptz keeps microseconds; truncating here makes the result equal what the database stores.
+            // Truncated again in case a configured TTL carries sub-microsecond precision.
             Instant expiresAt = now.plus(properties.holdTtl()).truncatedTo(ChronoUnit.MICROS);
             claimSeats(seatIds, groupId, command.owner(), expiresAt, now);
 
             HoldResult result = result(groupId, event, seatIds, offered, expiresAt);
             gateway.recordHoldResponse(
-                    command.owner(), command.idempotencyKey(), groupId, json.writeValueAsString(result));
+                    command.owner(), command.idempotencyKey(), groupId, STORED_FORM.writeValueAsString(result));
             return result;
         } catch (DataAccessException failure) {
             throw SqlFailures.translate(failure);
@@ -1675,7 +1714,7 @@ public class HoldService {
         if (!stored.requestHash().equals(fingerprint)) {
             throw DomainException.of(ErrorCode.IDEMPOTENCY_KEY_REUSED);
         }
-        return json.readValue(stored.responseJson(), HoldResult.class);
+        return STORED_FORM.readValue(stored.responseJson(), HoldResult.class);
     }
 
     private List<Long> distinctAscending(List<Long> requested) {
@@ -1761,7 +1800,7 @@ Run the two greps from `CLAUDE.md`.
 Expected: `domain` imports only `java.*`, and lock vocabulary appears only in `LockingGateway.java`.
 
 Run: `./mvnw verify`
-Expected: BUILD FAILURE from SpotBugs, with two Medium `EI_EXPOSE_REP2` findings on `new HoldService(...)`, for the fields `gateway` and `json`. Tests are already green at this point (134 runs). This failure is expected; the next step addresses it (decision 11).
+Expected: BUILD FAILURE from SpotBugs, with one Medium `EI_EXPOSE_REP2` finding on `new HoldService(...)`, for the field `gateway`. Tests are already green at this point (134 runs). This failure is expected; the next step addresses it (decision 11).
 
 - [ ] **Step 10: Scope the SpotBugs exclusion to service constructors, then commit**
 
@@ -1770,17 +1809,17 @@ Create `spotbugs-exclude.xml` at the repository root:
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Application services are Spring singletons. Their constructors receive other singletons (the gateway, the JSON
-  mapper) and keep them by design: sharing is the point, and copying would be wrong. Scoped to that one pattern, on
-  constructors only, in the service package only - a service storing a caller's mutable argument anywhere else is
-  still reported. (Plan 3A decision 11.)
+  Application services are Spring singletons. Their constructors receive other singletons (the locking gateway) and
+  keep them by design: sharing is the point, and copying would be wrong. Scoped to that one pattern, on constructors
+  only, of classes named *Service in the service package - records there, and a service storing a caller's
+  mutable argument anywhere else, are still reported. (Plan 3A decision 11.)
 -->
 <FindBugsFilter
         xmlns="https://github.com/spotbugs/filter/3.0.0"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:schemaLocation="https://github.com/spotbugs/filter/3.0.0 https://raw.githubusercontent.com/spotbugs/spotbugs/3.1.0/spotbugs/etc/findbugsfilter.xsd">
     <Match>
-        <Package name="io.github.markusluisflores.frontrow.service"/>
+        <Class name="~io\.github\.markusluisflores\.frontrow\.service\.[A-Za-z]+Service"/>
         <Method name="&lt;init&gt;"/>
         <Bug pattern="EI_EXPOSE_REP2"/>
     </Match>
@@ -1794,7 +1833,7 @@ In `pom.xml`, in the `spotbugs-maven-plugin` `<configuration>`, add this line af
 ```
 
 Run: `./mvnw verify`
-Expected: BUILD SUCCESS, SpotBugs 0. If any finding **other than** those two remains, stop and report BLOCKED. Don't widen the filter.
+Expected: BUILD SUCCESS, SpotBugs 0. If any finding **other than** that one remains, stop and report BLOCKED. Don't widen the filter.
 
 ```bash
 git add src/main/java/io/github/markusluisflores/frontrow/domain/HoldRequestFingerprint.java \
@@ -2169,7 +2208,7 @@ git commit -m "test(service): race hold creation against real Postgres"
 | §6 guardrails: seats-per-hold cap, active-group cap, idempotency key required | Task 3 |
 | §6: `hold_seats` returns group id, seats, total, `expires_at` | Task 3 (`HoldResult`) |
 | §5 centrepiece tests 2 and 6; confirm; release; event PATCH/cancel; sweeper; `hold_request` purge; `55P03` → `contention_retry` on PATCH | **Plan 3B** |
-| PR #10: seat_hold row-lock wait test | Task 1 (both clauses, each with a mutation check) |
+| PR #10: seat_hold row-lock wait test | Task 1 (both clauses, each with a mutation check); ADR-005 updated in Task 2 Step 5 |
 | PR #10: READ COMMITTED explicitly | Task 3 |
 | PR #10: flush inside the translation scope | Decision 1: no JPA write in 3A; **3B** confirm owns it |
 | PR #10: no `SeatHold` entities in locking transactions; does `transitionTo` survive | Decision 1: none loaded in 3A; `transitionTo` decided in **3B** |
@@ -2190,7 +2229,7 @@ Run by the plan author on 2026-10-14 against the `superpowers:writing-plans` che
 2. **Placeholder scan.** A grep for `TBD|TODO|implement later|fill in|Similar to Task|appropriate error` finds nothing. Task 4's `T` is a measured value the implementer reads from Surefire, not an estimate.
 3. **Type consistency.** Every gateway, fixture and support method a later task calls appears with the same name and signature in the task that defines it, checked by grep.
 4. **Sibling reuse.**
-   - `HoldFixtures` and `LockWaits` each repeat the `utc(Instant)` binding helper that `LockingGateway` and `LockingGatewayTest` already have. That is deliberate: test support must not reach into a main-code private method.
+   - `HoldFixtures` repeats the `utc(Instant)` binding helper that `LockingGateway` and `LockingGatewayTest` already have. That is deliberate: test support must not reach into a main-code private method.
    - `SqlFailures` reuses `PostgresErrors` rather than walking the cause chain again.
    - `SalesGate` is written once so that 3B's confirm can reuse it.
 5. **Tooling self-consistency.**
@@ -2209,4 +2248,18 @@ Run by the plan author on 2026-10-14 against the `superpowers:writing-plans` che
        - Task 4 Step 4, lazy expiry: `DomainException: seat_taken`.
      - **Defect caught by those runs:** without `-Dspotless.check.skip=true`, all three "failed" on Spotless `format violations`, before any test ran. That was a false pass of the check, so the flag and a "match the message, not just the red build" note are now in both steps.
      - The test-count predictions were checked against these runs: Task 1 → 18 gateway tests, Task 2 → 26, Task 3 → 27 new and 134 in total, Task 4 → 140.
+   - **After PR #16 round 1 (review 5535951723: 1 BLOCKER, 3 SUGGESTION, 4 NIT, all adopted).**
+     - **Why the gap existed.** The checks above built only the plan's **end state**, so they could not catch the round-1 BLOCKER: Task 3 Step 4 can't compile while `TransactionIsolationTest` refers to a class that doesn't exist yet. The check that replaced them applies the plan to a fresh worktree of `main` (`8e2f57f`) **step by step, in order**. It runs every step that names a command, and asserts the outcome that step states.
+     - **What it asserted at each step:**
+       - each intermediate compile failure, including the missing symbols named;
+       - each per-step test count: Task 1 18 and 4; Task 2 26; Task 3 9 and 27; Task 4 6;
+       - the `verify` totals after each task: 99, 107, 134 (failing on exactly the one SpotBugs finding Step 9 predicts), then 134, then 140 with SpotBugs 0;
+       - the three mutation checks, with their exact messages;
+       - the line-width, lock-grep and domain-import checks;
+       - the two-line ADR-005 grep.
+     - **Result: 24/24 checks passed.**
+     - **That check found one defect in the round-1 fixes themselves.** The first S2 fix (`Collections.unmodifiableList(new ArrayList<>(...))` in `HoldCommand`) drew a new SpotBugs `EI_EXPOSE_REP` on the record's accessor. Two points about it:
+       - The narrowed N2 filter is what reported it. The round-1 filter, which covered the whole package, would have silenced it.
+       - The fix: `HoldCommand` keeps `List.copyOf` and rejects a null id first, with a loop, because `List.of(...).contains(null)` throws.
+     - **N2 probe.** With the final filter, a public `record ProbeRecord(java.util.Date when)` placed in `service` has both its constructor (`EI_EXPOSE_REP2`) and its accessor (`EI_EXPOSE_REP`) reported. A probe must run `spotbugs:spotbugs` before `spotbugs:check`: `spotbugs:check` on its own reads the last report and analyses nothing.
 6. **Verification-matrix crossing.** Task 4 has two independent dimensions: concurrency (sequential or raced) and identity (distinct owners, or one owner). The two most likely to interact are crossed on purpose. Test 4 races **one owner**, so the advisory lock and the cap check interact under contention. Test 5 races **one owner with one key**, so the key wait and the replay read interact. Tests 1 and 3 race distinct owners, so that neither lock serializes the race they exist to prove.
