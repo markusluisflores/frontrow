@@ -52,21 +52,21 @@ Each is listed so a reviewer can reject it individually.
    - The JPA read of `event_seat` rows (prices, and whether the event offers each seat) is fine. Those rows are never written.
 2. **No service catches a gateway exception and carries on.** The gateway is `@Transactional(propagation = MANDATORY)`, so an exception that crosses its proxy marks the whole transaction rollback-only (PR #10 carry-forward). Every caught `DataAccessException` is translated and **rethrown**. Rethrowing aborts the transaction, which spec §5 requires anyway: Postgres aborts it at the first error.
 3. **Validation order.**
-   1. Parameter shape, with no database access: the idempotency key, and a non-empty seat list. A null seat id is rejected earlier still, by `HoldCommand`'s constructor, as the same `invalid_request` on `event_seat_ids`. It keeps `List.copyOf`, which SpotBugs recognises as immutable. *(PR #16 round 1, S2. A first fix used `Collections.unmodifiableList(new ArrayList<>(...))`, which SpotBugs reports as `EI_EXPOSE_REP` on the record's accessor.)*
+   1. Parameter shape, with no database access: the idempotency key (decision 8), a non-empty seat list, then `too_many_seats` on the **raw** list's length. A null seat id is rejected earlier still, by `HoldCommand`'s constructor, as the same `invalid_request` on `event_seat_ids`. It keeps `List.copyOf`, which SpotBugs recognises as immutable. *(PR #16 round 1, S2. A first fix used `Collections.unmodifiableList(new ArrayList<>(...))`, which SpotBugs reports as `EI_EXPOSE_REP` on the record's accessor.)*
    2. The key claim, then the advisory lock, then the event lock (spec §5 steps 1-3).
    3. `not_found`, then `sales_not_open` or `sales_closed`.
-   4. Duplicate seat ids, then `too_many_seats`, then seats the event doesn't offer.
+   4. Duplicate seat ids, then seats the event doesn't offer.
    5. The per-owner group cap.
 
-   Spec §5's list maps failures to codes but doesn't fix their order. `too_many_seats` is checked **before** the offered-seat lookup, so an oversized request never becomes an oversized `IN` list.
+   Spec §5's list maps failures to codes but doesn't fix their order. `too_many_seats` is checked on the raw list **before the fingerprint and the key claim**, so an oversized request costs no sort, no lock, no connection and no oversized `IN` list. *(PR #16 round 3, S3.)* One consequence: an oversized list that also contains duplicates gets `too_many_seats`, not the duplicate error. A list within the cap that contains duplicates still gets the duplicate error. The cap bounds only the service's own work: `HoldCommand` still copies whatever list it is given, so Plans 4 and 5 bound the request size at the adapter (see the coverage table).
 
-   A request with the same key as a committed one is replayed **before** any validation. Replays report what happened; they don't re-check current state (spec §5).
+   A request with the same key as a committed one is replayed **before** any check of current state (steps 3-5). Replays report what happened; they don't re-check current state (spec §5). The step 1 checks run first even then, so a malformed or oversized request is never compared with a stored one: it gets `invalid_request` or `too_many_seats`, not a replay or `idempotency_key_reused`. Every stored request passed those checks, so a retry of one passes them again, unless `max-seats-per-hold` has since been lowered below its size.
 4. **A seat that already has a live hold is not rejected early. The insert is left to fail on `uq_claimed_seat`.** That keeps `seat_taken` decided in exactly one place, the schema (ADR-001). It also makes the Task 4 mutation test deterministic: with the index dropped, a second racer always succeeds, so "the race needs the index" is proven rather than likely.
 5. **`now` and `expires_at` are truncated to microseconds.** `timestamptz` stores microseconds, and the injected clock can carry nanoseconds. Without truncation, the returned `expiresAt` would differ from the stored one. And because pgjdbc rounds the instants it binds, Java's `HoldRules.isLive` and the SQL cap count could disagree within half a microsecond. `now` is therefore truncated once, at the top of `hold()`. *(PR #16 round 1, N1.)*
 6. **The stored response is the service result, not an adapter's wire form.** `hold_request.response_json` holds `HoldResult` as Jackson 3 JSON, and a replay deserializes it back into a `HoldResult`. Plans 4 and 5 render that record their own way, so the stored form never ties the two adapters together.
    - **The stored form uses a mapper `HoldService` builds itself** (`HoldService.STORED_FORM`, a default `JsonMapper.builder().build()`), **not the Boot-configured bean**. If Plan 4 changes the application-wide Jackson settings (for example a global snake_case naming strategy, since the spec's wire names are snake_case), rows already stored inside their 24-hour replay window would otherwise stop deserializing, and a replay would become a 500. *(PR #16 round 1, S1.)*
 7. **The request fingerprint** (`hold_request.request_hash`) is SHA-256, in lowercase hex, over the text `<event_id>:` followed by each requested seat id in ascending order, each with a `,` after it. Duplicates are kept: a request with duplicates is rejected, and a rejected request is never stored, so they can't cause a false replay. The function lives in `domain`, because `java.security` is JDK-only.
-8. **Idempotency keys must be 1 to 200 characters and not blank.** The spec requires a key but sets no format. Anything outside that is `invalid_request` with `parameter: idempotency_key`.
+8. **Idempotency keys must be 1 to 200 characters, not blank, and free of U+0000.** The spec requires a key but sets no format. Anything outside that is `invalid_request` with `parameter: idempotency_key`. Postgres `text` cannot store NUL: binding a key that contains one fails with SQLState `22021`, which `SqlFailures` doesn't translate, so without this check a JSON string such as `"k\u0000ey"` would reach the caller as a 500. *(PR #16 round 3, S1.)*
 9. **Error detail keys**, which both adapters will render (spec §6):
    - `seat_taken` → `seat_ids`: the seat whose insert failed;
    - `sales_not_open` → `sales_open_at`;
@@ -74,11 +74,11 @@ Each is listed so a reviewer can reject it individually.
    - `hold_limit_exceeded` → `max_active_hold_groups`;
    - `invalid_request` → `parameter`, plus `seat_ids` when seats are the problem.
 10. **Service tests use their own Spring context, with a settable `TestClock` as the primary `Clock`.** That context starts its own Postgres container next to the one the repository tests use, because Spring caches contexts per configuration. This costs one container start, and keeps the existing tests on the real clock.
-11. **SpotBugs `EI_EXPOSE_REP2` is excluded on the constructors of `service` classes named `*Service` only.** With no exclusion, `HoldService`'s constructor raises a Medium finding because it stores the injected `LockingGateway`. SpotBugs 4.10.4 (the analyzer run by spotbugs-maven-plugin 4.10.4.1) judges it mutable, apparently by a name heuristic (`setLockTimeout`). The draft also stored the Boot `JsonMapper`, which drew a second finding; decision 6 removed that field. This was observed when the plan's code was built in a scratch worktree on 2026-10-14. A Spring service keeping its injected singletons is intended, and copying them would be wrong.
+11. **SpotBugs `EI_EXPOSE_REP2` is excluded on the constructors of `service` classes named `*Service` only.** With no exclusion, `HoldService`'s constructor raises a Medium finding because it stores the injected `LockingGateway`. SpotBugs 4.10.4 (the analyzer run by spotbugs-maven-plugin 4.10.4.1) judges it mutable by a name heuristic: `MutableClasses.looksLikeASetter` counts a method as setter-like when its name starts with one of a list of prefixes and it doesn't return the class's own type. The prefixes are `set`, `put`, `add`, `insert`, `delete`, `remove`, `erase`, `clear`, `push`, `pop`, `enqueue`, `dequeue`, `write`, `append` and `replace`, so the gateway's `setLockTimeout` matches, and from Task 2 on so does `insertHold`. *(PR #16 round 3, N1; read from the pinned jar with `javap`.)* The draft also stored the Boot `JsonMapper`, which drew a second finding; decision 6 removed that field. This was observed when the plan's code was built in a scratch worktree on 2026-10-14. A Spring service keeping its injected singletons is intended, and copying them would be wrong.
    - **The exclusion is narrow:** that bug pattern, `<init>` methods, classes matching `io.github.markusluisflores.frontrow.service.*Service`. Records in that package (`HoldCommand`, `HoldResult`) stay covered. Round 1 found that the first version, matching the whole package, also silenced record constructors. *(PR #16 round 1, N2.)*
    - **Probe:** a temporary non-constructor setter and getter on `HoldService`, storing and returning a `java.util.Date`, were both still reported (`EI_EXPOSE_REP2` and `EI_EXPOSE_REP`).
    - **Rejected alternatives:**
-     - Renaming `setLockTimeout` to dodge the heuristic would be gaming the tool, and the next service with an injected collaborator would hit the same finding.
+     - Renaming gateway methods to dodge the heuristic. Renaming `setLockTimeout` alone would not clear the finding, because `insertHold` matches too. Renaming every match would bend the gateway's names to a tool, and the next service with an injected collaborator could hit the same finding.
      - `@SuppressFBWarnings` would need a new annotations dependency on the main classpath.
 
 ## File Structure
@@ -340,7 +340,7 @@ Restore it, then run `git diff src/main` and confirm it shows **no** change to e
 
 - [ ] **Step 6: Assert why the properties binding fails**
 
-In `FrontRowPropertiesTest`, add this import:
+In `FrontRowPropertiesTest`, add these imports:
 
 ```java
 import org.springframework.boot.context.properties.bind.validation.BindValidationException;
@@ -453,7 +453,7 @@ git commit -m "test(persistence): prove the seat_hold row locks make writers wai
 **Interfaces:**
 - Consumes: `LockWaits` (Task 1).
 - Produces, for Task 3:
-  - `LockingGateway#claimIdempotencyKey(String owner, String idempotencyKey, String requestHash, Instant now) : boolean`. True means this call inserted the key. False means the key already exists, and the statement waits first if the other transaction is still in flight.
+  - `LockingGateway#claimIdempotencyKey(String owner, String idempotencyKey, String requestHash, Instant now) : boolean`. True means this call inserted the key. False means the key already exists: committed by another request, or claimed earlier in this same transaction. If another transaction holding the key is still in flight, the statement waits for it first.
   - `LockingGateway#findHoldRequest(String owner, String idempotencyKey) : Optional<StoredHoldRequest>`
   - `LockingGateway#recordHoldResponse(String owner, String idempotencyKey, UUID holdGroupId, String responseJson) : void`
   - `LockingGateway#insertHold(long eventSeatId, UUID holdGroupId, String owner, Instant expiresAt, Instant now) : long` (the new row's id)
@@ -642,7 +642,8 @@ In `LockingGateway.java`:
     /**
      * Step 1 (hold creation only): inserts the idempotency key, or does nothing when it exists. While another
      * transaction holding the same key is still running, Postgres makes this insert wait for it (spec §5). Returns
-     * true when this call inserted the key; false means a committed request already owns it.
+     * true when this call inserted the key; false means the key already exists: committed by another request, or
+     * claimed earlier in this transaction.
      */
     public boolean claimIdempotencyKey(String owner, String idempotencyKey, String requestHash, Instant now) {
         return jdbc.sql("""
@@ -1523,9 +1524,14 @@ class HoldServiceTest {
     }
 
     @Test
-    void tooManySeatsReportsTheMaximum() {
+    void tooManySeatsIsRejectedBeforeTheKeyIsClaimed() {
         List<Long> seats = fixtures.eventSeats(eventId, venueId, properties.maxSeatsPerHold() + 1);
+        holds.hold(command("alice", List.of(seats.getFirst()), "k1"));
+
+        // Reusing a committed key for a different request: had the claim run first, this would be
+        // idempotency_key_reused (decision 3).
         DomainException rejected = rejection(() -> holds.hold(command("alice", seats, "k1")));
+
         assertThat(rejected.errorCode()).isEqualTo(ErrorCode.TOO_MANY_SEATS);
         assertThat(rejected.details()).containsEntry("max_seats", properties.maxSeatsPerHold());
     }
@@ -1547,21 +1553,30 @@ class HoldServiceTest {
     }
 
     @Test
-    void malformedParametersAreNamedBeforeTheDatabaseIsTouched() {
+    void malformedParametersAreNamedBeforeTheKeyIsClaimed() {
         long seat = fixtures.eventSeats(eventId, venueId, 1).getFirst();
-        List<String> badKeys = new ArrayList<>(List.of("", "   ", "x".repeat(HoldService.MAX_IDEMPOTENCY_KEY_LENGTH + 1)));
+        holds.hold(command("alice", List.of(seat), "k1"));
+
+        // Reuses the committed key for a different request: had the claim run first, this would be
+        // idempotency_key_reused. So this case fails if validation ever moves behind the claim (decision 3).
+        DomainException noSeats = rejection(() -> holds.hold(command("alice", List.of(), "k1")));
+        assertThat(noSeats.errorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+        assertThat(noSeats.details()).containsEntry("parameter", "event_seat_ids");
+
+        // The last key holds a NUL: Postgres text cannot store one, so binding it would fail with 22021 (decision 8).
+        List<String> badKeys = new ArrayList<>(
+                List.of("", "   ", "x".repeat(HoldService.MAX_IDEMPOTENCY_KEY_LENGTH + 1), "k\u0000ey"));
         badKeys.add(null);
         for (String key : badKeys) {
             DomainException rejected = rejection(() -> holds.hold(command("alice", List.of(seat), key)));
             assertThat(rejected.errorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
             assertThat(rejected.details()).containsEntry("parameter", "idempotency_key");
         }
-        DomainException noSeats = rejection(() -> holds.hold(command("alice", List.of(), "k1")));
-        assertThat(noSeats.details()).containsEntry("parameter", "event_seat_ids");
         DomainException nullSeat = rejection(() -> holds.hold(command("alice", Arrays.asList(seat, null), "k1")));
         assertThat(nullSeat.errorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
         assertThat(nullSeat.details()).containsEntry("parameter", "event_seat_ids");
-        assertThat(fixtures.holdRequestsOwnedBy("alice")).isZero();
+        // Only the first, well-formed request was recorded.
+        assertThat(fixtures.holdRequestsOwnedBy("alice")).isEqualTo(1);
     }
 
     private HoldCommand command(String owner, List<Long> seats, String key) {
@@ -1664,6 +1679,10 @@ public class HoldService {
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public HoldResult hold(HoldCommand command) {
         requireWellFormed(command);
+        // On the raw list, before the fingerprint and the key claim: an oversized request costs no sort and no lock.
+        if (command.eventSeatIds().size() > properties.maxSeatsPerHold()) {
+            throw new DomainException(ErrorCode.TOO_MANY_SEATS, Map.of("max_seats", properties.maxSeatsPerHold()));
+        }
         // timestamptz keeps microseconds; one truncation here keeps every Java check and SQL bind on one instant.
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         String fingerprint = HoldRequestFingerprint.of(command.eventId(), command.eventSeatIds());
@@ -1728,9 +1747,6 @@ public class HoldService {
         if (!duplicates.isEmpty()) {
             throw invalidSeats(duplicates);
         }
-        if (seen.size() > properties.maxSeatsPerHold()) {
-            throw new DomainException(ErrorCode.TOO_MANY_SEATS, Map.of("max_seats", properties.maxSeatsPerHold()));
-        }
         return new ArrayList<>(new TreeSet<>(seen));
     }
 
@@ -1768,7 +1784,8 @@ public class HoldService {
 
     private static void requireWellFormed(HoldCommand command) {
         String key = command.idempotencyKey();
-        if (key == null || key.isBlank() || key.length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
+        // Postgres text cannot hold U+0000: binding it fails with 22021, a 500 rather than invalid_request.
+        if (key == null || key.isBlank() || key.length() > MAX_IDEMPOTENCY_KEY_LENGTH || key.indexOf('\u0000') >= 0) {
             throw invalidParameter("idempotency_key");
         }
         if (command.eventSeatIds().isEmpty()) {
@@ -1876,6 +1893,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Starts every call at once and collects what each one returned or threw. Use a dedicated virtual-thread executor,
@@ -1916,8 +1934,14 @@ public final class Race {
         }
         go.countDown();
         List<Outcome<T>> outcomes = new ArrayList<>();
-        for (Future<Outcome<T>> future : futures) {
-            outcomes.add(future.get(60, TimeUnit.SECONDS));
+        try {
+            for (Future<Outcome<T>> future : futures) {
+                outcomes.add(future.get(60, TimeUnit.SECONDS));
+            }
+        } catch (TimeoutException stuck) {
+            // Interrupt every racer still running, so none outlives the test and holds its locks into the cleanup.
+            futures.forEach(future -> future.cancel(true));
+            throw stuck;
         }
         return outcomes;
     }
@@ -1944,9 +1968,11 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -2011,8 +2037,13 @@ class HoldConcurrencyTest {
         }
     }
 
-    /** Test 1's own proof: drop uq_claimed_seat and the same race lets several racers through (decision 4). */
+    /**
+     * Test 1's own proof: drop uq_claimed_seat and the same race lets several racers through (decision 4). The index
+     * is shared by every later test in this context, so its restore must run even when the race or the cleanup fails,
+     * and the timeout stops a stuck restore from hanging the build.
+     */
     @Test
+    @Timeout(value = 2, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void withoutTheClaimIndexTheSameRaceHasSeveralWinners() throws Exception {
         long seat = fixtures.eventSeats(eventId, venueId, 1).getFirst();
         jdbc.sql("DROP INDEX uq_claimed_seat").update();
@@ -2023,10 +2054,16 @@ class HoldConcurrencyTest {
                     .filteredOn(Race.Outcome::won)
                     .hasSizeGreaterThan(1);
         } finally {
-            fixtures.truncateAll();
-            jdbc.sql("CREATE UNIQUE INDEX uq_claimed_seat ON seat_hold (event_seat_id)"
-                            + " WHERE status IN ('ACTIVE', 'CONVERTED')")
-                    .update();
+            try {
+                // Only this test's rows, which would block the index. A TRUNCATE would need an exclusive table lock.
+                jdbc.sql("DELETE FROM seat_hold WHERE event_seat_id = :seat")
+                        .param("seat", seat)
+                        .update();
+            } finally {
+                jdbc.sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_claimed_seat ON seat_hold (event_seat_id)"
+                                + " WHERE status IN ('ACTIVE', 'CONVERTED')")
+                        .update();
+            }
         }
     }
 
@@ -2202,11 +2239,12 @@ git commit -m "test(service): race hold creation against real Postgres"
 | §5: only `uq_claimed_seat` → `seat_taken`, naming the seat; other `23505` → 500; `40P01`/`40001` → `contention_retry` | Task 3 (`SqlFailures`, unit-tested; `aTakenSeatIsNamedAndNothingIsHeld`) |
 | §5: READ COMMITTED set explicitly | Task 3 (`@Transactional(isolation = READ_COMMITTED)`; `TransactionIsolationTest`) |
 | §5 *Idempotent replay*: canonical hash; only successes recorded; concurrent retry waits then replays; different hash → `idempotency_key_reused`; replay after expiry returns the original | Task 3 (fingerprint tests; replay, reuse, failed-then-retried and post-expiry tests); Task 4 test 5 |
-| §5 rev 2.6.2: replay is JSON-equal, not byte-equal | Task 2 (`readsBackTheStoredResponseAsEqualJson`); Task 3 (parsed-tree comparison); Task 4 test 5 (record equality) |
+| §5 rev 2.6.2: replay is JSON-equal, not byte-equal | Task 2 (`readsBackTheStoredResponseAsEqualJson`); Task 3 (stored JSON deserialized to `HoldResult` and compared as a record); Task 4 test 5 (record equality) |
 | §5 centrepiece tests 1, 3, 4, 5, 7 | Task 4 |
 | §5 / §12: test 1 genuinely fails if `uq_claimed_seat` is removed | Task 4 (`withoutTheClaimIndexTheSameRaceHasSeveralWinners`, every build) |
 | §6 guardrails: seats-per-hold cap, active-group cap, idempotency key required | Task 3 |
 | §6: `hold_seats` returns group id, seats, total, `expires_at` | Task 3 (`HoldResult`) |
+| §6 guardrails: request size. `hold()` rejects more than `max-seats-per-hold` ids before the fingerprint and the key claim (decision 3), but `HoldCommand` copies whatever list it is given, and nothing bounds the request body | Task 3 (`tooManySeatsIsRejectedBeforeTheKeyIsClaimed`); **Plans 4 and 5** bound the request at the adapter: the `event_seat_ids` JSON array length and the request body size |
 | §5 centrepiece tests 2 and 6; confirm; release; event PATCH/cancel; sweeper; `hold_request` purge; `55P03` → `contention_retry` on PATCH | **Plan 3B** |
 | PR #10: seat_hold row-lock wait test | Task 1 (both clauses, each with a mutation check); ADR-005 updated in Task 2 Step 5 |
 | PR #10: READ COMMITTED explicitly | Task 3 |
@@ -2225,7 +2263,7 @@ git commit -m "test(service): race hold creation against real Postgres"
 
 Run by the plan author on 2026-10-14 against the `superpowers:writing-plans` checklist.
 
-1. **Spec coverage.** The table above has a row for every §5 hold-creation requirement, every PR #10 carry-forward item and every Plan 2 review carry-forward. Items outside 3A's scope are marked **3B** or **Plan 5**, never left blank.
+1. **Spec coverage.** The table above has a row for every §5 hold-creation requirement, every PR #10 carry-forward item and every Plan 2 review carry-forward. Items outside 3A's scope are marked **3B** or **Plans 4 and 5**, never left blank.
 2. **Placeholder scan.** A grep for `TBD|TODO|implement later|fill in|Similar to Task|appropriate error` finds nothing. Task 4's `T` is a measured value the implementer reads from Surefire, not an estimate.
 3. **Type consistency.** Every gateway, fixture and support method a later task calls appears with the same name and signature in the task that defines it, checked by grep.
 4. **Sibling reuse.**
@@ -2262,4 +2300,11 @@ Run by the plan author on 2026-10-14 against the `superpowers:writing-plans` che
        - The narrowed N2 filter is what reported it. The round-1 filter, which covered the whole package, would have silenced it.
        - The fix: `HoldCommand` keeps `List.copyOf` and rejects a null id first, with a loop, because `List.of(...).contains(null)` throws.
      - **N2 probe.** With the final filter, a public `record ProbeRecord(java.util.Date when)` placed in `service` has both its constructor (`EI_EXPOSE_REP2`) and its accessor (`EI_EXPOSE_REP`) reported. A probe must run `spotbugs:spotbugs` before `spotbugs:check`: `spotbugs:check` on its own reads the last report and analyses nothing.
+   - **After PR #16 round 3 (review 5538889630: 0 BLOCKER, 3 SUGGESTION, 5 NIT; S1-S3 and N1-N4 adopted, N5 parked for the spec and Plan 4).**
+     - The same step-by-step check was re-run on a fresh worktree of `main` (`8e2f57f`): **24/24 checks passed**, ending at `./mvnw verify` with **140 test runs, SpotBugs 0**. No test count changed. The round-3 tests were adjusted in place: `tooManySeatsIsRejectedBeforeTheKeyIsClaimed` replaces `tooManySeatsReportsTheMaximum`, and `malformedParametersAreNamedBeforeTheKeyIsClaimed` replaces `malformedParametersAreNamedBeforeTheDatabaseIsTouched`.
+     - **Three new mutation checks, each run on the end state and each failing for the predicted reason:**
+       - S1, the NUL check removed from `requireWellFormed`: the key claim throws `DataIntegrityViolationException` (`invalid byte sequence for encoding "UTF8": 0x00`) instead of a `DomainException`.
+       - S3, the raw size check removed from `hold()`: `expected: TOO_MANY_SEATS but was: IDEMPOTENCY_KEY_REUSED`.
+       - N4, `requireWellFormed` moved behind the key claim: `expected: INVALID_REQUEST but was: IDEMPOTENCY_KEY_REUSED`.
+     - The S2 restore (`@Timeout` in `SEPARATE_THREAD` mode, a scoped `DELETE`, then `CREATE UNIQUE INDEX IF NOT EXISTS` in a nested `finally`) passed in every run. Its failure paths are reasoned, not reproduced.
 6. **Verification-matrix crossing.** Task 4 has two independent dimensions: concurrency (sequential or raced) and identity (distinct owners, or one owner). The two most likely to interact are crossed on purpose. Test 4 races **one owner**, so the advisory lock and the cap check interact under contention. Test 5 races **one owner with one key**, so the key wait and the replay read interact. Tests 1 and 3 race distinct owners, so that neither lock serializes the race they exist to prove.
