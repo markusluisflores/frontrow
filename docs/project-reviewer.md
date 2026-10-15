@@ -696,12 +696,13 @@ deliberate workflow audits, and a project session just writes them down.
 
 ---
 
-## Checking a Plan Before Anyone Builds It, and Miscounting My Own Review Rounds (2026-10-15)
+## Checking a Plan Before Anyone Builds It, and a Miscounted Review Round (2026-10-15)
 
 **What happened.** Plan 3 (the first write path) was estimated at ~3,400 lines, 1.7× the plans already reviewed.
 Since the plan is what gets approved, I split it in two: 3A, hold creation, and 3B, everything that acts on an
 existing hold. 3A was written, I read it, and it was reviewed on PR #16 over three fresh rounds before merging.
-**None of 3A's code exists yet.** What is real is how the plan was checked.
+**None of 3A's code exists yet.** What is real is how the plan was checked. The orchestrating session and its
+subagents did the checking below.
 
 **Executing a plan's code before approving it.**
 - The plan's code blocks were applied by script to a scratch copy of `main` and built. That first check found three
@@ -715,18 +716,20 @@ existing hold. 3A was written, I read it, and it was reviewed on PR #16 over thr
   compile failures, test counts, mutation messages. It held 24 of 24, and caught a regression in the round-1 fixes.
 
 **Interview talking point:** "For a plan that subagents will execute task by task, the risk isn't the finished
-code; it's the steps in between. So before approval I replay the plan in order against a clean checkout and assert
-every step's stated outcome, including the steps that are meant to fail. The first version of that check only built
-the final state, and a reviewer found a step that couldn't compile. That's what made me check every step."
+code; it's the steps in between. So in my workflow, before I approve a plan, it gets replayed in order against a
+clean checkout, and every step's stated outcome is asserted, including the steps that are meant to fail. The AI
+session builds and runs that replay; I read what it finds. The first version of the check only built the final
+state, and a reviewer found a step that couldn't compile. That's why every step is checked now."
 
-**A claim I got wrong.**
+**A miscount I caught.**
 - The review rule is: stop after **two consecutive** BLOCKER-free rounds, counting **fresh** reviewers only. A
   reviewer resumed to verify its own findings doesn't count.
 - After fresh round 1 found a BLOCKER and fresh round 2 found none, the orchestrating session told me the PR was
   ready to merge: "two review rounds, no BLOCKER left open". It had counted a resumed-plus-fresh pair as "round 2",
   and treated round 1, whose BLOCKER had been fixed, as if it were clean. That's one clean round, not two.
 - I asked whether the rule wasn't two clean rounds. It is. A third fresh round ran, found no BLOCKER (three
-  SUGGESTIONs, fixed and verified), and the PR merged after that.
+  SUGGESTIONs: two fixed and verified, one partly fixed, its rest carried into the plan's Task 4), and the PR
+  merged after that.
 - **Why the gate didn't catch it:** the checklist the session fills in before saying "ready to merge" asks for the
   round count, each round's blocker status, and whether a resumed+fresh pair followed the last fix. All three could
   be stated truthfully under the miscount. The gate checks proxies for the rule, not the rule itself.
@@ -736,8 +739,8 @@ wasn't. The rule needs two consecutive clean rounds from fresh reviewers. It rep
 open', but the first round had a BLOCKER, and fixing it doesn't make it a clean round. I caught it by asking. What
 interests me is why its checklist didn't stop it: it asks for three facts that could all be stated truthfully, and
 none of them is the actual condition. It's a pattern I've seen before in this project, a prose gate that can be
-satisfied without its substance. I logged it for our process audit; one candidate fix is making the gate state the
-condition itself."
+satisfied without its substance. I had the session log it for my next process audit; one candidate fix is making
+the gate state the condition itself."
 
 *Be accurate if pressed:* that fix is **proposed, not adopted** (frontrow queue item 8). The same review cycle also
 exposed two concurrent reviewers sharing one scratch folder, where one deleted the other's working copy (queue item
@@ -755,7 +758,7 @@ exposed two concurrent reviewers sharing one scratch folder, where one deleted t
 | 2026-10-02 (wrap-up) | Plan 1 executed and merged, plan 2 written and merged, Dependabot's first two bumps merged. Added *Review as the Deliverable*, corrected the stack table, and took the scoping talking point out of the past tense. | **DRIFT FOUND** — 12 items, the sharpest being the inverse of this guide's usual risk: "What We Built — *(Nothing yet.)*" **denied** work that exists. Also: the banner read as "Phase 1 landed" when plan 1 of 5 landed; the not-built list omitted entities, repositories, security chains, seed data and Docker; "JUnit 5" contradicted `CLAUDE.md`; springdoc and Docker were listed as if present; "pin versions at scaffold time" was stale; and the scoping point described a finished week in the past tense on day 15 with no domain code |
 | 2026-10-05 (second wrap-up) | ADR-005 and spec rev 2.6.2 merged (PR #13). The persistence-split entry now cites ADR-005 instead of "still owed". The posting-failure section now says the structural fixes were drafted, reviewed (2 BLOCKERs), withdrawn and parked, not merely "candidates", and adds the config-repo-checkout-is-live lesson. | Clean on accuracy: a fresh check posted to PR #14 (review 5422689734) found 0 drift and 1 nit, a journal citation pointing at the wrong memory file, which is now fixed. The staleness pass found nothing still calling ADR-005 owed or the posting fixes live |
 | 2026-10-05 (wrap-up) | Plan 2 executed and merged (PR #10). Rewrote the banner and *What We Built* to cover the domain foundations, added a persistence row to the stack table, added "built" evidence to concepts 4 and 7 (with the unproven seat-row locks stated), added concept 8 (silent failures made loud), two bug stories, a *now built* note on the plan-2 review findings, and the subagent-execution / posting-failure section. | **DRIFT FOUND** by a fresh check posted to PR #11 (review 5420599658): 3 drift, 5 nits, all fixed. The sharpest drift was the author's own count: "12 review dispatches" told not to post was really 10 instructions to 9 agents, with the 11th review carrying no posting line at all. The other two drifts were stale: "21 constraint tests, each inserting a violating row" (really 22 runs, 3 of them acceptance checks), and "none of it implemented" in the review-history section after plan 2 built part of it |
-| 2026-10-15 (wrap-up) | Plan 3A written, reviewed over 3 fresh rounds and merged as a plan (PR #16); no code. Banner: 6 plans, 3A not executed. Added *Checking a Plan Before Anyone Builds It*. Corrected the posting-failure section: the early draft PR was rejected, and the merge-time hook is live (since 2026-10-11). | **DRIFT FOUND**: 3 drift and 4 nits, all fixed. The sharpest: the miscount section was written with the AI controller as "I", which in Markus's mouth claims a mistake he didn't make and calls him "the user" who caught it. Also: a "not adopted" line contradicting the live hook below it, and a talking point stating a cause the sources don't ("counted a verification pass"). Nits: "plan 3" references not split into 3A/3B, a single "concrete fix" where the queue lists three candidates, "all three were true", and the live hook's limit left unstated |
+| 2026-10-15 (wrap-up) | Plan 3A written, reviewed over 3 fresh rounds and merged as a plan (PR #16); no code. Banner: 6 plans, 3A not executed. Added *Checking a Plan Before Anyone Builds It*. Corrected the posting-failure section: the early draft PR was rejected, and the merge-time hook is live (since 2026-10-11). | **DRIFT FOUND**: 3 drift and 4 nits, all fixed. The sharpest: the miscount section was written with the AI controller as "I", which in Markus's mouth claims a mistake he didn't make and calls him "the user" who caught it. Also: a "not adopted" line contradicting the live hook below it, and a talking point stating a cause the sources don't ("counted a verification pass"). Nits: "plan 3" references not split into 3A/3B, a single "concrete fix" where the queue lists three candidates, "all three were true", and the live hook's limit left unstated. PR #17's round-1 review (5539628551) found the "I"-as-controller drift surviving in the section heading and its bold lead, and the talking points claiming the session's replay and logging as Markus's own work; both fixed, along with "three SUGGESTIONs, fixed and verified" (one was only partly fixed) |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified

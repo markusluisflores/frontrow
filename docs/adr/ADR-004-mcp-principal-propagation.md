@@ -53,7 +53,7 @@ than inside the tool method.
 
 ### Consequences
 
-* ✅ Plan 3's adapter reads the owner via `McpTransportContext` and passes it
+* ✅ Plan 5's MCP adapter reads the owner via `McpTransportContext` and passes it
   to the application service as a plain `String`, so the domain core stays
   free of MCP types.
 * ⚠️ The spike's chain disables CSRF (`SpikeConfig.spikeMcpChain`), which
