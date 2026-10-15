@@ -3,7 +3,9 @@
 **Date:** 2026-09-18
 **Status:** Accepted
 
-Not yet implemented. No code exists; this records a design decision. The full
+Not yet implemented. The REST and MCP adapters and the two credential chains this
+governs arrive in Phase 1 plans 4 and 5. Plans 1 to 3A build only what sits beneath
+them (plan 1's MCP spike aside). The full
 design is in the spec, `docs/superpowers/specs/2026-09-17-frontrow-design.md`
 §3 (*Caller identity*) and §6.
 
