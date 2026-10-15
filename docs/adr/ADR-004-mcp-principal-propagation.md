@@ -72,3 +72,5 @@ than inside the tool method.
   production bean is a later plan's job; it does not exist yet.
 * ⚠️ The spike test stays in the suite as a tripwire: a Spring AI upgrade that
   changes tool threading fails it.
+
+*Plan numbering updated 2026-10-15 (PR #17) to the current six-plan Phase 1, after the 2026-10-02 re-plan and the 2026-10-14 split of Plan 3 into 3A and 3B; no decision changed.*

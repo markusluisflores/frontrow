@@ -54,4 +54,6 @@ How should the application talk to Postgres?
 * ⚠️ Two styles to keep apart. A Plan 3A or 3B service must not load `SeatHold` entities inside a locking transaction. With no `@DynamicUpdate`, a dirty entity's flush rewrites every column, and that can overwrite a status the gateway's `UPDATE` just changed. PR #10's description carries this forward.
 * ⚠️ Raw JDBC sees pgjdbc's type support directly. pgjdbc 42.7.13 has no `Instant` conversion, so every JDBC boundary converts through `OffsetDateTime`. Entities keep `Instant`, because Hibernate maps it itself.
 * ⚠️ `SET LOCAL lock_timeout` cannot take a bind parameter, so its value is a literal. It is formatted from a `long` and comes from configuration bounded to 1 ms–1 min (plan 2 decision 4, as corrected in PR #12). No request data reaches it.
-* ⚠️ Not yet proven: the seat-hold row locks block a concurrent writer. In a throwaway mutation test, PR #10's posting review deleted both seat-hold `FOR UPDATE` clauses, and every test still passed. The clauses are still in the shipped code. Plan 3 owns that test.
+* ⚠️ Not yet proven: the seat-hold row locks block a concurrent writer. In a throwaway mutation test, PR #10's posting review deleted both seat-hold `FOR UPDATE` clauses, and every test still passed. The clauses are still in the shipped code. Plan 3A owns that test.
+
+*Plan numbering updated 2026-10-15 (PR #17) to the current six-plan Phase 1, after the 2026-10-02 re-plan and the 2026-10-14 split of Plan 3 into 3A and 3B; no decision changed.*

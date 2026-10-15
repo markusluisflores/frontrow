@@ -405,10 +405,13 @@ those are the differentiating parts.
 The cuttable parts were the organiser endpoints and the breadth of seed data."
 
 **Be ready for the timeline question, because the honest answer is better than a
-dodge.** The spec estimated "a full focused week" for Phase 1. Eighteen days in,
-the foundation and the domain foundations are built. No write path exists yet,
-so nothing can hold or buy a seat. The reason is not drift: Phase 1 was
-re-planned from 3 documents into 5 after two proved too large to review, and
+dodge.** The spec estimated "a full focused week" for Phase 1. Twenty-eight days
+in (2026-09-17 to 2026-10-15), the foundation and the domain foundations are
+built, and Plan 3A, the first write path, is written and reviewed but not yet
+executed. No write path exists yet, so nothing can hold or buy a seat. The reason
+is not drift: Phase 1 was re-planned from 3 documents into 5 when Plan 2 proved
+too large to review, and into 6 when Plan 3 did too (split into 3A and 3B on
+2026-10-14), and
 every plan has gone through multi-round review before any code was written —
 which caught five defects in plan 2 alone that would each have failed at runtime
 or build time. That is a deliberate trade of calendar time against defect cost,
@@ -450,11 +453,17 @@ These were design findings. Plan 2 (PR #10) built the lock-order primitives and
 lazy expiry as an immediate guarded `UPDATE`, both with tests. The cancel, confirm
 and release paths that use them are plan 3B, and are not built.
 
-### Reviewing Until the Rule Is Met, and a Claim I Got Wrong
+### Seven Review Rounds, and a Claim I Got Wrong
 
 Revision 2 went through seven review rounds before merging. After every fix
 pass, the reviewer that raised the findings resumed to verify them, and a fresh
 reviewer read cold. Blockers per round were 2, 1, 2, 1, 0, 1 and 0.
+Under the review standard as written then, that stopped one clean round early:
+round 7 was the only BLOCKER-free fresh round after round 6's BLOCKER, and the
+standard's one exception, for an escalated round on a stronger model, did not
+apply, because every reviewer ran on the session's own model. That is the same
+shortfall as the PR #16 miscount in the 2026-10-15 section below: one clean
+round, not two.
 
 The round-6 blocker was mine. In round 5, I wrote a reviewer's suggestion into
 the spec: that Hibernate's PostgreSQL dialect ignores a positive lock-timeout
