@@ -13,19 +13,22 @@ final class SalesGate {
     private SalesGate() {}
 
     static void requireOpen(EventRow event, Instant now) {
-        switch (event.status()) {
-            case DRAFT -> throw salesNotOpen(event);
-            case CANCELLED -> throw DomainException.of(ErrorCode.SALES_CLOSED);
-            case ON_SALE -> {
-                switch (SalesWindow.of(event.salesOpenAt(), event.salesCloseAt())
-                        .state(now)) {
-                    case BEFORE -> throw salesNotOpen(event);
-                    case AFTER -> throw DomainException.of(ErrorCode.SALES_CLOSED);
-                    case OPEN -> {
-                        // on sale
-                    }
-                }
-            }
+        // Switch expressions, no default: a new EventStatus or WindowState constant is a compile error, not a gate
+        // that fails open.
+        DomainException rejection =
+                switch (event.status()) {
+                    case DRAFT -> salesNotOpen(event);
+                    case CANCELLED -> DomainException.of(ErrorCode.SALES_CLOSED);
+                    case ON_SALE ->
+                        switch (SalesWindow.of(event.salesOpenAt(), event.salesCloseAt())
+                                .state(now)) {
+                            case BEFORE -> salesNotOpen(event);
+                            case AFTER -> DomainException.of(ErrorCode.SALES_CLOSED);
+                            case OPEN -> null;
+                        };
+                };
+        if (rejection != null) {
+            throw rejection;
         }
     }
 

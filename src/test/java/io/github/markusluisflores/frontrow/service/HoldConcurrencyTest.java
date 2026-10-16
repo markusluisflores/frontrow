@@ -88,7 +88,7 @@ class HoldConcurrencyTest {
     /**
      * Test 1's own proof: drop uq_claimed_seat and the same race lets several racers through (decision 4). The index
      * is shared by every later test in this context, so the restore is always attempted, and it succeeds when the
-     * scoped DELETE does. If that DELETE fails, the CREATE fails too, on the leftover duplicate rows, so this test
+     * scoped DELETE does. If that DELETE fails, the CREATE fails too when the race left duplicate rows, so this test
      * fails and the build goes red; the index then stays dropped for the rest of this context. The timeout fails this
      * test but cannot interrupt a JDBC call blocked on a lock; that statement stays queued in Postgres, and later
      * writers in this context queue behind it.
