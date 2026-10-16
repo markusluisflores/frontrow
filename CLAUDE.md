@@ -25,7 +25,7 @@ lock rule below. Plan 1 was executed on `feat/phase-1-foundation`:
 executed on `feat/phase-1-domain-foundations` and merged as PR #10 (`e432c3c`,
 2026-10-05): `docs/superpowers/plans/2026-10-02-phase-1-plan-2-domain-foundations.md`.
 PR #10's description carries the plan deviations and the list Plan 3 must address.
-Plan 3A was merged as PR #16 (`ed1566a`) and executed on `feat/phase-1-hold-creation` (PR #18):
+Plan 3A was merged as PR #16 (`ed1566a`) and executed on `feat/phase-1-hold-creation`, merged as PR #18 (`4de410e`, 2026-10-16):
 `docs/superpowers/plans/2026-10-14-phase-1-plan-3a-hold-creation.md`.
 
 ## Deferred bootstrap items — owed by the Phase 1 scaffold task
