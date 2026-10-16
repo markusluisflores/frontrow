@@ -1324,7 +1324,7 @@ class TransactionIsolationTest {
 }
 ```
 
-`src/test/java/io/github/markusluisflores/frontrow/service/HoldServiceTest.java`:
+`src/test/java/io/github/markusluisflores/frontrow/service/HoldServiceTest.java` *(Erratum E5: spec rev 2.6.3 makes `DRAFT` `not_found`, which supersedes `aDraftEventIsNotOpenYet`.)*:
 
 ```java
 package io.github.markusluisflores.frontrow.service;
@@ -1630,7 +1630,7 @@ public interface EventSeatRepository extends JpaRepository<EventSeat, Long> {
 }
 ```
 
-`src/main/java/io/github/markusluisflores/frontrow/service/HoldService.java`:
+`src/main/java/io/github/markusluisflores/frontrow/service/HoldService.java` *(Erratum E2: the built `requireWellFormed` also rejects a key that is not well-formed UTF-16. Erratum E5: spec rev 2.6.3 moves the `now` read to after the event-row lock.)*:
 
 ```java
 package io.github.markusluisflores.frontrow.service;
