@@ -11,6 +11,7 @@ import io.github.markusluisflores.frontrow.persistence.EventSeat;
 import io.github.markusluisflores.frontrow.persistence.EventSeatRepository;
 import io.github.markusluisflores.frontrow.persistence.LockingGateway;
 import io.github.markusluisflores.frontrow.persistence.StoredHoldRequest;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -166,12 +167,21 @@ public class HoldService {
     private static void requireWellFormed(HoldCommand command) {
         String key = command.idempotencyKey();
         // Postgres text cannot hold U+0000: binding it fails with 22021, a 500 rather than invalid_request.
-        if (key == null || key.isBlank() || key.length() > MAX_IDEMPOTENCY_KEY_LENGTH || key.indexOf('\u0000') >= 0) {
+        // Postgres would silently store an unpaired surrogate as '?', aliasing a different key.
+        if (key == null
+                || key.isBlank()
+                || key.length() > MAX_IDEMPOTENCY_KEY_LENGTH
+                || key.indexOf('\u0000') >= 0
+                || !isWellFormedUtf16(key)) {
             throw invalidParameter("idempotency_key");
         }
         if (command.eventSeatIds().isEmpty()) {
             throw invalidParameter("event_seat_ids");
         }
+    }
+
+    private static boolean isWellFormedUtf16(String s) {
+        return s.equals(new String(s.getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8));
     }
 
     private static DomainException invalidParameter(String parameter) {

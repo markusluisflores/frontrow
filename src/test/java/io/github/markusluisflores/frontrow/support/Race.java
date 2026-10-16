@@ -55,8 +55,9 @@ public final class Race {
                 outcomes.add(future.get(60, TimeUnit.SECONDS));
             }
         } catch (TimeoutException stuck) {
-            // Interrupt every racer still running. This stops a racer waiting in Java, but not one blocked inside a
-            // JDBC call.
+            // Interrupt every racer still running. This frees every racer, including one blocked in a JDBC read on a
+            // virtual thread (its connection is closed), but a statement already waiting on a lock stays queued in
+            // Postgres.
             futures.forEach(future -> future.cancel(true));
             throw stuck;
         }

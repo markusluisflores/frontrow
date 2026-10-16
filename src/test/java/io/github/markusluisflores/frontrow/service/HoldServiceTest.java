@@ -218,7 +218,15 @@ class HoldServiceTest {
         DomainException rejected = rejection(() -> holds.hold(command("alice", List.of(own, foreign), "k1")));
 
         assertThat(rejected.errorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
-        assertThat(rejected.details()).containsEntry("seat_ids", List.of(foreign));
+        assertThat(rejected.details())
+                .containsEntry("parameter", "event_seat_ids")
+                .containsEntry("seat_ids", List.of(foreign));
+    }
+
+    @Test
+    void aKeyWithAValidSurrogatePairIsAccepted() {
+        long seat = fixtures.eventSeats(eventId, venueId, 1).getFirst();
+        assertThat(holds.hold(command("alice", List.of(seat), "k🎫")).seats()).hasSize(1);
     }
 
     @Test
@@ -261,9 +269,10 @@ class HoldServiceTest {
         assertThat(noSeats.errorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
         assertThat(noSeats.details()).containsEntry("parameter", "event_seat_ids");
 
-        // The last key holds a NUL: Postgres text cannot store one, so binding it would fail with 22021 (decision 8).
-        List<String> badKeys = new ArrayList<>(
-                List.of("", "   ", "x".repeat(HoldService.MAX_IDEMPOTENCY_KEY_LENGTH + 1), "k\u0000ey"));
+        // Keys holding a NUL (Postgres text cannot store one: binding it fails with 22021, decision 8) or a lone
+        // surrogate (Postgres would store it as '?', aliasing a different key).
+        List<String> badKeys = new ArrayList<>(List.of(
+                "", "   ", "x".repeat(HoldService.MAX_IDEMPOTENCY_KEY_LENGTH + 1), "k\u0000ey", "k\uD800", "\uDC00k"));
         badKeys.add(null);
         for (String key : badKeys) {
             DomainException rejected = rejection(() -> holds.hold(command("alice", List.of(seat), key)));
