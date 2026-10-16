@@ -55,7 +55,8 @@ public final class Race {
                 outcomes.add(future.get(60, TimeUnit.SECONDS));
             }
         } catch (TimeoutException stuck) {
-            // Interrupt every racer still running, so none outlives the test and holds its locks into the cleanup.
+            // Interrupt every racer still running. This stops a racer waiting in Java, but not one blocked inside a
+            // JDBC call.
             futures.forEach(future -> future.cancel(true));
             throw stuck;
         }

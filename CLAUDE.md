@@ -15,8 +15,7 @@ with idempotent replay. No confirm, release, sweeper, REST endpoint or MCP tool 
 140 test runs pass, including spec §5 concurrency tests 1, 3, 4, 5 and 7 and a proof that test 1 fails
 without `uq_claimed_seat`. Phase 1 is now six plans: 3B (confirm, release, cancel service, sweeper,
 tests 2 and 6), 4 (REST + security chains) and 5 (MCP) remain.
-The migration itself
-is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
+The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
 `docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.2; 2.6
 reviewed and merged 2026-09-18, 2.6.1 a wording fix, 2.6.2 a post-implementation
 sync). Five ADRs are in `docs/adr/`: the three from spec §13; ADR-004, recorded
@@ -26,7 +25,8 @@ lock rule below. Plan 1 was executed on `feat/phase-1-foundation`:
 executed on `feat/phase-1-domain-foundations` and merged as PR #10 (`e432c3c`,
 2026-10-05): `docs/superpowers/plans/2026-10-02-phase-1-plan-2-domain-foundations.md`.
 PR #10's description carries the plan deviations and the list Plan 3 must address.
-Plan 3A: `docs/superpowers/plans/2026-10-14-phase-1-plan-3a-hold-creation.md`.
+Plan 3A was merged as PR #16 (`ed1566a`) and executed on `feat/phase-1-hold-creation`:
+`docs/superpowers/plans/2026-10-14-phase-1-plan-3a-hold-creation.md`.
 
 ## Deferred bootstrap items — owed by the Phase 1 scaffold task
 

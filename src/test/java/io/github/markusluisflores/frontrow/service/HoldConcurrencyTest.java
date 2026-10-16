@@ -88,9 +88,10 @@ class HoldConcurrencyTest {
     /**
      * Test 1's own proof: drop uq_claimed_seat and the same race lets several racers through (decision 4). The index
      * is shared by every later test in this context, so the restore is always attempted, and it succeeds when the
-     * scoped DELETE does. If that DELETE fails the index stays dropped for later tests in this context, which then
-     * fail rather than falsely pass, because the seat_taken tests need the index. The timeout fails this test but
-     * cannot interrupt a JDBC call blocked on a lock; that statement stays queued in Postgres.
+     * scoped DELETE does. If that DELETE fails, the CREATE fails too, on the leftover duplicate rows, so this test
+     * fails and the build goes red; the index then stays dropped for the rest of this context. The timeout fails this
+     * test but cannot interrupt a JDBC call blocked on a lock; that statement stays queued in Postgres, and later
+     * writers in this context queue behind it.
      */
     @Test
     @Timeout(value = 2, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
@@ -110,7 +111,7 @@ class HoldConcurrencyTest {
                         .param("seat", seat)
                         .update();
             } finally {
-                // Attempted even if the DELETE failed; it then fails too, on the leftover duplicate rows.
+                // Attempted even if the DELETE failed; it then fails too when the race left duplicates.
                 jdbc.sql("CREATE UNIQUE INDEX IF NOT EXISTS uq_claimed_seat ON seat_hold (event_seat_id)"
                                 + " WHERE status IN ('ACTIVE', 'CONVERTED')")
                         .update();
