@@ -840,8 +840,8 @@ Self-service issuance belongs with OAuth2 in Phase 2.
 
 ## 13. Next steps
 
-*Status 2026-10-16: all three steps are done. This spec was reviewed and merged
-in PR #1, and ADRs 001-003 are in `docs/adr/`. Phase 1 was split into six plans.
+*Status 2026-10-16: Steps 1 and 2 are done; step 3 is under way. This spec was
+reviewed and merged in PR #1, and ADRs 001-003 are in `docs/adr/`. Phase 1 was split into six plans.
 Plans 1, 2 and 3A are written and merged (`docs/superpowers/plans/`); plans 3B,
 4 and 5 are not written yet.*
 
