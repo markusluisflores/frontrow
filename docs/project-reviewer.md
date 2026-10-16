@@ -520,6 +520,9 @@ rather than hidden:
 Several real defects were caught **before** merge, and those are the ones worth
 discussing, because catching them is the claim:
 
+- **Plan 3A, three defects before merge:** the sales gate's switch failing open, two idempotency keys aliasing
+  through a surrogate character, and a per-seat price test that could not see the bug. The stories are in *Building
+  the First Write Path* below.
 - **Plan 1 review, 3 blockers:** `mvnw` would have been committed without its
   executable bit (`core.filemode=false` locally), failing CI on a file that
   looked correct; a deprecated MCP constructor would have failed the build under
