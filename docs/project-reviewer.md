@@ -512,11 +512,14 @@ version we'll pin, before it goes into a spec."
 scaffold, CI, the V1 schema, the spike, the domain foundations, the locking
 gateway and hold creation. (Seven review findings on hold creation were parked
 with rulings rather than fixed, one of them a request that waits across
-`sales_close_at` and can still get a hold. That one is not a defect on `main`: the clock is read once, at arrival,
-which is plan decision 5's design, and the spec does not fix the sampling point. Nothing can be bought yet, and
-confirm will re-check the sales window. The same cause has two more effects: a hold that lapsed during the wait can
-give a false `seat_taken`, and `expires_at` is short by the length of the wait. Plan 3B decides the sampling point.
-See *Building the First Write Path*.)
+`sales_close_at` and can still get a hold. The clock is read once, at arrival, which was plan decision 5's design,
+when the spec did not yet fix the sampling point. The same cause has two more effects: a hold that lapsed during the
+wait can give a false `seat_taken`, and `expires_at` is short by the length of the wait. Spec revision 2.6.3 then
+decided the sampling point: once the event-row lock is held. Plan 3B moves the read in hold creation and applies the
+same rule to confirm. The same revision made a `DRAFT` event answer `not_found`, where `main` still answers
+`sales_not_open` with the planned opening time. Until plan 3B, both are known gaps between `main` and the spec, not
+hidden defects. No adapter can reach `hold()` yet, nothing can be bought, and confirm will re-check the sales
+window. See *Building the First Write Path*.)
 Two things did reach `main`, and they should be named
 rather than hidden:
 - **A test gap, now closed:** after plan 2, nothing proved the seat_hold row locks
@@ -820,7 +823,7 @@ reading the code found the problem, and an experiment proved it:
   it against real Postgres. Such keys are now rejected as `invalid_request`.
 - **A test gap, not a defect.** `HoldService` already attached the right price to each seat. But every fixture seat
   had the same price, so no test checked that each held seat carries its *own* price. Round 2 proved it with a mutation: charging every seat the first seat's
-  price passed all 24 service tests. A test with two different prices now fails on that mutation. The commit changed only tests and comments.
+  price passed all 24 service tests. A test with two different prices now fails on that mutation. The fix changed only tests, comments and the test count in `CLAUDE.md`.
 
 **Interview talking point:** "The findings I find most instructive in this project are the ones that got past a review.
 One was in the plan itself: a guard written as a Java switch statement, which compiles fine when a new enum value
@@ -838,8 +841,8 @@ a compiler probe, a reproduction or a mutation, so it was proven rather than arg
   last fix; that could not be met here, the rule and the checklist disagreed, and I had the session log it on the
   process queue (item 8) for the next process audit.
 - Seven review findings were deliberately not fixed. They were carried to plan 3B and plan 4, with a reply on each
-  PR thread. Examples: when the clock is read relative to lock waits, and what REST should call the
-  idempotency-key parameter.
+  PR thread. Examples: when the clock is read relative to lock waits (since decided by spec revision 2.6.3; plan
+  3B changes the code), and what REST should call the idempotency-key parameter.
 
 ---
 
