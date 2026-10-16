@@ -41,9 +41,10 @@ public class LockingGateway {
 
     /**
      * Bounds every lock wait in this transaction. The value is bounded configuration (1 ms to 1 minute, enforced on
-     * {@code FrontRowProperties}), so zero, which Postgres reads as "no timeout", cannot reach it. Used by the event PATCH path, where a steady stream of FOR SHARE
-     * holders could otherwise starve a FOR UPDATE indefinitely (spec §5, Liveness). Postgres does not accept bind
-     * parameters in SET, so the validated, bounded configuration value is formatted as a literal; no request data reaches it.
+     * {@code FrontRowProperties}), so zero, which Postgres reads as "no timeout", cannot reach it. Used by the event
+     * PATCH path, where a steady stream of FOR SHARE holders could otherwise starve a FOR UPDATE indefinitely (spec
+     * §5, Liveness). Postgres does not accept bind parameters in SET, so the validated, bounded configuration value
+     * is formatted as a literal; no request data reaches it.
      */
     public void setLockTimeout() {
         long millis = properties.lockTimeout().toMillis();
@@ -116,7 +117,9 @@ public class LockingGateway {
                 .list();
     }
 
-    /** The per-owner cap counts groups with at least one live row, so lapsed-but-unswept groups never count (spec §4). */
+    /**
+     * The per-owner cap counts groups with at least one live row, so lapsed-but-unswept groups never count (spec §4).
+     */
     public int countActiveHoldGroups(String owner, Instant now) {
         return jdbc.sql("""
                         SELECT count(DISTINCT hold_group_id) FROM seat_hold

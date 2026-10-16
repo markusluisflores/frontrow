@@ -57,7 +57,7 @@ bootstrap. The scaffold task must land all of them, not just the build:
   and `pg_advisory_xact_lock` appear nowhere else in `src/main`. A service that writes
   its own lock SQL breaks the single global lock order (spec §5) — that is a review
   BLOCKER. Check with:
-  `grep -rlniE "for (no key )?update|for (key )?share|pg_[a-z_]*advisory|@Lock\b|LockModeType|PESSIMISTIC|skip locked|nowait" src/main/java/`
+  `grep -rlniE "for (no key )?update|for (key )?share|pg_[a-z_]*advisory|@Lock\b|LockModeType|PESSIMISTIC|skip locked|nowait|lock table" src/main/java/`
   A match inside a comment counts too, so keep lock vocabulary out of comments elsewhere.
 - The `domain` package imports only `java.*`. Check with:
   `grep -rn "^import" src/main/java/io/github/markusluisflores/frontrow/domain/ | grep -v "import java\."`

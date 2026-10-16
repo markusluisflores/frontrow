@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.context.properties.bind.validation.BindValidationException;
+import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
 
@@ -37,21 +39,26 @@ class FrontRowPropertiesTest {
 
     @Test
     void aZeroLockTimeoutIsRejectedBecausePostgresReadsZeroAsNoTimeout() {
-        runner.withPropertyValues("frontrow.lock-timeout=0s")
-                .run(context -> assertThat(context).hasFailed());
+        runner.withPropertyValues("frontrow.lock-timeout=0s").run(context -> assertRejected(context, "lockTimeout"));
     }
 
     @Test
     void anOverlongLockTimeoutIsRejected() {
-        runner.withPropertyValues("frontrow.lock-timeout=2m")
-                .run(context -> assertThat(context).hasFailed());
+        runner.withPropertyValues("frontrow.lock-timeout=2m").run(context -> assertRejected(context, "lockTimeout"));
     }
 
     @Test
     void aZeroOrOverlongHoldTtlIsRejected() {
-        runner.withPropertyValues("frontrow.hold-ttl=0s")
-                .run(context -> assertThat(context).hasFailed());
-        runner.withPropertyValues("frontrow.hold-ttl=2h")
-                .run(context -> assertThat(context).hasFailed());
+        runner.withPropertyValues("frontrow.hold-ttl=0s").run(context -> assertRejected(context, "holdTtl"));
+        runner.withPropertyValues("frontrow.hold-ttl=2h").run(context -> assertRejected(context, "holdTtl"));
+    }
+
+    /** Fails for the named property's bound, not for some unrelated startup error. */
+    private static void assertRejected(AssertableApplicationContext context, String field) {
+        assertThat(context).hasFailed();
+        assertThat(context.getStartupFailure())
+                .hasRootCauseInstanceOf(BindValidationException.class)
+                .rootCause()
+                .hasMessageContaining(field);
     }
 }
