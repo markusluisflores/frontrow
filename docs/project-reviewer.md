@@ -1,10 +1,11 @@
 # FrontRow — Project Reviewer & Interview Guide
 
 > **Living document.** Updated as new concepts are added or lessons are learned.
-> Last updated: 2026-10-15
+> Last updated: 2026-10-16
 
-> ⚠️ **Phase 1 plans 1 and 2 of 6 have landed. Nothing can reserve a seat yet.** Plan 3A (hold creation) is
-> written, reviewed and merged as a *plan* (PR #16), but none of its code exists yet.
+> ⚠️ **Phase 1 plans 1, 2 and 3A of 6 have landed. The service can place a hold, but nothing can buy a seat
+> yet, and there is no API.** Plan 3A (hold creation, PR #18) is the first write path. It is a Java service
+> exercised by integration tests against real Postgres; no REST endpoint or MCP tool calls it yet.
 >
 > **Built**, and proven by `./mvnw verify`:
 > - the Maven build and CI (build, CodeQL, dependency review, Dependabot);
@@ -15,10 +16,12 @@
 >   - the shared error contract;
 >   - JPA entities and repositories over V1;
 >   - a `LockingGateway` whose event and advisory locks are proven with concurrent
->     transactions.
+>     transactions;
+> - hold creation with idempotent replay (plan 3A, PR #18), with five of spec §5's seven
+>   concurrency tests (1, 3, 4, 5 and 7), and lock-wait proofs that the seat-row locks block.
 >
-> **Not built:** application services (no hold, confirm, release or cancel path),
-> the expiry sweeper, the seven §5 concurrency tests, the security chains, REST
+> **Not built:** confirm, release and cancel (plan 3B), the expiry sweeper, §5
+> concurrency tests 2 and 6, the security chains, REST
 > endpoints, MCP tools, seed data, and a Dockerfile or compose file. Nothing is
 > deployed. Entries below that describe
 > unbuilt work are still *design decisions* supported by
@@ -32,7 +35,7 @@
 
 ## What We Built
 
-**What exists, as of 2026-10-05:**
+**What exists, as of 2026-10-16:**
 
 **Plan 1, the foundation:**
 - A Maven build on Java 25. The wrapper is pinned to Maven 3.10.0 with its
@@ -58,8 +61,18 @@
 - Bounded configuration and an injected `Clock`.
 - The `LockingGateway`, which holds every lock SQL statement in the codebase.
 
-There are **95 test runs** in total. Still missing: any code path that writes a
-hold, an order or a release.
+**Plan 3A, hold creation** (PR #18, merged 2026-10-16):
+- `HoldService#hold`: one all-or-nothing READ COMMITTED transaction that claims
+  the idempotency key, takes the per-owner and event locks, then claims each seat
+  in ascending order (lazy expiry, then insert). Only successes are recorded; a
+  retry with the same key and request replays the stored result.
+- The gateway statements it needs: the key claim, the stored-response read and
+  write, and the seat insert. `seat_taken` is decided only by `uq_claimed_seat`.
+- Spec §5 concurrency tests 1, 3, 4, 5 and 7, against real Postgres, and a test
+  that drops `uq_claimed_seat` and shows the same race then has several winners.
+
+There are **142 test runs** in total. Still missing: any code path that confirms
+an order or releases a hold, and any API in front of the service.
 
 The *designed* system, most of which is not built: an event ticketing and
 seat-reservation service in Spring Boot, exposed through two inbound adapters
@@ -111,7 +124,9 @@ already-sold seat. That gap was caught in the spec's revision-2 review. Applicat
 is designed to catch the resulting constraint violation and translate it into a structured
 `seat_taken` error rather than leaking a 500. Plan 2 built both halves of that: the
 lookup that reads the constraint name from the driver (`PostgresErrors`) and the
-`SEAT_TAKEN` code. The service that does the translation is plan 3A, and is not built. The alternatives considered were
+`SEAT_TAKEN` code. Plan 3A (PR #18) built the translation: the hold service lets the insert fail on the index rather
+than checking first, and maps only `uq_claimed_seat` to `seat_taken`. A test drops the index and shows a race for one
+seat then has several winners. The alternatives considered were
 optimistic locking with a version column and pessimistic `SELECT ... FOR UPDATE`
 as the *primary* guarantee. Both work, but both place the guarantee in
 application logic, which means a bug in that logic silently becomes a
@@ -150,8 +165,11 @@ keeps the table tidy and keeps availability counts honest for read queries. This
 means correctness never depends on the scheduler having run — a scheduler that
 is down, paused, or lagging degrades tidiness, not safety.
 
-**Interview talking point:** "Hold expiry runs two ways on purpose. There's a
-scheduled sweeper, but correctness doesn't depend on it — when someone tries to
+**Built (plan 3A):** lazy expiry in hold creation, proven by §5 test 7 with no
+sweeper. The sweeper is plan 3B.
+
+**Interview talking point:** "Hold expiry runs two ways on purpose. The design has a
+sweeper, but correctness doesn't depend on it — when someone tries to
 take a seat, any expired hold on that specific seat is cleaned up in the same
 transaction. That way a scheduler outage makes availability counts stale, which
 is a display problem, rather than blocking seats forever, which is a correctness
@@ -180,6 +198,11 @@ Phase 2). Identity is enforced by two
 disjoint credential chains: the MCP endpoint accepts only bearer tokens issued
 to a user's agent, the REST API accepts only HTTP Basic, and the confirm
 endpoint lives on REST — so an agent token cannot reach the purchase path at all.
+
+**Built (plan 3A):** the hold-side guardrails, in `HoldService`: `too_many_seats`,
+idempotent replay (`idempotency_key_reused` on a mismatch), the sales gate, and the
+active-group cap, raced in test 4. The MCP tools, credential chains and logging
+are not built.
 
 **Interview talking point:** "I drew the line at reversibility rather than at
 read-versus-write. The agent can hold seats, which does mutate state — but a hold
@@ -316,25 +339,27 @@ inserts before updates.
   - `lock_timeout` surfaces as SQLState `55P03`.
 
   Waits are observed in `pg_stat_activity`, not inferred from a timeout.
-- **Not proven, and worth admitting:** the seat_hold row locks. A reviewer
-  deleted both `FOR UPDATE` clauses and all 14 gateway tests still passed.
-  Plan 3A owns that test.
-- **Still design (plans 3A and 3B):** hold creation's lock-expire-insert-flush per seat
-  (3A), cancellation's ordering (3B), and every service that calls the gateway.
+- **The seat_hold row locks, now proven (plan 3A).** After plan 2, a reviewer
+  deleted both `FOR UPDATE` clauses and all 14 gateway tests still passed. Plan
+  3A added a wait proof for each clause, scoped to one Postgres backend; with
+  either clause deleted, its test fails with `did not block on a lock within 10s`.
+- **Built in plan 3A:** hold creation's claim-each-seat-in-order loop, raced in
+  §5 tests 1, 3, 4 and 5. **Still design (plan 3B):** confirm, release and
+  cancellation's ordering.
 
 **Interview talking point:** "The index guarantees no seat is ever claimed
 twice. The lock order keeps the other state transitions correct and
 deadlock-free: confirm, release, cancel and expiry all decide on current
-state. I wrote down one lock order that every transaction follows, so
+state. The spec fixes one lock order that every transaction follows, so
 deadlock-freedom is a property I can argue from the order rather than hope for.
 The subtle part was that hold creation interleaves locks and inserts. Taking
 all the locks first and then inserting sounds safe, but it breaks the ordering
-across the two phases, so the design claims seats one at a time. What's built
-today is the gateway itself. Every lock lives in one file, so 'one global order'
-is something you can check by reading that file. The event and per-owner locks
-are proven with concurrent transactions. A reviewer mutation-tested the seat-row
-locks and showed nothing yet proves they block. That test is carried to the next
-plan."
+across the two phases, so the design claims seats one at a time. Every lock
+lives in one file, so 'one global order' is something you can check by reading
+that file. Hold creation follows it, and racing overlapping multi-seat requests
+in different orders produces no deadlock and no partial hold. A reviewer once
+showed that nothing proved the seat-row locks block; there's now a test for
+each, and deleting either lock clause fails it."
 
 ---
 
@@ -380,8 +405,8 @@ would have passed every test I had. So the fixes aren't extra checks so much as
 turning a silent wrong answer into a loud failure. The config has bounds that
 fail at startup, and the lock gateway refuses to run unless a transaction
 already exists. The plan's own validation idea was wrong too: plain `@Min`
-doesn't apply to a `Duration`, which I only knew after checking the validator
-jar we actually ship."
+doesn't apply to a `Duration`, which only came out when the session checked the
+validator jar we actually ship."
 
 ---
 
@@ -405,10 +430,10 @@ those are the differentiating parts.
 The cuttable parts were the organiser endpoints and the breadth of seed data."
 
 **Be ready for the timeline question, because the honest answer is better than a
-dodge.** The spec estimated "a full focused week" for Phase 1. Twenty-eight days
-in (2026-09-17 to 2026-10-15), the foundation and the domain foundations are
-built, and Plan 3A, the first write path, is written and reviewed but not yet
-executed. No write path exists yet, so nothing can hold or buy a seat. The reason
+dodge.** The spec estimated "a full focused week" for Phase 1. Twenty-nine days
+in (2026-09-17 to 2026-10-16), the foundation, the domain foundations and Plan
+3A, the first write path (hold creation), are built. Nothing can buy a seat yet,
+and there is no API in front of the service. The reason
 is not drift: Phase 1 was re-planned from 3 documents into 5 when Plan 2 proved
 too large to review, and into 6 when Plan 3 did too (split into 3A and 3B on
 2026-10-14), and
@@ -453,7 +478,7 @@ These were design findings. Plan 2 (PR #10) built the lock-order primitives and
 lazy expiry as an immediate guarded `UPDATE`, both with tests. The cancel, confirm
 and release paths that use them are plan 3B, and are not built.
 
-### Seven Review Rounds, and a Claim I Got Wrong
+### Seven Review Rounds, and a Claim We Got Wrong
 
 Revision 2 went through seven review rounds before merging. After every fix
 pass, the reviewer that raised the findings resumed to verify them, and a fresh
@@ -465,8 +490,8 @@ apply, because every reviewer ran on the session's own model. That is the same
 shortfall as the PR #16 miscount in the 2026-10-15 section below: one clean
 round, not two.
 
-The round-6 blocker was mine. In round 5, I wrote a reviewer's suggestion into
-the spec: that Hibernate's PostgreSQL dialect ignores a positive lock-timeout
+The round-6 blocker was self-inflicted: in round 5 the authoring session wrote a
+reviewer's suggestion into the spec unchecked, that Hibernate's PostgreSQL dialect ignores a positive lock-timeout
 hint. That's true of Hibernate 6. Spring Boot 4.1.1 ships Hibernate 7.4.5, and
 its source (checked afterwards) applies the timeout with `SET LOCAL` around the
 one locking query. The design choice survived, for a better reason: one explicit
@@ -474,8 +499,8 @@ one locking query. The design choice survived, for a better reason: one explicit
 
 **Interview talking point:** "The review loop found real protocol bugs, each
 one smaller than the last. The one I'm most careful to mention is a false claim
-I introduced myself: I took a reviewer's statement about Hibernate at face
-value, and it was only true for the previous major version. The lesson I took:
+our own process introduced: a reviewer's statement about Hibernate was written
+into the spec unchecked, and it was only true for the previous major version. The lesson I took:
 check version-specific library behaviour against the source of the exact
 version we'll pin, before it goes into a spec."
 
@@ -483,13 +508,14 @@ version we'll pin, before it goes into a spec."
 
 ## Bugs Worth Remembering
 
-*No runtime defect is known on `main`.* That covers plans 1 and 2: the scaffold,
-CI, the V1 schema, the spike, the domain foundations and the locking gateway.
-Two things did reach `main`, and they should be named rather than hidden:
-- **A known test gap:** nothing proves the seat_hold row locks block. Plan 3A owns
-  it.
+*No runtime defect is known on `main`.* That covers plans 1, 2 and 3A: the
+scaffold, CI, the V1 schema, the spike, the domain foundations, the locking
+gateway and hold creation. Two things did reach `main`, and they should be named
+rather than hidden:
+- **A test gap, now closed:** after plan 2, nothing proved the seat_hold row locks
+  block. Plan 3A added the tests (concept 7).
 - **One wrong commit message:** `a648936` claims a javadoc reflow it never did.
-  PR #10 discloses it.
+  PR #10 discloses it, and plan 3A did the reflow.
 
 Several real defects were caught **before** merge, and those are the ones worth
 discussing, because catching them is the claim:
@@ -539,7 +565,7 @@ idempotent in-process sweeper). What an interviewer could still press on:
    a hard requirement.
 2. **Token issuance** is a setup script in Phase 1 — demo-grade by design, with
    OAuth2 deferred to Phase 2.
-3. **No cancellation.** The sold-once constraint is permanent in Phase 1; the
+3. **No order cancellation.** The sold-once constraint is permanent in Phase 1; the
    spec states how it would be relaxed (§5), and that is the likely follow-up.
 
 ---
@@ -547,8 +573,9 @@ idempotent in-process sweeper). What an interviewer could still press on:
 ## Review as the Deliverable (2026-10-02)
 
 *Written when plans 2-5 were still documents. As of 2026-10-05, plan 2 is built
-(PR #10), and the plan-2 items below carry "now built" notes. Plans 3-5 are still
-documents or unwritten.* The review of those documents is where most defects
+(PR #10), and the plan-2 items below carry "now built" notes. As of 2026-10-16,
+plans 2 and 3A are built (PR #10, PR #18); 3B, 4 and 5 are documents or
+unwritten.* The review of those documents is where most defects
 were caught before code existed. Unless an item says "now built", treat it as a
 **review or design outcome, not shipped code**, and say so if asked.
 
@@ -557,12 +584,13 @@ migration fails exactly three tests, and a reviewer independently checked every
 other test for hidden dependence on the index and found none.
 
 *Follow-up to expect:* "Three tests prove the index exists, not that it holds
-under concurrency." Correct. Spec §5's seven concurrency tests (racing holds,
-confirms and cancels) are split between plan 3A (tests 1, 3, 4, 5 and 7)
-and 3B (tests 2 and 6), and none is built. Plan 2's lock tests prove the
-locks behave; they never race two writers for one seat.
-The schema tests prove the constraint rejects the state; they do not prove the
-service translates the violation into the right error.
+under concurrency." It was correct when written. Spec §5's seven concurrency
+tests (racing holds, confirms and cancels) are split between plan 3A (tests 1,
+3, 4, 5 and 7) and 3B (tests 2 and 6). *(Updated 2026-10-16.)* Plan 3A's five
+are built (PR #18): test 1 races eight buyers for one seat, twenty times, and
+expects exactly one winner and seven `seat_taken` errors. A companion test drops
+the index and shows the same race then has several winners. Tests 2 and 6 need
+confirm and cancel, so they wait for 3B.
 
 **Five defects caught in plan 2 before a line of its code existed.** Each would
 have failed at runtime or build time:
@@ -670,7 +698,7 @@ The causes were specific:
   verbatim, in 8 comments, with dispositions.
 - A fresh reviewer then posted a proper inline review itself.
 - That review found what all 11 earlier ones missed: it mutation-tested the
-  seat-row locks and showed no test proves they block.
+  seat-row locks and showed no test proves they block (closed in plan 3A; see concept 7).
 
 **Interview talking point:** "The most useful failure in this project wasn't in
 the code. My review process said every review must be posted to the PR, and for
@@ -712,7 +740,8 @@ deliberate workflow audits, and a project session just writes them down.
 **What happened.** Plan 3 (the first write path) was estimated at ~3,400 lines, 1.7× the plans already reviewed.
 Since the plan is what gets approved, I split it in two: 3A, hold creation, and 3B, everything that acts on an
 existing hold. 3A was written, I read it, and it was reviewed on PR #16 over three fresh rounds before merging.
-**None of 3A's code exists yet.** What is real is how the plan was checked. The orchestrating session and its
+*(Updated 2026-10-16: 3A has since been executed, as PR #18; see the next section.)* This section is about how the
+plan was checked before any of its code existed. The orchestrating session and its
 subagents did the checking below.
 
 **Executing a plan's code before approving it.**
@@ -759,6 +788,47 @@ exposed two concurrent reviewers sharing one scratch folder, where one deleted t
 
 ---
 
+## Building the First Write Path: What Review Found in Code That Had Already Been Reviewed (2026-10-16)
+
+**What happened.** Plan 3A was executed the same way as plan 2: subagents implemented it task by task, with a fresh
+reviewer per task, then a final whole-branch review, `/security-review` and a pre-PR `reviewer`. All of that happened
+before the PR existed. PR #18 then had two fresh review rounds, and both were BLOCKER-free. It merged on 2026-10-16
+with 142 test runs. The orchestrating session and its subagents did the building and the reviewing; I read the
+results and made the merge call.
+
+**Three findings worth telling,** because each was in code that had already passed review once:
+- **A guard that failed open, written into the plan itself.** The sales-window gate used Java `switch` *statements*
+  over enums. A switch statement over an enum doesn't have to cover every constant, so adding a new event status
+  would have let holds through without any compiler warning, even under `-Werror`. The plan's three review rounds on
+  PR #16 missed it. The task reviewer flagged it as a fail-open minor for final-review triage. The final whole-branch
+  review raised it to a SUGGESTION and proved it by compiling a probe with the project's own JDK. The fix uses switch
+  *expressions*, where a missing case is a compile error.
+- **Two idempotency keys that the database treated as one.** The Postgres driver encodes strings with the JDK's UTF-8
+  encoder, which silently turns an unpaired UTF-16 surrogate into `?`. So `"k\uD800"` and `"k?"` from the same
+  owner were stored as the same key, and the second request got the first one's replay. Review round 1 reproduced
+  it against real Postgres. Such keys are now rejected as `invalid_request`.
+- **A test that couldn't see the bug it was named for.** Every test seat had the same price, so nothing checked that
+  each held seat carries its *own* price. Round 2 proved it with a mutation: charging every seat the first seat's
+  price passed all 24 service tests. A test with two different prices now fails on that mutation.
+
+**Interview talking point:** "The bugs I find most instructive in this project are the ones that got past a review.
+One was in the plan itself: a guard written as a Java switch statement, which compiles fine when a new enum value
+is added and then silently does nothing for it. The reviewer didn't argue it; they compiled a probe that showed it.
+Another was an encoding edge case: the JDBC driver quietly rewrites a malformed string, so two different idempotency
+keys collapsed into one. And one was a test-data blind spot that a single mutation exposed. What they have in common
+is that each one passed a careful read. A compiler probe, a reproduction or a mutation was what caught it."
+
+*Be accurate if pressed:*
+- The review-round count is two fresh rounds, both BLOCKER-free. Each round's fixes were verified by that round's
+  reviewer, resumed. The last fix pass, which added one test and changed two comments, got that resumed
+  verification rather than a third fresh round, because the stopping rule doesn't send a SUGGESTION to another
+  fresh round. That was stated before the merge.
+- Seven review findings were deliberately not fixed. They were carried to plan 3B and plan 4, with a reply on each
+  PR thread. Examples: when the clock is read relative to lock waits, and what REST should call the
+  idempotency-key parameter.
+
+---
+
 ## Revision Notes
 
 | Date | Change | Accuracy-drift check |
@@ -769,7 +839,8 @@ exposed two concurrent reviewers sharing one scratch folder, where one deleted t
 | 2026-10-02 (wrap-up) | Plan 1 executed and merged, plan 2 written and merged, Dependabot's first two bumps merged. Added *Review as the Deliverable*, corrected the stack table, and took the scoping talking point out of the past tense. | **DRIFT FOUND** — 12 items, the sharpest being the inverse of this guide's usual risk: "What We Built — *(Nothing yet.)*" **denied** work that exists. Also: the banner read as "Phase 1 landed" when plan 1 of 5 landed; the not-built list omitted entities, repositories, security chains, seed data and Docker; "JUnit 5" contradicted `CLAUDE.md`; springdoc and Docker were listed as if present; "pin versions at scaffold time" was stale; and the scoping point described a finished week in the past tense on day 15 with no domain code |
 | 2026-10-05 (second wrap-up) | ADR-005 and spec rev 2.6.2 merged (PR #13). The persistence-split entry now cites ADR-005 instead of "still owed". The posting-failure section now says the structural fixes were drafted, reviewed (2 BLOCKERs), withdrawn and parked, not merely "candidates", and adds the config-repo-checkout-is-live lesson. | Clean on accuracy: a fresh check posted to PR #14 (review 5422689734) found 0 drift and 1 nit, a journal citation pointing at the wrong memory file, which is now fixed. The staleness pass found nothing still calling ADR-005 owed or the posting fixes live |
 | 2026-10-05 (wrap-up) | Plan 2 executed and merged (PR #10). Rewrote the banner and *What We Built* to cover the domain foundations, added a persistence row to the stack table, added "built" evidence to concepts 4 and 7 (with the unproven seat-row locks stated), added concept 8 (silent failures made loud), two bug stories, a *now built* note on the plan-2 review findings, and the subagent-execution / posting-failure section. | **DRIFT FOUND** by a fresh check posted to PR #11 (review 5420599658): 3 drift, 5 nits, all fixed. The sharpest drift was the author's own count: "12 review dispatches" told not to post was really 10 instructions to 9 agents, with the 11th review carrying no posting line at all. The other two drifts were stale: "21 constraint tests, each inserting a violating row" (really 22 runs, 3 of them acceptance checks), and "none of it implemented" in the review-history section after plan 2 built part of it |
-| 2026-10-15 (wrap-up) | Plan 3A written, reviewed over 3 fresh rounds and merged as a plan (PR #16); no code. Banner: 6 plans, 3A not executed. Added *Checking a Plan Before Anyone Builds It*. Corrected the posting-failure section: the early draft PR was rejected, and the merge-time hook is live (since 2026-10-11). | **DRIFT FOUND**: 3 drift and 4 nits, all fixed. The sharpest: the miscount section was written with the AI controller as "I", which in Markus's mouth claims a mistake he didn't make and calls him "the user" who caught it. Also: a "not adopted" line contradicting the live hook below it, and a talking point stating a cause the sources don't ("counted a verification pass"). Nits: "plan 3" references not split into 3A/3B, a single "concrete fix" where the queue lists three candidates, "all three were true", and the live hook's limit left unstated. PR #17's round-1 review (5539628551) found the "I"-as-controller drift surviving in the section heading and its bold lead, and the talking points claiming the session's replay and logging as Markus's own work; both fixed, along with "three SUGGESTIONs, fixed and verified" (one was only partly fixed) |
+| 2026-10-15 (wrap-up) | Plan 3A written, reviewed over 3 fresh rounds and merged as a plan (PR #16); no code. Banner: 6 plans, 3A not executed. Added *Checking a Plan Before Anyone Builds It*. Corrected the posting-failure section: the early draft PR was rejected, and the merge-time hook is live (since 2026-10-11). Also rewrote the timeline answer, and retitled the spec-review section to *Seven Review Rounds, and a Claim I Got Wrong*, with its admission that PR #1 stopped one clean round early *(these two changes were added to this row on 2026-10-16, closing PR #17's final NIT)*. | **DRIFT FOUND**: 3 drift and 4 nits, all fixed. The sharpest: the miscount section was written with the AI controller as "I", which in Markus's mouth claims a mistake he didn't make and calls him "the user" who caught it. Also: a "not adopted" line contradicting the live hook below it, and a talking point stating a cause the sources don't ("counted a verification pass"). Nits: "plan 3" references not split into 3A/3B, a single "concrete fix" where the queue lists three candidates, "all three were true", and the live hook's limit left unstated. PR #17's round-1 review (5539628551) found the "I"-as-controller drift surviving in the section heading and its bold lead, and the talking points claiming the session's replay and logging as Markus's own work; both fixed, along with "three SUGGESTIONs, fixed and verified" (one was only partly fixed) |
+| 2026-10-16 (wrap-up) | Plan 3A executed and merged (PR #18). Banner, *What We Built* (142 runs), concept 1 (the translation is built), concept 7 (seat-row locks proven; talking point no longer says the test is owed), the timeline answer, *Bugs Worth Remembering*, and the concurrency-test follow-up in *Review as the Deliverable* all moved from "not built" to built. Added *Building the First Write Path*. | **DRIFT FOUND** by a fresh check: 3 drift and 7 nits, all fixed. All three drifts were in entries this run hadn't changed: the *Review as the Deliverable* header still called plans 3-5 documents, and two talking points (*Seven Review Rounds* and concept 8) still had the AI session's "I" in Markus's mouth, the same drift fixed on 2026-10-15 in another section. Nits: seat-row proofs credited to plan 2, the task reviewer's fail-open flag understated, concepts 2 and 3 without built notes, a closed test gap read as open, the lock order claimed as Markus's own writing, and "cancellation" ambiguous |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
