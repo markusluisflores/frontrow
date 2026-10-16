@@ -516,9 +516,10 @@ with rulings rather than fixed, one of them a request that waits across
 when the spec did not yet fix the sampling point. The same cause has two more effects: a hold that lapsed during the
 wait can give a false `seat_taken`, and `expires_at` is short by the length of the wait. Spec revision 2.6.3 then
 decided the sampling point: after the locks that precede each transaction's first time-dependent decision (for hold
-creation, the event-row lock). Plan 3B moves the read in hold creation and applies the same rule to confirm. Seat-row
-waits still come after the read, so a smaller residual of the same three effects stays by design. The same revision
-made a `DRAFT` event answer `not_found`, where `main` still answers `sales_not_open` with the planned opening time.
+creation, the event-row lock). Plan 3B, not yet written, is to move the read in hold creation and apply the same rule
+to confirm, release, cancel and the sweeper. Hold creation's seat-row waits will still come after its read, so a
+smaller residual of the same three effects stays by design. The same revision made a `DRAFT` event answer
+`not_found`, where `main` still answers `sales_not_open` with the planned opening time.
 Until plan 3B, both are known gaps between `main` and the spec, not hidden defects. No adapter can reach `hold()`
 yet, nothing can be bought, and confirm will re-check the sales window. See *Building the First Write Path*.)
 Two things did reach `main`, and they should be named
