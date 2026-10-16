@@ -167,7 +167,7 @@ public class HoldService {
     private static void requireWellFormed(HoldCommand command) {
         String key = command.idempotencyKey();
         // Postgres text cannot hold U+0000: binding it fails with 22021, a 500 rather than invalid_request.
-        // Postgres would silently store an unpaired surrogate as '?', aliasing a different key.
+        // pgjdbc's String.getBytes(UTF_8) would silently turn an unpaired surrogate into '?', aliasing a different key.
         if (key == null
                 || key.isBlank()
                 || key.length() > MAX_IDEMPOTENCY_KEY_LENGTH

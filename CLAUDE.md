@@ -12,7 +12,7 @@ Together they provide: a Maven build, CI, the V1 schema migration, a principal-p
 contract (`error`), JPA entities and repositories over all eight V1 tables (`persistence`), the locking
 gateway (`persistence/LockingGateway.java`), and the first write path: `service/HoldService`, hold creation
 with idempotent replay. No confirm, release, sweeper, REST endpoint or MCP tool exists yet.**
-141 test runs pass, including spec §5 concurrency tests 1, 3, 4, 5 and 7 and a proof that test 1 fails
+142 test runs pass, including spec §5 concurrency tests 1, 3, 4, 5 and 7 and a proof that test 1 fails
 without `uq_claimed_seat`. Phase 1 is now six plans: 3B (confirm, release, cancel service, sweeper,
 tests 2 and 6), 4 (REST + security chains) and 5 (MCP) remain.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is

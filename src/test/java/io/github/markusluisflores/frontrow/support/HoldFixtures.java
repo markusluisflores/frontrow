@@ -53,6 +53,11 @@ public final class HoldFixtures {
 
     /** Fresh seats, each offered by the event at PRICE_CENTS, returned in ascending id order. */
     public List<Long> eventSeats(long eventId, long venueId, int count) {
+        return eventSeats(eventId, venueId, count, PRICE_CENTS);
+    }
+
+    /** Fresh seats, each offered by the event at the given price, returned in ascending id order. */
+    public List<Long> eventSeats(long eventId, long venueId, int count, long priceCents) {
         List<Long> ids = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             long seatId = jdbc.sql("""
@@ -68,7 +73,7 @@ public final class HoldFixtures {
                     .param("event", eventId)
                     .param("seat", seatId)
                     .param("venue", venueId)
-                    .param("price", PRICE_CENTS)
+                    .param("price", priceCents)
                     .query(Long.class)
                     .single());
         }

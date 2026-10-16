@@ -75,6 +75,18 @@ class HoldServiceTest {
     }
 
     @Test
+    void keepsEachSeatsOwnPriceOnItsHeldSeat() {
+        long cheap = fixtures.eventSeats(eventId, venueId, 1, 1000).getFirst();
+        long dear = fixtures.eventSeats(eventId, venueId, 1, 2500).getFirst();
+
+        HoldResult result = holds.hold(command("alice", List.of(dear, cheap), "k1"));
+
+        assertThat(result.seats())
+                .containsExactly(new HoldResult.HeldSeat(cheap, 1000), new HoldResult.HeldSeat(dear, 2500));
+        assertThat(result.totalCents()).isEqualTo(3500);
+    }
+
+    @Test
     void storesExpiryAtTheDatabasesPrecision() {
         clock.set(NOW.plusNanos(1_234_567));
         HoldResult result = holds.hold(command("alice", fixtures.eventSeats(eventId, venueId, 1), "k1"));
@@ -270,7 +282,7 @@ class HoldServiceTest {
         assertThat(noSeats.details()).containsEntry("parameter", "event_seat_ids");
 
         // Keys holding a NUL (Postgres text cannot store one: binding it fails with 22021, decision 8) or a lone
-        // surrogate (Postgres would store it as '?', aliasing a different key).
+        // surrogate (the JDK's UTF-8 encoder inside pgjdbc would send it as '?', aliasing a different key).
         List<String> badKeys = new ArrayList<>(List.of(
                 "", "   ", "x".repeat(HoldService.MAX_IDEMPOTENCY_KEY_LENGTH + 1), "k\u0000ey", "k\uD800", "\uDC00k"));
         badKeys.add(null);
