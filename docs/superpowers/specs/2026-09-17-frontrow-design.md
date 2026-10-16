@@ -229,9 +229,9 @@ is easy to defend in an interview.
   half-open, and the same bound applies everywhere. A `DRAFT` event is hidden
   from every caller: a read or hold by its id answers `not_found`, the same code
   as a missing id, and list reads such as `search_events` leave it out (§6).
-  This withholds its details and its `sales_open_at`. Event ids are sequential,
-  so a prober can still tell that some row took an id (a draft, or a
-  rolled-back insert). Only the `ORGANISER` endpoints act on a draft:
+  This withholds its details and its `sales_open_at`. `not_found` is the same
+  for a draft and for an id a rolled-back insert consumed; sequential ids still
+  show a prober that the id was used. Only the `ORGANISER` endpoints act on a draft:
   `POST /api/events` creates it, and `PATCH /api/events/{id}` changes it.
 
 **A hold is live iff** `status = 'ACTIVE' AND expires_at > :now`. Every query
@@ -617,9 +617,9 @@ annotation, which generates the JSON schema from the method signature.
   on a draft: `POST /api/events` creates it, and `PATCH /api/events/{id}`
   changes it. Answering a hold with `sales_not_open` and its `sales_open_at`
   would tell anyone probing ids when an unpublished event's sales open.
-  `not_found` withholds that and the event's details. It does not make a draft
-  look like an unused id: ids are sequential, so a gap still shows that some
-  row took it.
+  `not_found` withholds that and the event's details. It is the same for a
+  draft and for an id a rolled-back insert consumed; sequential ids still show
+  a prober that the id was used.
 - `hold_seats` takes **specific seat ids** — the service does not choose seats.
   Best-adjacent-seat allocation is a real algorithm and a Phase 2+ candidate.
   It returns `hold_group_id`, the held seats, the total, and `expires_at`, which
