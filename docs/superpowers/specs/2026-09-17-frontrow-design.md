@@ -1,15 +1,21 @@
 # FrontRow — Design Spec
 
-**Date:** 2026-09-17 · **Revised:** 2026-10-05 (revision 2.6.2 — see §14)
-**Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 plans 1 and 2 of 5 are merged.
+**Date:** 2026-09-17 · **Revised:** 2026-10-16 (revision 2.6.3 — see §14)
+**Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 is six plans, and plans 1, 2 and 3A are merged.
 - Plan 1 (PR #5) built the build, CI, the V1 schema and the MCP spike.
 - Plan 2 (PR #10) built the domain core, the error contract, the JPA persistence model and the locking gateway (ADR-005).
+- Plan 3A (PR #18) built hold creation with idempotent replay, and §5 concurrency tests 1, 3, 4, 5 and 7.
 
-Not yet built: the write paths and the seven §5 concurrency tests (plan 3), REST and the security chains (plan 4), and the MCP tools (plan 5).
+Not yet built: confirm, release, the event `PATCH`/cancel service, the sweeper and §5 tests 2 and 6 (plan 3B), REST and the security chains (plan 4), and the MCP tools and evidence artifacts (plan 5).
+
+**Where `main` differs from this revision.** Revision 2.6.3 settled two questions after plan 3A was built. Until plan 3B changes the code, hold creation:
+- reads the clock on arrival, not once the event-row lock is held (§5 *Locking discipline*);
+- answers a `DRAFT` event with `sales_not_open` and its `sales_open_at`, not `not_found` (§5 *Hold creation*).
+
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
-**Revisions 2.1–2.6.1** (same day) apply the review rounds; **2.6.2** (2026-10-05) is a post-implementation sync — see §14.
+**Revisions 2.1–2.6.1** (same day) apply the review rounds; **2.6.2** (2026-10-05) is a post-implementation sync; **2.6.3** (2026-10-16) syncs the status and settles two questions from plan 3A's reviews — see §14.
 
 ---
 
@@ -220,7 +226,9 @@ is easy to defend in an interview.
 - Order: `CONFIRMED` only in Phase 1 (no cancellation — §2).
 - Event: `DRAFT`, `ON_SALE`, `CANCELLED`. Holds and confirmations require
   `ON_SALE` *and* `sales_open_at <= :now < sales_close_at`. The window is
-  half-open, and the same bound applies everywhere.
+  half-open, and the same bound applies everywhere. A `DRAFT` event is not
+  disclosed to anyone but an `ORGANISER`: every other caller gets `not_found`,
+  as for an id that doesn't exist (§6).
 
 **A hold is live iff** `status = 'ACTIVE' AND expires_at > :now`. Every query
 that asks "is this seat available?" or "is this hold confirmable?" uses exactly
@@ -309,6 +317,32 @@ Release takes only step 4. It doesn't read event status, so it never needs
 step 3. Confirm first finds the group's `event_id` with an unlocked read. That
 is safe because a group's event never changes.
 
+**When `now` is read.** Each transaction reads the injected `Clock` once, and
+uses that one instant for every decision it makes and every timestamp it
+writes. It reads it once the locks that come before its first decision are
+held, not on arrival:
+- hold creation: once the event row is locked (step 3), before the sales-window check;
+- confirmation: once step 1's locks are held;
+- release: once the group's rows are locked;
+- an event `PATCH`: once the event row is locked;
+- the sweeper: at the start, because `SKIP LOCKED` never waits.
+
+The one exception is `hold_request.created_at`. It is written with the key
+claim in step 1, before any lock wait, so it keeps the arrival time. Only the
+24-hour purge reads it.
+
+Every lock in steps 1-3 can wait without limit. An instant read before those
+waits would judge the request by a moment that has already passed:
+- a hold that waited across `sales_close_at` would still be granted;
+- a seat whose hold lapsed during the wait would still look held, so the
+  request would get a false `seat_taken`;
+- the new hold's `expires_at` would be short by the length of the wait.
+
+Step 4's seat-row waits come after the read, so the same residual remains
+there, bounded by one seat's contention. Reading the clock again per seat would
+break the group's single `expires_at`. The residual is accepted: at worst a
+caller gets `seat_taken` for a hold that lapsed during the wait, and retries.
+
 **Decisions use rows as read under the lock.** A locking query must return the
 current database row, not an entity already cached in the persistence context:
 refresh it, or run the query through JDBC. Updates that a later statement
@@ -355,8 +389,8 @@ One transaction, all-or-nothing:
 2. **Serialize per owner.** `pg_advisory_xact_lock(hash(owner))`. A burst of
    parallel calls from one owner cannot all pass the active-group cap check.
 3. Lock the event row `FOR SHARE`, then validate. Failures map as follows:
-   - event missing → `not_found`
-   - `DRAFT` or before `sales_open_at` → `sales_not_open`
+   - event missing, or `DRAFT` → `not_found`. A draft is not disclosed (§4)
+   - before `sales_open_at` → `sales_not_open`
    - `CANCELLED` or at/after `sales_close_at` → `sales_closed`
    - a seat id not offered by this event, or a duplicate seat id → `invalid_request` (naming the ids)
    - per-request seat cap → `too_many_seats`
@@ -429,7 +463,8 @@ One transaction:
 3. **Event check before hold state.** The event must be `ON_SALE` and inside
    the §4 window (`sales_open_at <= :now < sales_close_at`). Otherwise return
    `sales_not_open` (before the window) or `sales_closed` (after it, or
-   cancelled). This comes first
+   cancelled). A group's event is never `DRAFT`: a hold needs `ON_SALE`, and
+   no `PATCH` moves an event back to `DRAFT`. This comes first
    because a cancellation also releases the event's holds. Checking hold state
    first would tell the caller "your hold was released" when the real answer is
    "the event is closed". Because of the event-row lock, a concurrent
@@ -558,6 +593,11 @@ annotation, which generates the JSON schema from the method signature.
 - `search_events` matches `query` case-insensitively against the event name and
   filters on `starts_at`; only `ON_SALE` events are returned. `limit` defaults
   to 10, max 50.
+- **A `DRAFT` event answers `not_found`** to `get_event`, `check_availability`,
+  `hold_seats` and the REST equivalents, unless the caller is an `ORGANISER`
+  (§4). Answering a hold with `sales_not_open` and its `sales_open_at` would
+  tell anyone probing ids that an unpublished event exists, and when its sales
+  open.
 - `hold_seats` takes **specific seat ids** — the service does not choose seats.
   Best-adjacent-seat allocation is a real algorithm and a Phase 2+ candidate.
   It returns `hold_group_id`, the held seats, the total, and `expires_at`, which
@@ -826,3 +866,4 @@ redundant and should not be merged.
 | 2.6 | 2026-09-18 | Final review pass. Corrected a false claim from 2.5: Hibernate 7.x (7.4.5 under Spring Boot 4.1.1) *does* apply a positive lock timeout on PostgreSQL, via the connection. The source was checked. `SET LOCAL` is kept for a version-independent reason: it covers every lock in the transaction. Also added confirm's existing-order check to the READ COMMITTED list, and cause-chain / `BatchUpdateException` handling for the constraint lookup |
 | 2.6.1 | 2026-09-18 | Wording only: the Hibernate 7 lock-timeout note now describes only the checked 7.4.5 behaviour (a `SET LOCAL` around one query, then restored), not "7.x … on the connection". This was the closing review pair's deferred nit |
 | 2.6.2 | 2026-10-05 | Post-implementation sync, with no design change. The header now gives the implementation status: plans 1 and 2 of 5 are merged, PRs #5 and #10. Idempotent replay is specified as **JSON-equal, not byte-verbatim**. PR #10 showed that `jsonb` normalises stored responses (`{"ok":true}` comes back as `{"ok": true}`), so "verbatim" was unachievable, and a byte-comparing test would fail. The persistence split this section implies is now recorded as ADR-005 |
+| 2.6.3 | 2026-10-16 | Status sync, and two decisions from plan 3A's reviews. **Status:** Phase 1 is six plans; plans 1, 2 and 3A are merged (PRs #5, #10 and #18), and the header lists what `main` doesn't yet match. **Clock:** §5 now says when a transaction reads `now`: once the locks before its first decision are held, not on arrival (PR #18 review thread 4296540439). An arrival-time read let a hold that waited across `sales_close_at` succeed, made a lapsed hold look live, and shortened `expires_at` by the wait. **Drafts:** a `DRAFT` event answers `not_found` to everyone but an `ORGANISER`, instead of `sales_not_open` with its `sales_open_at` (PR #16 review finding N5). Plan 3B brings hold creation in line with both |
