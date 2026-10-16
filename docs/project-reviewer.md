@@ -1,9 +1,10 @@
 # FrontRow — Project Reviewer & Interview Guide
 
 > **Living document.** Updated as new concepts are added or lessons are learned.
-> Last updated: 2026-10-05
+> Last updated: 2026-10-15
 
-> ⚠️ **Phase 1 plans 1 and 2 of 5 have landed. Nothing can reserve a seat yet.**
+> ⚠️ **Phase 1 plans 1 and 2 of 6 have landed. Nothing can reserve a seat yet.** Plan 3A (hold creation) is
+> written, reviewed and merged as a *plan* (PR #16), but none of its code exists yet.
 >
 > **Built**, and proven by `./mvnw verify`:
 > - the Maven build and CI (build, CodeQL, dependency review, Dependabot);
@@ -110,7 +111,7 @@ already-sold seat. That gap was caught in the spec's revision-2 review. Applicat
 is designed to catch the resulting constraint violation and translate it into a structured
 `seat_taken` error rather than leaking a 500. Plan 2 built both halves of that: the
 lookup that reads the constraint name from the driver (`PostgresErrors`) and the
-`SEAT_TAKEN` code. The service that does the translation is plan 3, and is not built. The alternatives considered were
+`SEAT_TAKEN` code. The service that does the translation is plan 3A, and is not built. The alternatives considered were
 optimistic locking with a version column and pessimistic `SELECT ... FOR UPDATE`
 as the *primary* guarantee. Both work, but both place the guarantee in
 application logic, which means a bug in that logic silently becomes a
@@ -317,9 +318,9 @@ inserts before updates.
   Waits are observed in `pg_stat_activity`, not inferred from a timeout.
 - **Not proven, and worth admitting:** the seat_hold row locks. A reviewer
   deleted both `FOR UPDATE` clauses and all 14 gateway tests still passed.
-  Plan 3 owns that test.
-- **Still design (plan 3):** hold creation's lock-expire-insert-flush per seat,
-  cancellation's ordering, and every service that calls the gateway.
+  Plan 3A owns that test.
+- **Still design (plans 3A and 3B):** hold creation's lock-expire-insert-flush per seat
+  (3A), cancellation's ordering (3B), and every service that calls the gateway.
 
 **Interview talking point:** "The index guarantees no seat is ever claimed
 twice. The lock order keeps the other state transitions correct and
@@ -404,10 +405,13 @@ those are the differentiating parts.
 The cuttable parts were the organiser endpoints and the breadth of seed data."
 
 **Be ready for the timeline question, because the honest answer is better than a
-dodge.** The spec estimated "a full focused week" for Phase 1. Eighteen days in,
-the foundation and the domain foundations are built. No write path exists yet,
-so nothing can hold or buy a seat. The reason is not drift: Phase 1 was
-re-planned from 3 documents into 5 after two proved too large to review, and
+dodge.** The spec estimated "a full focused week" for Phase 1. Twenty-eight days
+in (2026-09-17 to 2026-10-15), the foundation and the domain foundations are
+built, and Plan 3A, the first write path, is written and reviewed but not yet
+executed. No write path exists yet, so nothing can hold or buy a seat. The reason
+is not drift: Phase 1 was re-planned from 3 documents into 5 when Plan 2 proved
+too large to review, and into 6 when Plan 3 did too (split into 3A and 3B on
+2026-10-14), and
 every plan has gone through multi-round review before any code was written —
 which caught five defects in plan 2 alone that would each have failed at runtime
 or build time. That is a deliberate trade of calendar time against defect cost,
@@ -447,13 +451,19 @@ record. Three more rounds (2.2–2.4) found smaller protocol bugs:
 
 These were design findings. Plan 2 (PR #10) built the lock-order primitives and
 lazy expiry as an immediate guarded `UPDATE`, both with tests. The cancel, confirm
-and release paths that use them are plan 3, and are not built.
+and release paths that use them are plan 3B, and are not built.
 
-### Reviewing Until the Rule Is Met, and a Claim I Got Wrong
+### Seven Review Rounds, and a Claim I Got Wrong
 
 Revision 2 went through seven review rounds before merging. After every fix
 pass, the reviewer that raised the findings resumed to verify them, and a fresh
 reviewer read cold. Blockers per round were 2, 1, 2, 1, 0, 1 and 0.
+Under the review standard as written then, that stopped one clean round early:
+round 7 was the only BLOCKER-free fresh round after round 6's BLOCKER, and the
+standard's one exception, for an escalated round on a stronger model, did not
+apply, because every reviewer ran on the session's own model. That is the same
+shortfall as the PR #16 miscount in the 2026-10-15 section below: one clean
+round, not two.
 
 The round-6 blocker was mine. In round 5, I wrote a reviewer's suggestion into
 the spec: that Hibernate's PostgreSQL dialect ignores a positive lock-timeout
@@ -476,7 +486,7 @@ version we'll pin, before it goes into a spec."
 *No runtime defect is known on `main`.* That covers plans 1 and 2: the scaffold,
 CI, the V1 schema, the spike, the domain foundations and the locking gateway.
 Two things did reach `main`, and they should be named rather than hidden:
-- **A known test gap:** nothing proves the seat_hold row locks block. Plan 3 owns
+- **A known test gap:** nothing proves the seat_hold row locks block. Plan 3A owns
   it.
 - **One wrong commit message:** `a648936` claims a javadoc reflow it never did.
   PR #10 discloses it.
@@ -548,7 +558,8 @@ other test for hidden dependence on the index and found none.
 
 *Follow-up to expect:* "Three tests prove the index exists, not that it holds
 under concurrency." Correct. Spec §5's seven concurrency tests (racing holds,
-confirms and cancels) are plan 3 and are not built. Plan 2's lock tests prove the
+confirms and cancels) are split between plan 3A (tests 1, 3, 4, 5 and 7)
+and 3B (tests 2 and 6), and none is built. Plan 2's lock tests prove the
 locks behave; they never race two writers for one seat.
 The schema tests prove the constraint rejects the state; they do not prove the
 service translates the violation into the right error.
@@ -666,27 +677,85 @@ the code. My review process said every review must be posted to the PR, and for
 a whole plan it wasn't. The orchestrating session told each reviewer not to
 post, because the PR didn't exist yet. What I took from it is that a rule which
 has failed four times as prose isn't going to start working with stronger prose.
-The fixes I'm weighing are structural: open a draft PR before the first review
-so there's always somewhere to post, and a hook that flags a PR with zero review
-comments. And the review that finally got posted found a real test gap, which is
-a decent argument for the rule in the first place."
+So the fix was structural: a hook that asks before merging a PR with no human
+review on it, plus a defined place for the reviews that run before a PR exists.
+And the review that finally got posted found a real test gap, which is a decent
+argument for the rule in the first place."
 
-*Be accurate if pressed:* the structural fixes are **not adopted**. The draft-PR
-and post-to-PR rules were drafted as patches to the execution skill, then
+*Be accurate if pressed:* the first fixes proposed, an early draft PR and a post-to-PR
+patch to the execution skill, were **not adopted**. They were drafted, then
 reviewed, and that review found two blockers:
 - the branch was pushed only once, so later reviews couldn't post inline;
 - the early PR clashed with the global rule that security and pre-PR checks run
   before a PR opens.
 
-They were withdrawn and parked for a workflow audit. The merge-time hook was
-built and unit-tested, then deferred because it would apply to every project.
-None of it is live.
+They were withdrawn and parked for a workflow audit. *(Updated 2026-10-15.)* That audit
+rejected the early draft PR outright. Reviews that run before the PR exists are now held,
+or summarized in one development-review comment, and posted once the PR opens. The
+merge-time hook **is** live: the workflow audit registered it globally on 2026-10-11, and it
+was live-fired. The hook and its registration live in private repos; this repo's record of
+the change is the 2026-10-15 journal entry. It
+asks before `gh pr merge` or `gh pr ready` on a PR with no human review record. Its limit,
+if pressed: any one human record satisfies it, even an unrelated comment, and it doesn't
+see merges made outside Claude Code.
 
 *A second lesson from the same day, worth having ready:* the setup repo's
 working copy *is* the running configuration. Drafting the patches on a feature
 branch there made them live before anyone had reviewed them, because "unmerged"
 doesn't mean "inactive" for a config repo. Process changes now happen only during
 deliberate workflow audits, and a project session just writes them down.
+
+---
+
+## Checking a Plan Before Anyone Builds It, and a Miscounted Review Round (2026-10-15)
+
+**What happened.** Plan 3 (the first write path) was estimated at ~3,400 lines, 1.7× the plans already reviewed.
+Since the plan is what gets approved, I split it in two: 3A, hold creation, and 3B, everything that acts on an
+existing hold. 3A was written, I read it, and it was reviewed on PR #16 over three fresh rounds before merging.
+**None of 3A's code exists yet.** What is real is how the plan was checked. The orchestrating session and its
+subagents did the checking below.
+
+**Executing a plan's code before approving it.**
+- The plan's code blocks were applied by script to a scratch copy of `main` and built. That first check found three
+  defects in the draft:
+  - a JSON assertion comparing an `IntNode` with a `LongNode` (Jackson 3.1.5);
+  - SpotBugs findings that now have a narrow, documented exclusion;
+  - mutation checks that "failed" on a formatter error before any test ran, which would have been a false pass.
+- It still missed round 1's BLOCKER. A test written in step 1 referred to a class that only exists in step 7, and
+  Maven compiles every test file, so the plan broke mid-task. Building only the **end state** can't see that.
+- The replacement replays the plan **step by step** on a fresh copy and asserts what each step says will happen:
+  compile failures, test counts, mutation messages. It held 24 of 24, and caught a regression in the round-1 fixes.
+
+**Interview talking point:** "For a plan that subagents will execute task by task, the risk isn't the finished
+code; it's the steps in between. So in my workflow, before I approve a plan, it gets replayed in order against a
+clean checkout, and every step's stated outcome is asserted, including the steps that are meant to fail. The AI
+session builds and runs that replay; I read what it finds. The first version of the check only built the final
+state, and a reviewer found a step that couldn't compile. That's why every step is checked now."
+
+**A miscount I caught.**
+- The review rule is: stop after **two consecutive** BLOCKER-free rounds, counting **fresh** reviewers only. A
+  reviewer resumed to verify its own findings doesn't count.
+- After fresh round 1 found a BLOCKER and fresh round 2 found none, the orchestrating session told me the PR was
+  ready to merge: "two review rounds, no BLOCKER left open". The error was treating round 1 as clean because its
+  BLOCKER had been fixed. A fixed BLOCKER doesn't make a clean round, so there was one clean round, not two.
+- I asked whether the rule wasn't two clean rounds. It is. A third fresh round ran, found no BLOCKER (three
+  SUGGESTIONs: two fixed and verified, one partly fixed, its rest to be fixed when Task 4 is executed), and the PR
+  merged after that.
+- **Why the gate didn't catch it:** the checklist the session fills in before saying "ready to merge" asks for the
+  round count, each round's blocker status, and whether a resumed+fresh pair followed the last fix. All three could
+  be stated truthfully under the miscount. The gate checks proxies for the rule, not the rule itself.
+
+**Interview talking point:** "The orchestrating session told me a PR was ready to merge when, by our own rule, it
+wasn't. The rule needs two consecutive clean rounds from fresh reviewers. It reported 'two rounds, no BLOCKER left
+open', but the first round had a BLOCKER, and fixing it doesn't make it a clean round. I caught it by asking. What
+interests me is why its checklist didn't stop it: it asks for three facts that could all be stated truthfully, and
+none of them is the actual condition. It's a pattern I've seen before in this project, a prose gate that can be
+satisfied without its substance. I had the session log it for my next process audit; one candidate fix is making
+the gate state the condition itself."
+
+*Be accurate if pressed:* that fix is **proposed, not adopted** (frontrow queue item 8). The same review cycle also
+exposed two concurrent reviewers sharing one scratch folder, where one deleted the other's working copy (queue item
+7). Both wait for the next workflow audit.
 
 ---
 
@@ -700,6 +769,7 @@ deliberate workflow audits, and a project session just writes them down.
 | 2026-10-02 (wrap-up) | Plan 1 executed and merged, plan 2 written and merged, Dependabot's first two bumps merged. Added *Review as the Deliverable*, corrected the stack table, and took the scoping talking point out of the past tense. | **DRIFT FOUND** — 12 items, the sharpest being the inverse of this guide's usual risk: "What We Built — *(Nothing yet.)*" **denied** work that exists. Also: the banner read as "Phase 1 landed" when plan 1 of 5 landed; the not-built list omitted entities, repositories, security chains, seed data and Docker; "JUnit 5" contradicted `CLAUDE.md`; springdoc and Docker were listed as if present; "pin versions at scaffold time" was stale; and the scoping point described a finished week in the past tense on day 15 with no domain code |
 | 2026-10-05 (second wrap-up) | ADR-005 and spec rev 2.6.2 merged (PR #13). The persistence-split entry now cites ADR-005 instead of "still owed". The posting-failure section now says the structural fixes were drafted, reviewed (2 BLOCKERs), withdrawn and parked, not merely "candidates", and adds the config-repo-checkout-is-live lesson. | Clean on accuracy: a fresh check posted to PR #14 (review 5422689734) found 0 drift and 1 nit, a journal citation pointing at the wrong memory file, which is now fixed. The staleness pass found nothing still calling ADR-005 owed or the posting fixes live |
 | 2026-10-05 (wrap-up) | Plan 2 executed and merged (PR #10). Rewrote the banner and *What We Built* to cover the domain foundations, added a persistence row to the stack table, added "built" evidence to concepts 4 and 7 (with the unproven seat-row locks stated), added concept 8 (silent failures made loud), two bug stories, a *now built* note on the plan-2 review findings, and the subagent-execution / posting-failure section. | **DRIFT FOUND** by a fresh check posted to PR #11 (review 5420599658): 3 drift, 5 nits, all fixed. The sharpest drift was the author's own count: "12 review dispatches" told not to post was really 10 instructions to 9 agents, with the 11th review carrying no posting line at all. The other two drifts were stale: "21 constraint tests, each inserting a violating row" (really 22 runs, 3 of them acceptance checks), and "none of it implemented" in the review-history section after plan 2 built part of it |
+| 2026-10-15 (wrap-up) | Plan 3A written, reviewed over 3 fresh rounds and merged as a plan (PR #16); no code. Banner: 6 plans, 3A not executed. Added *Checking a Plan Before Anyone Builds It*. Corrected the posting-failure section: the early draft PR was rejected, and the merge-time hook is live (since 2026-10-11). | **DRIFT FOUND**: 3 drift and 4 nits, all fixed. The sharpest: the miscount section was written with the AI controller as "I", which in Markus's mouth claims a mistake he didn't make and calls him "the user" who caught it. Also: a "not adopted" line contradicting the live hook below it, and a talking point stating a cause the sources don't ("counted a verification pass"). Nits: "plan 3" references not split into 3A/3B, a single "concrete fix" where the queue lists three candidates, "all three were true", and the live hook's limit left unstated. PR #17's round-1 review (5539628551) found the "I"-as-controller drift surviving in the section heading and its bold lead, and the talking points claiming the session's replay and logging as Markus's own work; both fixed, along with "three SUGGESTIONs, fixed and verified" (one was only partly fixed) |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified

@@ -3,7 +3,9 @@
 **Date:** 2026-09-18
 **Status:** Accepted
 
-Not yet implemented. No code exists; this records a design decision. The full
+Not yet implemented. The REST and MCP adapters and the two credential chains this
+governs arrive in Phase 1 plans 4 and 5. Plans 1 and 2 built only what sits beneath
+them (plan 1's MCP spike aside), and plan 3A (hold creation) adds more beneath them. The full
 design is in the spec, `docs/superpowers/specs/2026-09-17-frontrow-design.md`
 §3 (*Caller identity*) and §6.
 
@@ -96,8 +98,10 @@ The rejected options:
   `securityMatcher`-scoped chains, everything outside both matchers —
   actuator, a later endpoint, a path-normalisation variant that slips a
   matcher — is served with no security applied, silently: no test fails.
-  Plan 2 must add a catch-all chain with no `securityMatcher` that is
+  Plan 4 must add a catch-all chain with no `securityMatcher` that is
   evaluated *last* — Spring tries chains in ascending order and stops at
   the first match, so this chain needs the largest order value,
   `@Order(Ordered.LOWEST_PRECEDENCE)` — with `anyRequest().denyAll()`, plus
   a test that hits an unmatched path and expects 401/403.
+
+*Plan numbering updated 2026-10-15 (PR #17) to the current six-plan Phase 1, after the 2026-10-02 re-plan and the 2026-10-14 split of Plan 3 into 3A and 3B; no decision changed.*
