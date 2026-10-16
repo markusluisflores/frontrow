@@ -337,8 +337,8 @@ The one exception is `hold_request.created_at`, which records when the request
 arrived. Hold creation reads the clock for it on arrival, and binds it to the
 step-1 key insert. Only the 24-hour purge reads it.
 
-Every lock in steps 1-3 can wait without limit. An instant read before those
-waits would judge the request by a moment that has already passed:
+No lock in hold creation's steps 1-3 has a timeout. An instant read before
+those waits would judge the request by a moment that has already passed:
 - a hold that waited across `sales_close_at` would still be granted;
 - a seat whose hold lapsed during the wait would still look held, so the
   request would get a false `seat_taken`;
@@ -612,14 +612,9 @@ annotation, which generates the JSON schema from the method signature.
   filters on `starts_at`; only `ON_SALE` events are returned. `limit` defaults
   to 10, max 50.
 - **A `DRAFT` event answers `not_found`** to `get_event`, `check_availability`,
-  `hold_seats` and the REST equivalents, for every caller (§4). `search_events`
-  and `GET /api/events` leave it out instead. Only the `ORGANISER` endpoints act
-  on a draft: `POST /api/events` creates it, and `PATCH /api/events/{id}`
-  changes it. Answering a hold with `sales_not_open` and its `sales_open_at`
-  would tell anyone probing ids when an unpublished event's sales open.
-  `not_found` withholds that and the event's details. It is the same for a
-  draft and for an id a rolled-back insert consumed; sequential ids still show
-  a prober that the id was used.
+  `hold_seats` and the REST equivalents, for every caller. `search_events` and
+  `GET /api/events` leave it out. `POST /api/events` creates a draft and
+  `PATCH /api/events/{id}` changes it. See §4 for the reason.
 - `hold_seats` takes **specific seat ids** — the service does not choose seats.
   Best-adjacent-seat allocation is a real algorithm and a Phase 2+ candidate.
   It returns `hold_group_id`, the held seats, the total, and `expires_at`, which
