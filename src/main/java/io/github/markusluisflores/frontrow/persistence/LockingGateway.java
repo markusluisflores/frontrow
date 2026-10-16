@@ -18,7 +18,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Every lock in the system, taken through explicit SQL in the one global order spec §5 defines: the hold_request key,
- * the per-owner advisory lock, the event row, then seat_hold rows ascending by event_seat_id.
+ * the per-owner advisory lock, the event row, then seat_hold rows ascending by event_seat_id. The statements that can
+ * wait on a lock without saying so — the hold_request key insert (step 1) and the seat_hold insert, which waits on
+ * uq_claimed_seat (step 4) — live here too, so every wait in the lock order is visible in this one file.
  *
  * <p>These reads deliberately bypass the JPA persistence context. A locking query must return the row as currently
  * committed, not an entity Hibernate already cached, and lazy expiry must reach the database before the insert that
@@ -101,7 +103,7 @@ public class LockingGateway {
         return jdbc.sql("UPDATE seat_hold SET status = 'EXPIRED'"
                                 + " WHERE id = :id AND status = 'ACTIVE' AND expires_at <= :now")
                         .param("id", holdId)
-                        .param("now", OffsetDateTime.ofInstant(now, ZoneOffset.UTC))
+                        .param("now", utc(now))
                         .update()
                 == 1;
     }
@@ -125,8 +127,72 @@ public class LockingGateway {
                         SELECT count(DISTINCT hold_group_id) FROM seat_hold
                         WHERE owner = :owner AND status = 'ACTIVE' AND expires_at > :now""")
                 .param("owner", owner)
-                .param("now", OffsetDateTime.ofInstant(now, ZoneOffset.UTC))
+                .param("now", utc(now))
                 .query(Integer.class)
+                .single();
+    }
+
+    /**
+     * Step 1 (hold creation only): inserts the idempotency key, or does nothing when it exists. While another
+     * transaction holding the same key is still running, Postgres makes this insert wait for it (spec §5). Returns
+     * true when this call inserted the key; false means the key already exists: committed by another request, or
+     * claimed earlier in this transaction.
+     */
+    public boolean claimIdempotencyKey(String owner, String idempotencyKey, String requestHash, Instant now) {
+        return jdbc.sql("""
+                        INSERT INTO hold_request (owner, idempotency_key, request_hash, created_at)
+                        VALUES (:owner, :key, :hash, :now)
+                        ON CONFLICT (owner, idempotency_key) DO NOTHING""")
+                        .param("owner", owner)
+                        .param("key", idempotencyKey)
+                        .param("hash", requestHash)
+                        .param("now", utc(now))
+                        .update()
+                == 1;
+    }
+
+    /** The stored request, read in a fresh statement after a key conflict, so READ COMMITTED sees the committed row. */
+    public Optional<StoredHoldRequest> findHoldRequest(String owner, String idempotencyKey) {
+        return jdbc.sql("""
+                        SELECT request_hash, response_json::text AS response_json FROM hold_request
+                        WHERE owner = :owner AND idempotency_key = :key""")
+                .param("owner", owner)
+                .param("key", idempotencyKey)
+                .query((rs, rowNum) ->
+                        new StoredHoldRequest(rs.getString("request_hash"), rs.getString("response_json")))
+                .optional();
+    }
+
+    /** Completes this transaction's claimed hold_request row. jsonb normalises the text: replays are JSON-equal. */
+    public void recordHoldResponse(String owner, String idempotencyKey, UUID holdGroupId, String responseJson) {
+        int updated = jdbc.sql("""
+                        UPDATE hold_request SET hold_group_id = :group, response_json = CAST(:json AS jsonb)
+                        WHERE owner = :owner AND idempotency_key = :key""")
+                .param("group", holdGroupId)
+                .param("json", responseJson)
+                .param("owner", owner)
+                .param("key", idempotencyKey)
+                .update();
+        if (updated != 1) {
+            throw new IllegalStateException("no claimed hold_request row to complete");
+        }
+    }
+
+    /**
+     * Step 4, one seat: inserts the new ACTIVE row at once, so a conflict surfaces here, inside the service, rather
+     * than at commit. An uncommitted claim on the same seat makes this wait on uq_claimed_seat; a committed claim
+     * makes it fail with 23505.
+     */
+    public long insertHold(long eventSeatId, UUID holdGroupId, String owner, Instant expiresAt, Instant now) {
+        return jdbc.sql("""
+                        INSERT INTO seat_hold (event_seat_id, hold_group_id, owner, status, expires_at, created_at)
+                        VALUES (:seat, :group, :owner, 'ACTIVE', :expires, :now) RETURNING id""")
+                .param("seat", eventSeatId)
+                .param("group", holdGroupId)
+                .param("owner", owner)
+                .param("expires", utc(expiresAt))
+                .param("now", utc(now))
+                .query(Long.class)
                 .single();
     }
 
@@ -146,5 +212,10 @@ public class LockingGateway {
      */
     private static Instant instantAt(ResultSet rs, String column) throws SQLException {
         return rs.getObject(column, OffsetDateTime.class).toInstant();
+    }
+
+    /** pgjdbc 42.7.13 infers no SQL type for a bare Instant, so every bind goes through OffsetDateTime. */
+    private static OffsetDateTime utc(Instant instant) {
+        return OffsetDateTime.ofInstant(instant, ZoneOffset.UTC);
     }
 }
