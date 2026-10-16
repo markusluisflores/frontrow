@@ -21,6 +21,22 @@ Phase 1 was five plans. **On 2026-10-14 Markus split Plan 3 in two**, because th
 
 Also read `docs/adr/ADR-005` and PR #10's description, whose "Carried to Plan 3" list this plan works through. The spec coverage table at the end says which task closes each item.
 
+## Errata (2026-10-16, with spec rev 2.6.3)
+
+This plan was executed and merged as PR #18 (`4de410e`). The text below the errata is left as it was reviewed. Where it is wrong, or where `src/main` differs from it, the code on `main` is authoritative, and the affected passage carries a marker pointing here.
+
+- **E1. Decision 3: "no connection" is wrong.** An oversized request does not cost "no connection". By the time `hold()` runs its first check, the `@Transactional` proxy has begun the transaction, and Hibernate's begin has already called `setAutoCommit(false)` on a checked-out connection (`javap` of hibernate-core 7.4.5, `AbstractLogicalConnectionImplementor.begin()`). The early check still saves the sort, every lock and the oversized `IN` list. The code comment in `HoldService` says only "no sort and no lock", which is right. *(PR #18, final whole-branch review, NIT 4.)*
+- **E2. Decision 8: "characters" means UTF-16 code units.** The limit is `String.length() <= 200`, so a character outside the Basic Multilingual Plane counts as two. That errs strict, and it stays. The built check also requires a **well-formed** UTF-16 key. pgjdbc encodes parameters with the JDK's UTF-8 encoder, which turns an unpaired surrogate into `?`, so `"k\uD800"` and `"k?"` from one owner were the same key. Such keys are now `invalid_request` with `parameter: idempotency_key`. *(PR #18 fresh round 1; fixed in `89a1f6c`.)*
+- **E3. `SalesGate` uses switch expressions, not the arrow-form switch statements in Task 3's code block.** A switch statement over an enum doesn't have to be exhaustive. A new `EventStatus` or `WindowState` constant would therefore compile, match no case, and let the hold through. With switch expressions and no `default`, the same change is a compile error. This matters beyond 3A, because 3B's confirm reuses the gate (self-review item 4). *(Flagged by PR #18's Task 3 reviewer; proved by the final whole-branch review with a javac 25 probe; fixed in `de7cae8`.)*
+- **E4. The restore guarantee in Task 4's test and in self-review item 5 is overstated.** The javadoc on `withoutTheClaimIndexTheSameRaceHasSeveralWinners` says the restore "must run even when the race or the cleanup fails, and the timeout stops a stuck restore from hanging the build". Self-review item 5 says its "failure paths are reasoned, not reproduced". Both failure paths have since been reproduced, and neither holds as written:
+  - **A failed scoped `DELETE`.** The nested `finally` still runs `CREATE UNIQUE INDEX`. But the race's duplicate `ACTIVE` rows are still there, so the `CREATE` fails too. Its error replaces the original one, and the index stays dropped for every later test in the shared context. A mutation that made the `DELETE` fail left `HoldServiceTest` with 3 failures.
+  - **The timeout.** `@Timeout(SEPARATE_THREAD)` fails the test and interrupts its thread. A pgjdbc call waiting on a lock ignores the interrupt, so the statement stays queued in Postgres, and later `seat_hold` writers queue behind it.
+
+  What holds: the restore is always *attempted*, the timeout *fails* the test, and neither gap can produce a false green. The test's javadoc on `main` says exactly this. *(PR #16 round 3, review threads 4287478587 and 4287902752; javadoc corrected in `af6daa6` and `de7cae8`.)*
+- **E5. Two decisions superseded by spec rev 2.6.3.** These were right when written. The spec has since decided otherwise, and Plan 3B changes the code:
+  - **Decision 5:** `now` is read "once, at the top of `hold()`", on arrival. Spec 2.6.3 (§5 *Locking discipline*) reads it once the event-row lock is held. `hold_request.created_at` keeps the arrival time. The microsecond truncation is unchanged.
+  - **`SalesGate`, and the test `aDraftEventIsNotOpenYet`:** a `DRAFT` event answers `sales_not_open` with its `sales_open_at`. Spec 2.6.3 (§4, §5 step 3, §6) makes it `not_found`, so that a draft isn't disclosed.
+
 ## Global Constraints
 
 - **The domain core has no Spring Web and no MCP types** (`CLAUDE.md`). The `domain` package imports only `java.*`; check with the grep in `CLAUDE.md`.
@@ -58,15 +74,15 @@ Each is listed so a reviewer can reject it individually.
    4. Duplicate seat ids, then seats the event doesn't offer.
    5. The per-owner group cap.
 
-   Spec §5's list maps failures to codes but doesn't fix their order. `too_many_seats` is checked on the raw list **before the fingerprint and the key claim**, so an oversized request costs no sort, no lock, no connection and no oversized `IN` list. *(PR #16 round 3, S3.)* One consequence: an oversized list that also contains duplicates gets `too_many_seats`, not the duplicate error. A list within the cap that contains duplicates still gets the duplicate error. The cap bounds only the service's own work: `HoldCommand` still copies whatever list it is given, so Plans 4 and 5 bound the request size at the adapter (see the coverage table).
+   Spec §5's list maps failures to codes but doesn't fix their order. `too_many_seats` is checked on the raw list **before the fingerprint and the key claim**, so an oversized request costs no sort, no lock, no connection and no oversized `IN` list. *(PR #16 round 3, S3.)* *(Erratum E1: a connection is already checked out.)* One consequence: an oversized list that also contains duplicates gets `too_many_seats`, not the duplicate error. A list within the cap that contains duplicates still gets the duplicate error. The cap bounds only the service's own work: `HoldCommand` still copies whatever list it is given, so Plans 4 and 5 bound the request size at the adapter (see the coverage table).
 
    A request with the same key as a committed one is replayed **before** any check of current state (steps 3-5). Replays report what happened; they don't re-check current state (spec §5). The step 1 checks run first even then, so a malformed or oversized request is never compared with a stored one: it gets `invalid_request` or `too_many_seats`, not a replay or `idempotency_key_reused`. Every stored request passed those checks, so a retry of one passes them again, unless `max-seats-per-hold` has since been lowered below its size.
 4. **A seat that already has a live hold is not rejected early. The insert is left to fail on `uq_claimed_seat`.** That keeps `seat_taken` decided in exactly one place, the schema (ADR-001). It also makes the Task 4 mutation test deterministic: with the index dropped, a second racer always succeeds, so "the race needs the index" is proven rather than likely.
-5. **`now` and `expires_at` are truncated to microseconds.** `timestamptz` stores microseconds, and the injected clock can carry nanoseconds. Without truncation, the returned `expiresAt` would differ from the stored one. And because pgjdbc rounds the instants it binds, Java's `HoldRules.isLive` and the SQL cap count could disagree within half a microsecond. `now` is therefore truncated once, at the top of `hold()`. *(PR #16 round 1, N1.)*
+5. **`now` and `expires_at` are truncated to microseconds.** `timestamptz` stores microseconds, and the injected clock can carry nanoseconds. Without truncation, the returned `expiresAt` would differ from the stored one. And because pgjdbc rounds the instants it binds, Java's `HoldRules.isLive` and the SQL cap count could disagree within half a microsecond. `now` is therefore truncated once, at the top of `hold()`. *(PR #16 round 1, N1.)* *(Erratum E5: spec rev 2.6.3 moves the read to after the event-row lock.)*
 6. **The stored response is the service result, not an adapter's wire form.** `hold_request.response_json` holds `HoldResult` as Jackson 3 JSON, and a replay deserializes it back into a `HoldResult`. Plans 4 and 5 render that record their own way, so the stored form never ties the two adapters together.
    - **The stored form uses a mapper `HoldService` builds itself** (`HoldService.STORED_FORM`, a default `JsonMapper.builder().build()`), **not the Boot-configured bean**. If Plan 4 changes the application-wide Jackson settings (for example a global snake_case naming strategy, since the spec's wire names are snake_case), rows already stored inside their 24-hour replay window would otherwise stop deserializing, and a replay would become a 500. *(PR #16 round 1, S1.)*
 7. **The request fingerprint** (`hold_request.request_hash`) is SHA-256, in lowercase hex, over the text `<event_id>:` followed by each requested seat id in ascending order, each with a `,` after it. Duplicates are kept: a request with duplicates is rejected, and a rejected request is never stored, so they can't cause a false replay. The function lives in `domain`, because `java.security` is JDK-only.
-8. **Idempotency keys must be 1 to 200 characters, not blank, and free of U+0000.** The spec requires a key but sets no format. Anything outside that is `invalid_request` with `parameter: idempotency_key`. Postgres `text` cannot store NUL: binding a key that contains one fails with SQLState `22021`, which `SqlFailures` doesn't translate, so without this check a JSON string such as `"k\u0000ey"` would reach the caller as a 500. *(PR #16 round 3, S1.)*
+8. **Idempotency keys must be 1 to 200 characters, not blank, and free of U+0000.** The spec requires a key but sets no format. Anything outside that is `invalid_request` with `parameter: idempotency_key`. Postgres `text` cannot store NUL: binding a key that contains one fails with SQLState `22021`, which `SqlFailures` doesn't translate, so without this check a JSON string such as `"k\u0000ey"` would reach the caller as a 500. *(PR #16 round 3, S1.)* *(Erratum E2: "characters" means UTF-16 code units, and the key must also be well-formed UTF-16.)*
 9. **Error detail keys**, which both adapters will render (spec §6):
    - `seat_taken` → `seat_ids`: the seat whose insert failed;
    - `sales_not_open` → `sales_open_at`;
@@ -956,7 +972,7 @@ final class SqlFailures {
 }
 ```
 
-`src/main/java/io/github/markusluisflores/frontrow/service/SalesGate.java`:
+`src/main/java/io/github/markusluisflores/frontrow/service/SalesGate.java` *(Erratum E3: built with switch expressions. Erratum E5: spec rev 2.6.3 makes `DRAFT` `not_found`.)*:
 
 ```java
 package io.github.markusluisflores.frontrow.service;
@@ -1950,7 +1966,7 @@ public final class Race {
 
 - [ ] **Step 2: Write the concurrency tests**
 
-`src/test/java/io/github/markusluisflores/frontrow/service/HoldConcurrencyTest.java`:
+`src/test/java/io/github/markusluisflores/frontrow/service/HoldConcurrencyTest.java` *(Erratum E4: the restore javadoc on `withoutTheClaimIndexTheSameRaceHasSeveralWinners` overstates its guarantee.)*:
 
 ```java
 package io.github.markusluisflores.frontrow.service;
@@ -2269,7 +2285,7 @@ Run by the plan author on 2026-10-14 against the `superpowers:writing-plans` che
 4. **Sibling reuse.**
    - `HoldFixtures` repeats the `utc(Instant)` binding helper that `LockingGateway` and `LockingGatewayTest` already have. That is deliberate: test support must not reach into a main-code private method.
    - `SqlFailures` reuses `PostgresErrors` rather than walking the cause chain again.
-   - `SalesGate` is written once so that 3B's confirm can reuse it.
+   - `SalesGate` is written once so that 3B's confirm can reuse it. *(Erratum E3: as built, with switch expressions.)*
 5. **Tooling self-consistency.**
    - All four commit messages pass the real `.githooks/commit-msg`, at 66, 67, 55 and 55 characters.
    - Every code block was applied to a scratch worktree of `main` (`e432c3c`'s descendant `8e2f57f`) by script, verbatim from this file, and then run through `./mvnw spotless:apply` and `./mvnw verify`.
@@ -2306,5 +2322,5 @@ Run by the plan author on 2026-10-14 against the `superpowers:writing-plans` che
        - S1, the NUL check removed from `requireWellFormed`: the key claim throws `DataIntegrityViolationException` (`invalid byte sequence for encoding "UTF8": 0x00`) instead of a `DomainException`.
        - S3, the raw size check removed from `hold()`: `expected: TOO_MANY_SEATS but was: IDEMPOTENCY_KEY_REUSED`.
        - N4, `requireWellFormed` moved behind the key claim: `expected: INVALID_REQUEST but was: IDEMPOTENCY_KEY_REUSED`.
-     - The S2 restore (`@Timeout` in `SEPARATE_THREAD` mode, a scoped `DELETE`, then `CREATE UNIQUE INDEX IF NOT EXISTS` in a nested `finally`) passed in every run. Its failure paths are reasoned, not reproduced.
+     - The S2 restore (`@Timeout` in `SEPARATE_THREAD` mode, a scoped `DELETE`, then `CREATE UNIQUE INDEX IF NOT EXISTS` in a nested `finally`) passed in every run. Its failure paths are reasoned, not reproduced. *(Erratum E4: both failure paths were later reproduced, and the restore guarantee is weaker than stated.)*
 6. **Verification-matrix crossing.** Task 4 has two independent dimensions: concurrency (sequential or raced) and identity (distinct owners, or one owner). The two most likely to interact are crossed on purpose. Test 4 races **one owner**, so the advisory lock and the cap check interact under contention. Test 5 races **one owner with one key**, so the key wait and the replay read interact. Tests 1 and 3 race distinct owners, so that neither lock serializes the race they exist to prove.
