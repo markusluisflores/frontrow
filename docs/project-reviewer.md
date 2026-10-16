@@ -830,9 +830,9 @@ a compiler probe, a reproduction or a mutation, so it was proven rather than arg
 - The review-round count is two fresh rounds, both BLOCKER-free. Each round's fixes were verified by that round's
   reviewer, resumed. The last fix pass, which added one test and changed two comments, got that resumed
   verification rather than a third fresh round, because the stopping rule doesn't send a SUGGESTION to another
-  fresh round. That was stated before the merge. My own pre-merge checklist also asks for a fresh review after the last fix; that
-  could not be met here, the rule and the checklist disagreed, and I logged it on the process queue (item 8) for the
-  next process audit.
+  fresh round. That was stated before the merge. My own pre-merge checklist also asks for a fresh review after the
+  last fix; that could not be met here, the rule and the checklist disagreed, and I had the session log it on the
+  process queue (item 8) for the next process audit.
 - Seven review findings were deliberately not fixed. They were carried to plan 3B and plan 4, with a reply on each
   PR thread. Examples: when the clock is read relative to lock waits, and what REST should call the
   idempotency-key parameter.
