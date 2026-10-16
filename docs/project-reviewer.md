@@ -512,7 +512,11 @@ version we'll pin, before it goes into a spec."
 scaffold, CI, the V1 schema, the spike, the domain foundations, the locking
 gateway and hold creation. (Seven review findings on hold creation were parked
 with rulings rather than fixed, one of them a request that waits across
-`sales_close_at` and can still get a hold; see *Building the First Write Path*.)
+`sales_close_at` and can still get a hold. That one is not a defect on `main`: the clock is read once, at arrival,
+which is plan decision 5's design, and the spec does not fix the sampling point. Nothing can be bought yet, and
+confirm will re-check the sales window. The same cause has two more effects: a hold that lapsed during the wait can
+give a false `seat_taken`, and `expires_at` is short by the length of the wait. Plan 3B decides the sampling point.
+See *Building the First Write Path*.)
 Two things did reach `main`, and they should be named
 rather than hidden:
 - **A test gap, now closed:** after plan 2, nothing proved the seat_hold row locks
@@ -523,8 +527,8 @@ rather than hidden:
 Several real defects were caught **before** merge, and those are the ones worth
 discussing, because catching them is the claim:
 
-- **Plan 3A, three defects before merge:** the sales gate's switch failing open, two idempotency keys aliasing
-  through a surrogate character, and a per-seat price test that could not see the bug. The stories are in *Building
+- **Plan 3A, two defects and a test gap before merge:** the sales gate's switch failing open, two idempotency keys
+  aliasing through a surrogate character, and a test gap where no test checked each seat's own price. The stories are in *Building
   the First Write Path* below.
 - **Plan 1 review, 3 blockers:** `mvnw` would have been committed without its
   executable bit (`core.filemode=false` locally), failing CI on a file that
@@ -810,19 +814,19 @@ reading the code found the problem, and an experiment proved it:
   PR #16 missed it. The task reviewer flagged it as a fail-open minor for final-review triage. The final whole-branch
   review raised it to a SUGGESTION and proved it by compiling a probe with the project's own JDK. The fix uses switch
   *expressions*, where a missing case is a compile error.
-- **Two idempotency keys that the database treated as one.** The Postgres driver encodes strings with the JDK's UTF-8
+- **Two idempotency keys that the driver turned into one.** The Postgres driver encodes strings with the JDK's UTF-8
   encoder, which silently turns an unpaired UTF-16 surrogate into `?`. So `"k\uD800"` and `"k?"` from the same
   owner were stored as the same key, and the second request got the first one's replay. Review round 1 reproduced
   it against real Postgres. Such keys are now rejected as `invalid_request`.
-- **A test that couldn't see the bug it was named for.** Every test seat had the same price, so nothing checked that
-  each held seat carries its *own* price. Round 2 proved it with a mutation: charging every seat the first seat's
-  price passed all 24 service tests. A test with two different prices now fails on that mutation.
+- **A test gap, not a defect.** `HoldService` already attached the right price to each seat. But every fixture seat
+  had the same price, so no test checked that each held seat carries its *own* price. Round 2 proved it with a mutation: charging every seat the first seat's
+  price passed all 24 service tests. A test with two different prices now fails on that mutation. The commit changed only tests and comments.
 
-**Interview talking point:** "The bugs I find most instructive in this project are the ones that got past a review.
+**Interview talking point:** "The findings I find most instructive in this project are the ones that got past a review.
 One was in the plan itself: a guard written as a Java switch statement, which compiles fine when a new enum value
 is added and then silently does nothing for it. The reviewer didn't argue it; they compiled a probe that showed it.
 Another was an encoding edge case: the JDBC driver quietly rewrites a malformed string, so two different idempotency
-keys collapsed into one. And one was a test-data blind spot that a single mutation exposed. What they have in common
+keys collapsed into one. And one was a test-data blind spot, not a defect, that a single mutation exposed. What they have in common
 is that each one had already passed one careful read. The next reviewer suspected it, then turned the suspicion into
 a compiler probe, a reproduction or a mutation, so it was proven rather than argued."
 
