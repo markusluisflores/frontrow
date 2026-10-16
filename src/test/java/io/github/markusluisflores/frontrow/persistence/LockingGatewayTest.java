@@ -7,6 +7,7 @@ import io.github.markusluisflores.frontrow.TestcontainersConfiguration;
 import io.github.markusluisflores.frontrow.domain.EventStatus;
 import io.github.markusluisflores.frontrow.domain.HoldStatus;
 import io.github.markusluisflores.frontrow.error.PostgresErrors;
+import io.github.markusluisflores.frontrow.support.LockWaits;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -14,6 +15,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,6 +30,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Proves the Postgres lock semantics spec §5 depends on, with real concurrent transactions: a single-threaded test
@@ -52,6 +55,9 @@ class LockingGatewayTest {
 
     @Autowired
     TransactionTemplate tx;
+
+    @Autowired
+    JsonMapper json;
 
     ExecutorService pool;
     long eventId;
@@ -133,7 +139,7 @@ class LockingGatewayTest {
     void anExclusiveEventLockMakesAShareLockWait() throws Exception {
         CountDownLatch exclusiveHeld = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
-        CountDownLatch waiterStarted = new CountDownLatch(1);
+        CompletableFuture<Integer> waiterPid = new CompletableFuture<>();
 
         Future<?> holder = pool.submit(() -> tx.executeWithoutResult(status -> {
             gateway.lockEventForUpdate(eventId);
@@ -143,13 +149,12 @@ class LockingGatewayTest {
         assertThat(exclusiveHeld.await(10, TimeUnit.SECONDS)).isTrue();
 
         Future<Boolean> waiter = pool.submit(() -> tx.execute(status -> {
-            waiterStarted.countDown();
+            waiterPid.complete(LockWaits.backendPid(jdbc));
             return gateway.lockEventForShare(eventId).isPresent();
         }));
-        assertThat(waiterStarted.await(10, TimeUnit.SECONDS)).isTrue();
 
-        // Postgres's own view of the world: a session is blocked on a lock, not merely unscheduled.
-        awaitSessionsWaitingOnLocks(1);
+        // Postgres's own view: this waiter's session is blocked on a lock, not merely unscheduled.
+        LockWaits.awaitBlockedOnLock(jdbc, waiterPid.get(10, TimeUnit.SECONDS));
         assertThat(waiter.isDone()).isFalse();
 
         release.countDown();
@@ -188,7 +193,7 @@ class LockingGatewayTest {
     void theAdvisoryLockSerializesOneOwnerAndNotTwo() throws Exception {
         CountDownLatch aliceHolds = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
-        CountDownLatch secondAliceStarted = new CountDownLatch(1);
+        CompletableFuture<Integer> secondAlicePid = new CompletableFuture<>();
 
         Future<?> alice = pool.submit(() -> tx.executeWithoutResult(status -> {
             gateway.lockOwner("alice");
@@ -202,16 +207,86 @@ class LockingGatewayTest {
                 .get(10, TimeUnit.SECONDS);
 
         Future<?> secondAlice = pool.submit(() -> tx.executeWithoutResult(status -> {
-            secondAliceStarted.countDown();
+            secondAlicePid.complete(LockWaits.backendPid(jdbc));
             gateway.lockOwner("alice");
         }));
-        assertThat(secondAliceStarted.await(10, TimeUnit.SECONDS)).isTrue();
-        awaitSessionsWaitingOnLocks(1);
+        LockWaits.awaitBlockedOnLock(jdbc, secondAlicePid.get(10, TimeUnit.SECONDS));
         assertThat(secondAlice.isDone()).isFalse();
 
         release.countDown();
         secondAlice.get(10, TimeUnit.SECONDS);
         alice.get(10, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void aLockedActiveHoldMakesASecondLockerWait() throws Exception {
+        insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        CountDownLatch held = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<Integer> waiterPid = new CompletableFuture<>();
+
+        Future<?> holder = pool.submit(() -> tx.executeWithoutResult(status -> {
+            assertThat(gateway.lockActiveHoldForSeat(eventSeatId)).isPresent();
+            held.countDown();
+            awaitQuietly(release);
+        }));
+        assertThat(held.await(10, TimeUnit.SECONDS)).isTrue();
+
+        Future<Boolean> waiter = pool.submit(() -> tx.execute(status -> {
+            waiterPid.complete(LockWaits.backendPid(jdbc));
+            return gateway.lockActiveHoldForSeat(eventSeatId).isPresent();
+        }));
+        LockWaits.awaitBlockedOnLock(jdbc, waiterPid.get(10, TimeUnit.SECONDS));
+        assertThat(waiter.isDone()).isFalse();
+
+        release.countDown();
+        assertThat(waiter.get(10, TimeUnit.SECONDS)).isTrue();
+        holder.get(10, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void aLockedGroupMakesASecondGroupLockerWait() throws Exception {
+        UUID group = UUID.randomUUID();
+        insertHold(eventSeatId, group, "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        insertHold(secondEventSeatId, group, "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        CountDownLatch held = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<Integer> waiterPid = new CompletableFuture<>();
+
+        Future<?> holder = pool.submit(() -> tx.executeWithoutResult(status -> {
+            assertThat(gateway.lockGroupRows(group, "alice")).hasSize(2);
+            held.countDown();
+            awaitQuietly(release);
+        }));
+        assertThat(held.await(10, TimeUnit.SECONDS)).isTrue();
+
+        Future<Integer> waiter = pool.submit(() -> tx.execute(status -> {
+            waiterPid.complete(LockWaits.backendPid(jdbc));
+            return gateway.lockGroupRows(group, "alice").size();
+        }));
+        LockWaits.awaitBlockedOnLock(jdbc, waiterPid.get(10, TimeUnit.SECONDS));
+        assertThat(waiter.isDone()).isFalse();
+
+        release.countDown();
+        assertThat(waiter.get(10, TimeUnit.SECONDS)).isEqualTo(2);
+        holder.get(10, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void aHoldExpiringExactlyNowIsExpired() {
+        long holdId = insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW);
+
+        tx.executeWithoutResult(status -> {
+            assertThat(gateway.expireHold(holdId, NOW)).isTrue();
+            assertThat(statusOf(holdId)).isEqualTo("EXPIRED");
+        });
+    }
+
+    @Test
+    void aGroupExpiringExactlyNowDoesNotCountTowardTheCap() {
+        insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW);
+        assertThat(tx.<Integer>execute(status -> gateway.countActiveHoldGroups("alice", NOW)))
+                .isZero();
     }
 
     @Test
@@ -302,20 +377,6 @@ class LockingGatewayTest {
                 .isEqualTo(1);
     }
 
-    /** Waits until Postgres reports at least `expected` sessions blocked on a lock, so "it waits" is observed. */
-    private void awaitSessionsWaitingOnLocks(int expected) throws InterruptedException {
-        for (int attempt = 0; attempt < 100; attempt++) {
-            int waiting = jdbc.sql("""
-                            SELECT count(*) FROM pg_stat_activity
-                            WHERE datname = current_database() AND wait_event_type = 'Lock'""").query(Integer.class).single();
-            if (waiting >= expected) {
-                return;
-            }
-            Thread.sleep(100);
-        }
-        throw new AssertionError("no session reported waiting on a lock within 10s");
-    }
-
     private long insertSeat(String row, int number) {
         return jdbc.sql("""
                         INSERT INTO seat (venue_id, section, row_label, seat_number)
@@ -350,6 +411,128 @@ class LockingGatewayTest {
                 .param("created", utc(NOW))
                 .query(Long.class)
                 .single();
+    }
+
+    @Test
+    void claimsAnIdempotencyKeyOnlyOnce() {
+        tx.executeWithoutResult(status -> {
+            assertThat(gateway.claimIdempotencyKey("alice", "k1", "hash-a", NOW))
+                    .isTrue();
+            // Its own uncommitted row conflicts at once: a transaction never waits on itself.
+            assertThat(gateway.claimIdempotencyKey("alice", "k1", "hash-a", NOW))
+                    .isFalse();
+            // Keys are per owner.
+            assertThat(gateway.claimIdempotencyKey("bob", "k1", "hash-a", NOW)).isTrue();
+        });
+    }
+
+    @Test
+    void aConcurrentClaimOfTheSameKeyWaitsThenSeesTheCommittedRow() throws Exception {
+        assertThat(racingClaimAfterFirstClaim(false)).isFalse();
+    }
+
+    @Test
+    void aConcurrentClaimOfTheSameKeyProceedsWhenTheFirstRollsBack() throws Exception {
+        assertThat(racingClaimAfterFirstClaim(true)).isTrue();
+    }
+
+    @Test
+    void readsBackTheStoredResponseAsEqualJson() {
+        UUID group = UUID.randomUUID();
+        tx.executeWithoutResult(status -> {
+            gateway.claimIdempotencyKey("alice", "k1", "hash-a", NOW);
+            gateway.recordHoldResponse("alice", "k1", group, "{\"ok\":true,\"seats\":[3,1]}");
+        });
+
+        StoredHoldRequest stored =
+                tx.execute(status -> gateway.findHoldRequest("alice", "k1")).orElseThrow();
+        assertThat(stored.requestHash()).isEqualTo("hash-a");
+        // jsonb normalises whitespace and key order, so compare parsed trees, never raw text (spec §5, rev 2.6.2).
+        assertThat(json.readTree(stored.responseJson())).isEqualTo(json.readTree("{\"seats\":[3,1],\"ok\":true}"));
+        assertThat(tx.<Optional<StoredHoldRequest>>execute(status -> gateway.findHoldRequest("alice", "other")))
+                .isEmpty();
+    }
+
+    @Test
+    void recordingAResponseForAnUnclaimedKeyFails() {
+        assertThat(catchThrowable(() -> tx.executeWithoutResult(
+                        status -> gateway.recordHoldResponse("alice", "never", UUID.randomUUID(), "{}"))))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void insertsAnActiveHoldImmediately() {
+        tx.executeWithoutResult(status -> {
+            long holdId = gateway.insertHold(eventSeatId, UUID.randomUUID(), "alice", NOW.plusSeconds(600), NOW);
+            // Read back through SQL inside the same transaction: the INSERT already reached the database.
+            assertThat(statusOf(holdId)).isEqualTo("ACTIVE");
+        });
+    }
+
+    @Test
+    void aSecondClaimOnAClaimedSeatViolatesTheClaimIndex() {
+        insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+
+        Throwable thrown = catchThrowable(() -> tx.executeWithoutResult(
+                status -> gateway.insertHold(eventSeatId, UUID.randomUUID(), "bob", NOW.plusSeconds(600), NOW)));
+
+        assertThat(PostgresErrors.sqlState(thrown)).isEqualTo(PostgresErrors.UNIQUE_VIOLATION);
+        assertThat(PostgresErrors.constraintName(thrown)).isEqualTo(PostgresErrors.UQ_CLAIMED_SEAT);
+    }
+
+    @Test
+    void anUncommittedClaimMakesAConcurrentInsertOnTheSameSeatWait() throws Exception {
+        CountDownLatch inserted = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<Integer> waiterPid = new CompletableFuture<>();
+
+        Future<?> holder = pool.submit(() -> tx.executeWithoutResult(status -> {
+            gateway.insertHold(eventSeatId, UUID.randomUUID(), "alice", NOW.plusSeconds(600), NOW);
+            inserted.countDown();
+            awaitQuietly(release);
+            status.setRollbackOnly();
+        }));
+        assertThat(inserted.await(10, TimeUnit.SECONDS)).isTrue();
+
+        Future<Long> waiter = pool.submit(() -> tx.execute(status -> {
+            waiterPid.complete(LockWaits.backendPid(jdbc));
+            return gateway.insertHold(eventSeatId, UUID.randomUUID(), "bob", NOW.plusSeconds(600), NOW);
+        }));
+        // Spec §5 step 4 counts unique-index insert waits in the lock order; this is that wait, observed.
+        LockWaits.awaitBlockedOnLock(jdbc, waiterPid.get(10, TimeUnit.SECONDS));
+        assertThat(waiter.isDone()).isFalse();
+
+        release.countDown();
+        holder.get(10, TimeUnit.SECONDS);
+        assertThat(waiter.get(10, TimeUnit.SECONDS)).isPositive();
+    }
+
+    /** A first transaction claims "k1" and holds it open; a second claims the same key and must wait for it. */
+    private boolean racingClaimAfterFirstClaim(boolean firstRollsBack) throws Exception {
+        CountDownLatch claimed = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<Integer> waiterPid = new CompletableFuture<>();
+
+        Future<?> first = pool.submit(() -> tx.executeWithoutResult(status -> {
+            gateway.claimIdempotencyKey("alice", "k1", "hash-a", NOW);
+            claimed.countDown();
+            awaitQuietly(release);
+            if (firstRollsBack) {
+                status.setRollbackOnly();
+            }
+        }));
+        assertThat(claimed.await(10, TimeUnit.SECONDS)).isTrue();
+
+        Future<Boolean> second = pool.submit(() -> tx.execute(status -> {
+            waiterPid.complete(LockWaits.backendPid(jdbc));
+            return gateway.claimIdempotencyKey("alice", "k1", "hash-a", NOW);
+        }));
+        LockWaits.awaitBlockedOnLock(jdbc, waiterPid.get(10, TimeUnit.SECONDS));
+        assertThat(second.isDone()).isFalse();
+
+        release.countDown();
+        first.get(10, TimeUnit.SECONDS);
+        return second.get(10, TimeUnit.SECONDS);
     }
 
     private String statusOf(long holdId) {

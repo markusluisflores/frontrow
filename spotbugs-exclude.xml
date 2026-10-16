@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Application services are Spring singletons. Their constructors receive other singletons (the locking gateway) and
+  keep them by design: sharing is the point, and copying would be wrong. Scoped to that one pattern, on constructors
+  only, of classes named *Service in the service package - records there, and a service storing a caller's
+  mutable argument anywhere else, are still reported. (Plan 3A decision 11.)
+-->
+<FindBugsFilter
+        xmlns="https://github.com/spotbugs/filter/3.0.0"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="https://github.com/spotbugs/filter/3.0.0 https://raw.githubusercontent.com/spotbugs/spotbugs/3.1.0/spotbugs/etc/findbugsfilter.xsd">
+    <Match>
+        <Class name="~io\.github\.markusluisflores\.frontrow\.service\.[A-Za-z]+Service"/>
+        <Method name="&lt;init&gt;"/>
+        <Bug pattern="EI_EXPOSE_REP2"/>
+    </Match>
+</FindBugsFilter>
