@@ -138,6 +138,7 @@
                     <effort>Max</effort>
                     <threshold>Medium</threshold>
                     <includeTests>false</includeTests>
+                    <excludeFilterFile>spotbugs-exclude.xml</excludeFilterFile>
                 </configuration>
                 <executions>
                     <execution>
