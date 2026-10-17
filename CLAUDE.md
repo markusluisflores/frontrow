@@ -16,9 +16,11 @@ with idempotent replay. No confirm, release, sweeper, REST endpoint or MCP tool 
 without `uq_claimed_seat`. Phase 1 is now six plans: 3B (confirm, release, cancel service, sweeper,
 tests 2 and 6), 4 (REST + security chains) and 5 (MCP) remain.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
-`docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.2; 2.6
+`docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.3; 2.6
 reviewed and merged 2026-09-18, 2.6.1 a wording fix, 2.6.2 a post-implementation
-sync). Five ADRs are in `docs/adr/`: the three from spec §13; ADR-004, recorded
+sync, 2.6.3 a status sync plus two decisions — when `now` is read, and `DRAFT` as
+`not_found` — that `main` meets only once plan 3B lands; the spec header lists them).
+Plan 3A's text carries dated errata at its top. Five ADRs are in `docs/adr/`: the three from spec §13; ADR-004, recorded
 by plan 1's spike; and ADR-005, the JPA-plus-JDBC persistence split behind the
 lock rule below. Plan 1 was executed on `feat/phase-1-foundation`:
 `docs/superpowers/plans/2026-09-18-phase-1-plan-1-foundation.md`. Plan 2 was
