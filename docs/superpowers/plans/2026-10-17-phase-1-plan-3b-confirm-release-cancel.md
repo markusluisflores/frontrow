@@ -88,6 +88,7 @@ Each is listed so a reviewer can reject it individually.
    - **Cancelling an event with any `ticket_order`** is `invalid_request` with `parameter: status`, and nothing changes (spec §5). Otherwise every `ACTIVE` hold on the event moves to `RELEASED`, locked ascending (`lockActiveHoldsForEvent`, `FOR UPDATE OF h`, so the joined `event_seat` rows aren't locked).
    - **`setLockTimeout()` is the transaction's first statement**, so it bounds every wait, a cancellation's seat-row waits included. `55P03` becomes `contention_retry` through `SqlFailures.translateOnPatchPath`, and on no other path (spec §5).
    - **Who may PATCH is Plan 4's concern.** The service doesn't check roles.
+   - **The service checks only `open < close`.** It doesn't check that each instant fits Postgres's `timestamptz` range. An instant outside it (year 300000, say) fails in Postgres with `22008` and surfaces as a 500. Plan 4's adapter bounds request instants, as it already bounds request size (PR #22 round 1).
 7. **The sweeper.**
    - **`ExpirySweepService`** has two methods, each its own transaction: `expireLapsedHolds()` (the `SKIP LOCKED` `UPDATE`) and `purgeHoldRequests()` (it deletes keys created more than 24 hours ago, strictly). The purge reads only `hold_request.created_at`.
    - **`config/SweepSchedule`** registers the two methods as separate fixed-delay tasks, so a failed sweep never skips a purge. It uses `frontrow.sweep-interval` (bounded 1 s to 1 h, default 1 m) with an initial delay of one interval, so nothing runs during startup.
@@ -314,6 +315,7 @@ In `src/test/java/io/github/markusluisflores/frontrow/support/HoldFixtures.java`
 add:
 
 ```java
+
     public Instant holdRequestCreatedAt(String owner, String idempotencyKey) {
         return jdbc.sql("SELECT created_at FROM hold_request WHERE owner = :owner AND idempotency_key = :key")
                 .param("owner", owner)
@@ -651,6 +653,7 @@ In `src/test/java/io/github/markusluisflores/frontrow/persistence/LockingGateway
 add:
 
 ```java
+
     @Test
     void endsOnlyActiveHoldsAndCountsThem() {
         long active = insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
@@ -954,6 +957,7 @@ In `src/main/java/io/github/markusluisflores/frontrow/persistence/LockingGateway
 add:
 
 ```java
+
     /**
      * The 24-hour key purge (spec §5): deletes hold_request rows created before the cutoff. It runs in a transaction
      * of its own, and hold creation tolerates a row it saw vanishing before it read it (HoldService).
@@ -1101,6 +1105,7 @@ In `src/test/java/io/github/markusluisflores/frontrow/service/ClockReadPointTest
 add:
 
 ```java
+
     @Test
     void aReleaseThatWaitsOnItsRowsPastExpiryExpiresThemInsteadOfReleasing() throws Exception {
         long event = fixtures.onSaleEvent(venueId);
@@ -1529,6 +1534,7 @@ In `src/test/java/io/github/markusluisflores/frontrow/service/ClockReadPointTest
 add:
 
 ```java
+
     @Test
     void aConfirmThatWaitsOnItsRowsPastExpiryIsExpired() throws Exception {
         long event = fixtures.onSaleEvent(venueId);
@@ -1757,6 +1763,7 @@ In `src/test/java/io/github/markusluisflores/frontrow/support/HoldFixtures.java`
 add:
 
 ```java
+
     public int ordersForGroup(UUID holdGroupId) {
         return jdbc.sql("SELECT count(*) FROM ticket_order WHERE hold_group_id = :group")
                 .param("group", holdGroupId)
@@ -2320,6 +2327,7 @@ In `src/test/java/io/github/markusluisflores/frontrow/support/HoldFixtures.java`
 add:
 
 ```java
+
     public String eventStatus(long eventId) {
         return jdbc.sql("SELECT status FROM event WHERE id = :id")
                 .param("id", eventId)
@@ -2495,6 +2503,7 @@ In `src/main/java/io/github/markusluisflores/frontrow/service/SqlFailures.java`,
 add:
 
 ```java
+
     /** The event PATCH, the one path that sets lock_timeout: a timeout there also asks for a retry (spec §5). */
     static RuntimeException translateOnPatchPath(DataAccessException failure) {
         if (PostgresErrors.LOCK_NOT_AVAILABLE.equals(PostgresErrors.sqlState(failure))) {
@@ -2931,6 +2940,7 @@ In `src/test/java/io/github/markusluisflores/frontrow/support/HoldFixtures.java`
 add:
 
 ```java
+
     /** A stored key whose row no request has completed with a real result: for purge tests only. */
     public void holdRequest(String owner, String idempotencyKey, Instant createdAt) {
         jdbc.sql("""
@@ -3517,7 +3527,7 @@ git commit -m "test(service): add spec section 5 concurrency tests 2 and 6" \
 | §5 step 4: every row live → continue; `RELEASED` → `hold_not_active`; otherwise `hold_expired`, including a partly expired group | Task 4 (`aReleasedGroupIsNotActive`, `aGroupLapsingExactlyNowIsExpiredAndNothingIsSold`, `aGroupAnOverlappingHoldPartlyExpiredIsExpired`); `HoldRulesTest` (plan 2) |
 | §5 step 5: convert, then insert `ticket_order` and its lines | Task 4 (`confirmsALiveGroupIntoOneOrderAtEachSeatsPrice`, `aSoldSeatStaysClaimedSoItCannotBeHeldAgain`) |
 | §5 *Release* rules 1-3; §6 another owner's hold is `not_found` | Task 3 (one test per rule, and `anotherOwnersGroupIsNotFoundAndIsLeftAlone`) |
-| §5 *Event cancellation*: exclusive event lock; refuse when an order exists; release every `ACTIVE` hold ascending; every PATCH takes the same lock | Task 2 (`lockActiveHoldsForEvent` wait proof, with a mutation); Task 5 (`cancellingReleasesEveryActiveHoldOnTheEventLapsedOrNot`, `anEventWithAConfirmedOrderCannotBeCancelled`, `movesTheSalesWindowAndHoldsFollowIt`) |
+| §5 *Event cancellation*: exclusive event lock; refuse when an order exists; release every `ACTIVE` hold ascending; every PATCH takes the same lock | Task 2 (`lockActiveHoldsForEvent` wait proof, with a mutation); Task 5 (`cancellingReleasesEveryActiveHoldOnTheEventLapsedOrNot`, `anEventWithAConfirmedOrderCannotBeCancelled`). Every PATCH runs through the same `lockEventForUpdate` call in `EventPatchService#patch`: one code path for status and window changes. `aPatchThatCannotGetTheEventLockAsksForARetry` proves the lock wait. No test races a window-only PATCH |
 | §5 *Liveness*: `SET LOCAL lock_timeout` first; `55P03` → `contention_retry` on the PATCH path only | Task 5 (`aPatchThatCannotGetTheEventLockAsksForARetry`, with a mutation; `SqlFailuresTest`) |
 | §5 *Hold expiry*: the sweeper's `SKIP LOCKED` `UPDATE`, which re-checks its predicate; the purge in its own transaction | Task 2 (`theSweepExpiresLapsedActiveHoldsAndSkipsLockedOnesWithoutWaiting`, with a mutation; `purgesOnlyKeysCreatedBeforeTheCutoff`); Task 6 |
 | §5: correctness never depends on the sweeper | Task 6 (`whetherTheSweepRanNeverChangesWhatConfirmAnswers`); test 7's no-sweeper assertion |
@@ -3553,6 +3563,7 @@ git commit -m "test(service): add spec section 5 concurrency tests 2 and 6" \
 | `HoldResult` is a stored schema; a field change needs a backward-deserialization test | PR #18 carry-forward | Not triggered: `HoldResult` is unchanged (decision 4) |
 | REST `Idempotency-Key` naming; owner NUL/surrogate validation; `details()` iteration order; comparing rendered errors as parsed JSON | PR #18 threads 4296541034, 4296749409, 4296749419 | **Plan 4** |
 | An organiser can't GET their own draft until it is `ON_SALE` | PR #20 round 2 | **Plan 4** (no read path exists yet) |
+| PATCH instants outside `timestamptz`'s range are a 500 (`22008`) | PR #22 round 1 | **Plan 4**: the adapter bounds request instants |
 
 ## Not in this plan
 
