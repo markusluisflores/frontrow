@@ -92,7 +92,7 @@ Each is listed so a reviewer can reject it individually.
 7. **The sweeper.**
    - **`ExpirySweepService`** has two methods, each its own transaction: `expireLapsedHolds()` (the `SKIP LOCKED` `UPDATE`) and `purgeHoldRequests()` (it deletes keys created more than 24 hours ago, strictly). The purge reads only `hold_request.created_at`.
    - **`config/SweepSchedule`** registers the two methods as separate fixed-delay tasks, so a failed sweep never skips a purge. It uses `frontrow.sweep-interval` (bounded 1 s to 1 h, default 1 m) with an initial delay of one interval, so nothing runs during startup.
-   - **`frontrow.sweeper-enabled`** (default `true`) gates the whole configuration with `@ConditionalOnProperty`. **Every test context sets it `false`**, in `src/test/resources/config/application.properties`. Boot reads `classpath:/config/` after `classpath:/`, so this overrides the main `application.yml` without hiding it. Test 7 asserts that no `SweepSchedule` bean exists. `SweepScheduleTest` checks the wiring with no database.
+   - **`frontrow.sweeper-enabled`** (default `true`) gates the whole configuration with `@ConditionalOnProperty`. **Every test context sets it `false`**, in `src/test/resources/config/application.properties`. Boot reads `classpath:/config/` after `classpath:/`, so this overrides the main `application.yml` without hiding it. Test 7 asserts that no `SweepSchedule` bean exists. `SweepScheduleTest` checks the wiring with no database: its sweeper is a stub that counts calls, and the test runs each scheduled task once, so a schedule that runs the wrong method fails.
    - **Rejected:** `@Scheduled(fixedDelayString = …)` on the service. It would bypass `FrontRowProperties`' validation, and it would put scheduling onto a `@Transactional` bean.
 8. **The purge versus a replay (PR #18 thread 4296540462): re-claim once.** If hold creation's key claim conflicts but the row is gone by the time it reads it, the purge deleted it in between, so the key has expired. Hold creation claims the key again and runs as a new request. If that second claim conflicts too, another request with the same key has just committed, and that one is replayed.
    - **Rejected:** giving the purge a margin. Any cutoff has the same boundary; a margin only moves it.
@@ -1677,8 +1677,10 @@ class ConfirmServiceTest {
         List<Long> seats = fixtures.eventSeats(eventId, venueId, 2);
         HoldResult held = holds.hold(new HoldCommand("alice", eventId, seats, "k1"));
         clock.set(held.expiresAt().plusSeconds(1));
-        // Bob's hold lazily expires only the seat it overlaps; alice's other row stays ACTIVE, past its expiry.
+        // Bob's hold lazily expires only the seat it overlaps; alice's other row stays ACTIVE.
         holds.hold(new HoldCommand("bob", eventId, List.of(seats.get(0)), "k1"));
+        // Back to before the expiry: alice's other row is live, so only the EXPIRED row makes the group expired.
+        clock.set(held.expiresAt().minusMillis(1));
 
         assertThat(rejection(() -> confirms.confirm(new HoldGroupCommand("alice", held.holdGroupId())))
                         .errorCode())
@@ -2671,23 +2673,51 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.github.markusluisflores.frontrow.service.ExpirySweepService;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.config.FixedDelayTask;
+import org.springframework.scheduling.config.ScheduledTask;
 import org.springframework.scheduling.config.ScheduledTaskHolder;
 
-/** The schedule's wiring, with no database: the sweeper stub is never run, because the first run is an hour away. */
+/**
+ * The schedule's wiring, with no database. The sweeper is a stub that counts its calls. The scheduler never runs it,
+ * because the first run is an hour away, so the test runs each task once itself.
+ */
 class SweepScheduleTest {
 
     @Configuration
     @EnableConfigurationProperties(FrontRowProperties.class)
     static class PropertiesOnly {}
 
+    /** Counts the sweeps and purges it is asked for, and touches nothing. */
+    static final class RecordingSweeper extends ExpirySweepService {
+
+        final AtomicInteger sweeps = new AtomicInteger();
+        final AtomicInteger purges = new AtomicInteger();
+
+        RecordingSweeper() {
+            super(null, Clock.systemUTC());
+        }
+
+        @Override
+        public int expireLapsedHolds() {
+            sweeps.incrementAndGet();
+            return 0;
+        }
+
+        @Override
+        public int purgeHoldRequests() {
+            purges.incrementAndGet();
+            return 0;
+        }
+    }
+
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(PropertiesOnly.class, SweepSchedule.class)
-            .withBean(ExpirySweepService.class, () -> new ExpirySweepService(null, Clock.systemUTC()))
+            .withBean(ExpirySweepService.class, RecordingSweeper::new)
             .withPropertyValues(
                     "frontrow.hold-ttl=10m",
                     "frontrow.max-active-hold-groups=3",
@@ -2699,13 +2729,20 @@ class SweepScheduleTest {
     void schedulesTheSweepAndThePurgeEachIntervalStartingOneIntervalIn() {
         runner.run(context -> {
             assertThat(context).hasNotFailed();
-            assertThat(context.getBean(ScheduledTaskHolder.class).getScheduledTasks())
-                    .hasSize(2)
-                    .allSatisfy(scheduled -> {
-                        FixedDelayTask task = (FixedDelayTask) scheduled.getTask();
-                        assertThat(task.getIntervalDuration()).isEqualTo(Duration.ofHours(1));
-                        assertThat(task.getInitialDelayDuration()).isEqualTo(Duration.ofHours(1));
-                    });
+            var scheduled = context.getBean(ScheduledTaskHolder.class).getScheduledTasks();
+            assertThat(scheduled).hasSize(2).allSatisfy(each -> {
+                FixedDelayTask task = (FixedDelayTask) each.getTask();
+                assertThat(task.getIntervalDuration()).isEqualTo(Duration.ofHours(1));
+                assertThat(task.getInitialDelayDuration()).isEqualTo(Duration.ofHours(1));
+            });
+
+            scheduled.stream()
+                    .map(ScheduledTask::getTask)
+                    .forEach(task -> task.getRunnable().run());
+
+            RecordingSweeper sweeper = (RecordingSweeper) context.getBean(ExpirySweepService.class);
+            assertThat(sweeper.sweeps).hasValue(1);
+            assertThat(sweeper.purges).hasValue(1);
         });
     }
 
@@ -3197,19 +3234,24 @@ git commit -m "feat(service): add the expiry sweeper and the 24-hour key purge" 
   -m "ExpirySweepService expires lapsed holds with SKIP LOCKED and purges keys older than 24 hours, each in its own transaction. SweepSchedule runs both on frontrow.sweep-interval and is off in every test context. Hold creation re-claims a key purged between its claim and its read."
 ```
 
-- [ ] **Step 6: Mutation checks. A purged key must not be a 500, and no test context may run the sweeper**
+- [ ] **Step 6: Mutation checks. A purged key must not be a 500, the schedule must run both jobs, and no test context may run the sweeper**
 
 In `HoldService.claimOrReplay`, temporarily delete the whole `if (stored.isEmpty()) { … }` block.
 
 Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=ExpirySweepServiceTest`
 Expected: 1 error, in `aKeyPurgedBetweenTheClaimAndTheReadRunsAsANewRequest`: `IllegalStateException: a conflicting hold_request row was not found`.
 
-Restore with `git checkout -- src/main/java/io/github/markusluisflores/frontrow/service/HoldService.java`. Then move `src/test/resources/config/application.properties` out of the tree, **and delete its copy at `target/test-classes/config/application.properties`**. Maven copies resources but never deletes a stale copy. Without the second deletion the test still passes, a false pass this plan's authoring hit.
+Restore with `git checkout -- src/main/java/io/github/markusluisflores/frontrow/service/HoldService.java`. Then, in `SweepSchedule.configureTasks`, change the second task's `sweeper::purgeHoldRequests` to `sweeper::expireLapsedHolds`, so the sweep is scheduled twice and the purge never.
+
+Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=SweepScheduleTest`
+Expected: 1 failure, in `schedulesTheSweepAndThePurgeEachIntervalStartingOneIntervalIn`: `Expecting AtomicInteger(2) to have value: 1 but did not.`
+
+Restore with `git checkout -- src/main/java/io/github/markusluisflores/frontrow/config/SweepSchedule.java`. Then move `src/test/resources/config/application.properties` out of the tree, **and delete its copy at `target/test-classes/config/application.properties`**. Maven copies resources but never deletes a stale copy. Without the second deletion the test still passes, a false pass this plan's authoring hit.
 
 Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=HoldConcurrencyTest#lazyExpiryFreesSeatsWithoutTheSweeper`
 Expected: FAIL: `Expecting empty but was: {"sweepSchedule"=…}`.
 
-Move the file back, run `./mvnw -q test -Dtest=HoldConcurrencyTest` (PASS, 6 tests, which also restores the copy in `target`), check that `git status --short` is empty, and record both messages.
+Move the file back, run `./mvnw -q test -Dtest=HoldConcurrencyTest` (PASS, 6 tests, which also restores the copy in `target`), check that `git status --short` is empty, and record all three messages.
 
 ---
 
@@ -3422,19 +3464,24 @@ Expected: three PASS runs. A flake here is a finding, not noise. Report it with 
 
 **Both outcomes should occur.** In the authoring runs, test 2's confirm won 37 of 40 repetitions and the rival won 3. Test 6's cancellation won 39 of 40. A run where one side always wins is still a pass, because spec §5 allows either order. Test 6's confirm-first path is also covered sequentially, by `EventPatchServiceTest#anEventWithAConfirmedOrderCannotBeCancelled`.
 
-- [ ] **Step 3: Mutation checks. Test 6 needs the event lock, and test 2 needs the claim index to cover sold seats**
+- [ ] **Step 3: Mutation checks. Test 6 needs both event locks, and test 2 needs the claim index to cover sold seats**
 
 In `LockingGateway.lockEventForShare`, temporarily change `return lockEvent(eventId, "FOR SHARE");` to `return lockEvent(eventId, "");`. Confirm then reads the event without locking it.
 
 Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=ConfirmConcurrencyTest#aCancellationAndAConfirmNeverBothSucceed`
 Expected: FAIL: `expected: SALES_CLOSED but was: HOLD_NOT_ACTIVE`. The confirm passed the event check before the cancellation committed, then found its rows released.
 
+Restore with `git checkout -- src/main/java/io/github/markusluisflores/frontrow/persistence/LockingGateway.java`. Then, in `LockingGateway.lockEventForUpdate`, change `return lockEvent(eventId, "FOR UPDATE");` to `return lockEvent(eventId, "FOR SHARE");`. The PATCH then shares the event row with the confirm, so it can look for an order before the confirm commits.
+
+Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=ConfirmConcurrencyTest#aCancellationAndAConfirmNeverBothSucceed`
+Expected: FAIL, in one of two ways. Either `[repetition N] Expected size: 1 but was: 2`: the order and the cancellation both went through. Or `expected: INVALID_REQUEST but was: CONTENTION_RETRY`: the PATCH's `UPDATE` waited on the confirm's share lock until `lock_timeout`. In five authoring runs, every run failed: three times the first way, each at repetition 0, and twice the second. Every `EventPatchServiceTest` test still passes under this mutation, so test 6 is the only test of the lock's strength.
+
 Restore with `git checkout -- src/main/java/io/github/markusluisflores/frontrow/persistence/LockingGateway.java`. Then, in `src/main/resources/db/migration/V1__core_schema.sql`, change the index predicate `WHERE status IN ('ACTIVE', 'CONVERTED');` to `WHERE status = 'ACTIVE';`. Each test context starts a fresh container, so Flyway applies the mutated migration.
 
 Run: `./mvnw -q test -Dspotless.check.skip=true -Dtest=ConfirmConcurrencyTest#aConfirmAndAnOverlappingHoldAcrossExpiryHaveExactlyOneWinner`
 Expected: FAIL: `[repetition N] Expected size: 1 but was: 2`. Both the sale and the rival's hold went through.
 
-Restore with `git checkout -- src/main/resources/db/migration/V1__core_schema.sql`, then delete `target/classes/db/migration/V1__core_schema.sql` so no stale copy survives, and check that `git status --short` is empty. Record both messages.
+Restore with `git checkout -- src/main/resources/db/migration/V1__core_schema.sql`, then delete `target/classes/db/migration/V1__core_schema.sql` so no stale copy survives, and check that `git status --short` is empty. Record all three messages.
 
 **What test 2 does not catch, honestly stated:** reversing `lockGroupRows`' order to `DESC` passed test 2 in 20 repetitions during authoring, because the deadlock window is narrow. That mutation is caught deterministically by the existing `LockingGatewayTest#locksGroupRowsInAscendingSeatOrder`.
 
@@ -3524,12 +3571,12 @@ git commit -m "test(service): add spec section 5 concurrency tests 2 and 6" \
 | §5 *Hold confirmation* step 1: unlocked event read, `not_found` for a missing or foreign group, event `FOR SHARE`, rows ascending | Tasks 2 and 4 (`findEventIdOfGroup`, `anotherOwnersGroupIsNotFoundAndIsLeftAlone`, `anUnknownGroupIsNotFound`) |
 | §5 step 2: an existing order is returned; a double-clicked confirm waits, then returns it | Task 4 (`aRepeatedConfirmReturnsTheSameOrderEvenAfterExpiryAndSalesClose`); Task 7 (`twoConfirmsOfOneGroupInParallelYieldOneOrder`) |
 | §5 step 3: the event check comes before hold state | Task 4 (`aCancelledEventIsClosedEvenThoughItsHoldsWereReleased`, with a mutation; `aGroupStillLiveAfterSalesCloseIsClosed`) |
-| §5 step 4: every row live → continue; `RELEASED` → `hold_not_active`; otherwise `hold_expired`, including a partly expired group | Task 4 (`aReleasedGroupIsNotActive`, `aGroupLapsingExactlyNowIsExpiredAndNothingIsSold`, `aGroupAnOverlappingHoldPartlyExpiredIsExpired`); `HoldRulesTest` (plan 2) |
+| §5 step 4: every row live → continue; `RELEASED` → `hold_not_active`; otherwise `hold_expired`, including a partly expired group | Task 4 (`aReleasedGroupIsNotActive`, `aGroupLapsingExactlyNowIsExpiredAndNothingIsSold`, `aGroupAnOverlappingHoldPartlyExpiredIsExpired`, which confirms with one `EXPIRED` row beside a live one); `HoldRulesTest` (plan 2) |
 | §5 step 5: convert, then insert `ticket_order` and its lines | Task 4 (`confirmsALiveGroupIntoOneOrderAtEachSeatsPrice`, `aSoldSeatStaysClaimedSoItCannotBeHeldAgain`) |
 | §5 *Release* rules 1-3; §6 another owner's hold is `not_found` | Task 3 (one test per rule, and `anotherOwnersGroupIsNotFoundAndIsLeftAlone`) |
-| §5 *Event cancellation*: exclusive event lock; refuse when an order exists; release every `ACTIVE` hold ascending; every PATCH takes the same lock | Task 2 (`lockActiveHoldsForEvent` wait proof, with a mutation); Task 5 (`cancellingReleasesEveryActiveHoldOnTheEventLapsedOrNot`, `anEventWithAConfirmedOrderCannotBeCancelled`). Every PATCH runs through the same `lockEventForUpdate` call in `EventPatchService#patch`: one code path for status and window changes. `aPatchThatCannotGetTheEventLockAsksForARetry` proves the lock wait. No test races a window-only PATCH |
+| §5 *Event cancellation*: exclusive event lock; refuse when an order exists; release every `ACTIVE` hold ascending; every PATCH takes the same lock | Task 2 (`lockActiveHoldsForEvent` wait proof, with a mutation); Task 5 (`cancellingReleasesEveryActiveHoldOnTheEventLapsedOrNot`, `anEventWithAConfirmedOrderCannotBeCancelled`). Every PATCH runs through the same `lockEventForUpdate` call in `EventPatchService#patch`: one code path for status and window changes. Task 7's test 6 (`ConfirmConcurrencyTest#aCancellationAndAConfirmNeverBothSucceed`) proves the lock is exclusive, with a mutation that weakens it to `FOR SHARE`. `aPatchThatCannotGetTheEventLockAsksForARetry` proves only the lock timeout: a PATCH behind a share holder times out into `contention_retry`, whatever lock it asks for. No test races a window-only PATCH |
 | §5 *Liveness*: `SET LOCAL lock_timeout` first; `55P03` → `contention_retry` on the PATCH path only | Task 5 (`aPatchThatCannotGetTheEventLockAsksForARetry`, with a mutation; `SqlFailuresTest`) |
-| §5 *Hold expiry*: the sweeper's `SKIP LOCKED` `UPDATE`, which re-checks its predicate; the purge in its own transaction | Task 2 (`theSweepExpiresLapsedActiveHoldsAndSkipsLockedOnesWithoutWaiting`, with a mutation; `purgesOnlyKeysCreatedBeforeTheCutoff`); Task 6 |
+| §5 *Hold expiry*: the sweeper's `SKIP LOCKED` `UPDATE`, which re-checks its predicate; the purge in its own transaction | Task 2 (`theSweepExpiresLapsedActiveHoldsAndSkipsLockedOnesWithoutWaiting`, with a mutation; `purgesOnlyKeysCreatedBeforeTheCutoff`); Task 6 (`SweepScheduleTest` runs each scheduled task once, with a mutation) |
 | §5: correctness never depends on the sweeper | Task 6 (`whetherTheSweepRanNeverChangesWhatConfirmAnswers`); test 7's no-sweeper assertion |
 | §5: every path that changes `seat_hold` rows locks ascending | Task 2 (`lockActiveHoldsForEvent`); `lockGroupRows` (plan 2, `locksGroupRowsInAscendingSeatOrder`) |
 | §5 READ COMMITTED on every locking transaction | Every task appends to `TransactionIsolationTest.SERVICES` |
@@ -3589,7 +3636,7 @@ Run by the plan author on 2026-10-17 against the `superpowers:writing-plans` che
    - **The code in this plan is the code that was built.** Every block was generated from a scratch commit chain built on `main` (`d93ef7f`), one commit per task. New files and short modified files are those commits' file contents. Each find/replace pair is a hunk of that task's diff, checked to occur exactly once in the file as the previous task left it.
    - **Each commit was built from clean** (`./mvnw clean verify`): Task 1 144 runs, Task 2 153, Task 3 162, Task 4 173, Task 5 185, Task 6 192, Task 7 195. Every commit had SpotBugs 0 and BUILD SUCCESS.
    - **Every Step 2 "fails" claim was observed:** each task's test changes were applied alone to the previous commit, and the named command run.
-   - **Every mutation in Step 6 (Task 7: Step 3) was run,** with the Spotless check skipped, and failed with the message the step gives. Two traps surfaced:
+   - **Every mutation in Step 6 (Task 7: Step 3) was run,** 14 in all, with the Spotless check skipped, and failed with the message the step gives. Review round 2 added two of them: Task 6's doubled sweep, and Task 7's `FOR SHARE` PATCH lock. It also moved `aGroupAnOverlappingHoldPartlyExpiredIsExpired`'s clock back before the confirm, so the test really has an `EXPIRED` row beside a live one: a `confirmOutcome` that skipped `EXPIRED` rows passed the old test and fails the new one. Two traps surfaced:
      - deleting a test resource left a stale copy in `target/test-classes`, and the check passed falsely (Task 6 Step 6 now deletes the copy);
      - the first draft of a test-2 mutation, `DESC` lock order, was not caught in 20 repetitions (Task 7 Step 3 says so).
    - **The races were repeated:** `HoldConcurrencyTest`, `ConfirmConcurrencyTest`, `ClockReadPointTest`, `LockingGatewayTest` and `EventPatchServiceTest` passed 3 more runs in a row, 57 tests each, with no flakes.
