@@ -169,6 +169,17 @@ public final class HoldFixtures {
                 .update();
     }
 
+    /** A stored key whose row no request has completed with a real result: for purge tests only. */
+    public void holdRequest(String owner, String idempotencyKey, Instant createdAt) {
+        jdbc.sql("""
+                        INSERT INTO hold_request (owner, idempotency_key, request_hash, response_json, created_at)
+                        VALUES (:owner, :key, 'stale', '{}', :created)""")
+                .param("owner", owner)
+                .param("key", idempotencyKey)
+                .param("created", utc(createdAt))
+                .update();
+    }
+
     public Instant holdRequestCreatedAt(String owner, String idempotencyKey) {
         return jdbc.sql("SELECT created_at FROM hold_request WHERE owner = :owner AND idempotency_key = :key")
                 .param("owner", owner)

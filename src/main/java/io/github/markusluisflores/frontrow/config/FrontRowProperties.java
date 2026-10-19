@@ -20,4 +20,7 @@ public record FrontRowProperties(
         @Min(1) @Max(100) int maxSeatsPerHold,
 
         @NotNull @DurationMin(millis = 1) @DurationMax(minutes = 1)
-        Duration lockTimeout) {}
+        Duration lockTimeout,
+
+        @NotNull @DurationMin(seconds = 1) @DurationMax(hours = 1)
+        Duration sweepInterval) {}

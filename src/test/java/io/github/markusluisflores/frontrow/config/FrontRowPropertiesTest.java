@@ -23,7 +23,8 @@ class FrontRowPropertiesTest {
                     "frontrow.hold-ttl=10m",
                     "frontrow.max-active-hold-groups=3",
                     "frontrow.max-seats-per-hold=8",
-                    "frontrow.lock-timeout=5s");
+                    "frontrow.lock-timeout=5s",
+                    "frontrow.sweep-interval=1m");
 
     @Test
     void theShippedDefaultsBind() {
@@ -34,6 +35,7 @@ class FrontRowPropertiesTest {
             assertThat(bound.maxActiveHoldGroups()).isEqualTo(3);
             assertThat(bound.maxSeatsPerHold()).isEqualTo(8);
             assertThat(bound.lockTimeout()).isEqualTo(Duration.ofSeconds(5));
+            assertThat(bound.sweepInterval()).isEqualTo(Duration.ofMinutes(1));
         });
     }
 
@@ -51,6 +53,14 @@ class FrontRowPropertiesTest {
     void aZeroOrOverlongHoldTtlIsRejected() {
         runner.withPropertyValues("frontrow.hold-ttl=0s").run(context -> assertRejected(context, "holdTtl"));
         runner.withPropertyValues("frontrow.hold-ttl=2h").run(context -> assertRejected(context, "holdTtl"));
+    }
+
+    @Test
+    void aSubSecondOrOverlongSweepIntervalIsRejected() {
+        runner.withPropertyValues("frontrow.sweep-interval=500ms")
+                .run(context -> assertRejected(context, "sweepInterval"));
+        runner.withPropertyValues("frontrow.sweep-interval=2h")
+                .run(context -> assertRejected(context, "sweepInterval"));
     }
 
     /** Fails for the named property's bound, not for some unrelated startup error. */

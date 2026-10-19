@@ -20,6 +20,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
@@ -70,8 +71,9 @@ public class HoldService {
         Instant arrivedAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
         String fingerprint = HoldRequestFingerprint.of(command.eventId(), command.eventSeatIds());
         try {
-            if (!gateway.claimIdempotencyKey(command.owner(), command.idempotencyKey(), fingerprint, arrivedAt)) {
-                return replay(command, fingerprint);
+            Optional<HoldResult> replayed = claimOrReplay(command, fingerprint, arrivedAt);
+            if (replayed.isPresent()) {
+                return replayed.get();
             }
             gateway.lockOwner(command.owner());
             EventRow event = gateway.lockEventForShare(command.eventId())
@@ -113,9 +115,28 @@ public class HoldService {
         }
     }
 
-    private HoldResult replay(HoldCommand command, String fingerprint) {
-        StoredHoldRequest stored = gateway.findHoldRequest(command.owner(), command.idempotencyKey())
-                .orElseThrow(() -> new IllegalStateException("a conflicting hold_request row was not found"));
+    /** Step 1. Empty when this call now owns the key; otherwise the stored result to replay (spec §5). */
+    private Optional<HoldResult> claimOrReplay(HoldCommand command, String fingerprint, Instant arrivedAt) {
+        String owner = command.owner();
+        String key = command.idempotencyKey();
+        if (gateway.claimIdempotencyKey(owner, key, fingerprint, arrivedAt)) {
+            return Optional.empty();
+        }
+        Optional<StoredHoldRequest> stored = gateway.findHoldRequest(owner, key);
+        if (stored.isEmpty()) {
+            // The 24-hour purge deleted the row between the claim and this read, so the key has expired: claim it
+            // afresh. If that claim conflicts too, another request with this key has just committed; replay it.
+            if (gateway.claimIdempotencyKey(owner, key, fingerprint, arrivedAt)) {
+                return Optional.empty();
+            }
+            stored = gateway.findHoldRequest(owner, key);
+        }
+        return Optional.of(replay(
+                stored.orElseThrow(() -> new IllegalStateException("a conflicting hold_request row was not found")),
+                fingerprint));
+    }
+
+    private static HoldResult replay(StoredHoldRequest stored, String fingerprint) {
         if (!stored.requestHash().equals(fingerprint)) {
             throw DomainException.of(ErrorCode.IDEMPOTENCY_KEY_REUSED);
         }
