@@ -137,7 +137,7 @@ public class LockingGateway {
 
     /**
      * Ends hold rows this transaction has already locked: confirm, release and cancel decide under the lock, then
-     * write (spec Â§5). Only ACTIVE rows move, and only to an ended status, so a row is never rewritten once it has
+     * write (spec §5). Only ACTIVE rows move, and only to an ended status, so a row is never rewritten once it has
      * ended. Returns how many rows moved; the caller checks it against what it locked.
      */
     public int endHolds(Collection<Long> holdIds, HoldStatus target) {
@@ -154,7 +154,7 @@ public class LockingGateway {
     }
 
     /**
-     * The sweeper (spec Â§5, Hold expiry): expires every lapsed ACTIVE hold it can lock without waiting. SKIP LOCKED
+     * The sweeper (spec §5, Hold expiry): expires every lapsed ACTIVE hold it can lock without waiting. SKIP LOCKED
      * means it never waits, so it takes no part in the lock order and cannot deadlock. A row another transaction
      * holds is left to lazy expiry or the next sweep. Postgres re-checks the inner predicate on each row it locks,
      * and the outer one repeats it, so a hold confirmed a moment earlier is never expired.
@@ -167,7 +167,7 @@ public class LockingGateway {
                             FOR UPDATE SKIP LOCKED)""").param("now", utc(now)).update();
     }
 
-    /** Writes an event PATCH to the row this transaction holds FOR UPDATE (spec Â§5, Event cancellation). */
+    /** Writes an event PATCH to the row this transaction holds FOR UPDATE (spec §5, Event cancellation). */
     public void updateEvent(long eventId, EventStatus status, Instant salesOpenAt, Instant salesCloseAt) {
         int updated = jdbc.sql("""
                         UPDATE event SET status = :status, sales_open_at = :open, sales_close_at = :close
@@ -260,7 +260,7 @@ public class LockingGateway {
     }
 
     /**
-     * The 24-hour key purge (spec Â§5): deletes hold_request rows created before the cutoff. It runs in a transaction
+     * The 24-hour key purge (spec §5): deletes hold_request rows created before the cutoff. It runs in a transaction
      * of its own, and hold creation tolerates a row it saw vanishing before it read it (HoldService).
      */
     public int purgeHoldRequestsCreatedBefore(Instant cutoff) {

@@ -8,7 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 public interface SeatHoldRepository extends JpaRepository<SeatHold, Long> {
 
     /**
-     * Confirm's first, unlocked read (spec Â§5): the group's event, if the group exists and is this owner's. Safe
+     * Confirm's first, unlocked read (spec §5): the group's event, if the group exists and is this owner's. Safe
      * without a lock, because a group's event never changes. A scalar, so no SeatHold entity is loaded.
      */
     @Query(value = """
