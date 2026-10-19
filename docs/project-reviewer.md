@@ -95,8 +95,9 @@
 - Spec §5 concurrency tests 2 and 6, a release-versus-confirm race, and a test that
   ends one real hold among 70,001 ids in one statement.
 
-There are **197 test runs** in total. Still missing: any API in front of the
-services, so nothing outside the test suite can call them.
+There are **197 test runs** in total. Still missing: event creation (no service),
+every read path (none of spec §6's GETs has a service or query behind it), and any
+API in front of the services, so nothing outside the test suite can call them.
 
 The *designed* system, whose two adapters are not built: an event ticketing and
 seat-reservation service in Spring Boot, exposed through two inbound adapters
@@ -376,9 +377,11 @@ inserts before updates.
   either clause deleted, its test fails with `did not block on a lock within 10s`.
 - **Built in plan 3A:** hold creation's claim-each-seat-in-order loop, raced in
   §5 tests 1, 3, 4 and 5.
-- **Built in plan 3B** *(updated 2026-10-19)*: confirm, release, cancellation and
-  the sweeper follow the same order: the event before any seat row, seat rows
-  ascending, and release never takes the event. Tests 2 and 6 race confirm against
+- **Built in plan 3B** *(updated 2026-10-19)*: confirm, release and cancellation
+  follow the same order: the event before any seat row, seat rows ascending, and
+  release never takes the event. The sweeper takes no part in it: its `FOR UPDATE
+  SKIP LOCKED` never waits, skipping any row another transaction holds, so it
+  cannot deadlock (`LockingGateway.expireLapsedHolds`). Tests 2 and 6 race confirm against
   lazy expiry and against cancellation, and a third test races release against
   confirm. Reviewers traced every pair of paths for opposite lock orders and found
   none.
@@ -386,13 +389,14 @@ inserts before updates.
 **Interview talking point:** "The index guarantees no seat is ever claimed
 twice. The lock order keeps the other state transitions correct and
 deadlock-free: confirm, release, cancel and expiry all decide on current
-state. The spec fixes one lock order that every transaction follows, so
+state. The spec fixes one lock order that every waiting transaction follows, so
 deadlock-freedom is a property I can argue from the order rather than hope for.
 The subtle part was that hold creation interleaves locks and inserts. Taking
 all the locks first and then inserting sounds safe, but it breaks the ordering
 across the two phases, so the design claims seats one at a time. Every lock
 lives in one file, so 'one global order' is something you can check by reading
-that file. Every write path built so far follows it. Racing overlapping multi-seat holds in
+that file. Every write path built so far that waits on a lock follows it; the
+sweeper never waits, because `SKIP LOCKED` skips rows it can't take. Racing overlapping multi-seat holds in
 different orders produces no deadlock and no partial hold, and confirm is raced
 against expiry, cancellation and release. A reviewer once
 showed that nothing proved the seat-row locks block; there's now a test for
@@ -639,9 +643,11 @@ unwritten.* The review of those documents is where most defects
 were caught before code existed. Unless an item says "now built", treat it as a
 **review or design outcome, not shipped code**, and say so if asked.
 
-**The mutation test, which *is* shipped.** Deleting `uq_claimed_seat` from the
-migration fails exactly three tests, and a reviewer independently checked every
-other test for hidden dependence on the index and found none.
+**The mutation test, which *is* shipped.** When plan 2 shipped, deleting
+`uq_claimed_seat` from the migration failed exactly three tests, and a reviewer
+independently checked every other test for hidden dependence on the index and
+found none. Since plan 3A, spec §5 test 1 and its drop-index companion depend on
+the index too, so the current count is higher; it has not been re-measured.
 
 *Follow-up to expect:* "Three tests prove the index exists, not that it holds
 under concurrency." It was correct when written. Spec §5's seven concurrency
@@ -900,8 +906,8 @@ a compiler probe, a reproduction or a mutation, so it was proven rather than arg
 **What happened.** Plan 3B (confirm, release, cancellation and the sweeper) was executed like 3A: subagents
 implemented its seven tasks one by one, each with a fresh reviewer, then a final whole-branch review, a pre-PR
 `reviewer`, a `security-reviewer` agent and `/security-review`, all before the PR existed. None of those found a
-BLOCKER. PR #24 then had three fresh review rounds, all BLOCKER-free: one SUGGESTION in round 1, one in round 2, one
-NIT in round 3. Each round's fixes were verified by its reviewer, resumed, and a fresh round followed every fix pass.
+BLOCKER. PR #24 then had three fresh review rounds, all BLOCKER-free: one SUGGESTION and one NIT in round 1, one
+SUGGESTION in round 2, one NIT in round 3. Each round's fixes were verified by its reviewer, resumed, and a fresh round followed every fix pass.
 It merged on 2026-10-19 as `61f0a65`, with 197 test runs. I chose the Mandatory tier and the subagent-driven approach,
 and I made the merge call; the orchestrating session and its subagents did the building, measuring and reviewing.
 
@@ -918,8 +924,9 @@ the plan's own build could not see:
   `PreparedStatement can have at most 65,535 parameters`.
 - **A concurrency test whose losing branch almost never ran** (round 1). Test 2 accepts either winner of a confirm
   racing lazy expiry. Started together, the confirm won 79 of 80 repetitions over the reviewer's four runs, so the
-  `hold_expired` branch was barely tested. The confirm now starts 0-10 ms late, varied by repetition, and won 25 of
-  60 over three runs, with both branches in every run. Every assertion is kept, and the index-predicate mutation still
+  `hold_expired` branch was barely tested. The confirm now starts 0-10 ms late, varied by repetition. In the session's
+  own three runs it won 25 of 60, with both branches in every run (PR #24 deviation 1), and round 1's resumed reviewer
+  measured 20 of 60. Every assertion is kept, and the index-predicate mutation still
   fails the test.
 - **A test comment that was false** (final whole-branch review, NIT). A comment in `EventPatchServiceTest`, and plan
   decision 6, said two instants 500 ns apart are stored as equal and break `ck_event_sales_window`. The driver rounds
@@ -972,7 +979,7 @@ measuring answers the second."
 | 2026-10-16 (spec 2.6.3) | Spec revision 2.6.3 and plan 3A's errata. *Bugs Worth Remembering* now says the spec decided the clock's sampling point (after the locks before each transaction's first time-dependent decision; for hold creation, the event-row lock) and made a `DRAFT` event answer `not_found`, and names both as known gaps between `main` and the spec until plan 3B. The `db228bc` line now includes the `CLAUDE.md` test count. Closes PR #19's two open NITs (4299944353, 4299944357). | Checked by PR #20's three fresh rounds (1, 0 and 0 BLOCKERs; the BLOCKER was in the spec). Guide findings, all fixed: the paragraph stated hold creation's read point as the general rule and implied 3B removes every effect (round 1), the lead "No runtime defect is known" now reads "reachable" (round 1), and "Plan 3B moves the read" was present tense about an unwritten plan (round 2). Merged 2026-10-17 as `d93ef7f` |
 | 2026-10-17 (PR #20 sync) | Recorded the result of the spec 2.6.3 row's review rounds in that row, which had been written before the rounds ran. No other entry was stale: *Bugs Worth Remembering* already names both gaps between `main` and the spec, and plan 3B is still unwritten. | Staleness pass over every mention of `DRAFT`, the clock's sampling point, plan 3B and spec 2.6.3; found only the forward-looking check note above. PR #21's fresh round 1 (review 5560522924): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all in this row or the journal; all fixed |
 | 2026-10-18 (plan 3B written) | Plan 3B is written and merged as a plan (PR #22, `af5b1a4`), not executed. *Bugs Worth Remembering* no longer calls it unwritten. No other entry was stale: the banner already lists 3B's work as not built, and *Review as the Deliverable* already counts 3B among the documents. | Staleness pass over every mention of plan 3B. Checked by PR #23's fresh round 1 (review 5565781561): 0 BLOCKER, 3 SUGGESTION, 3 NIT, all fixed |
-| 2026-10-19 (plan 3B executed) | Plan 3B executed and merged (PR #24, `61f0a65`). Banner, *What We Built* (197 runs, a plan 3B block), concepts 2, 3 and 7 (sweeper, confirm and the lock order built; "an agent can't buy" still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (both gaps between `main` and the spec closed; the spec header's "Where `main` differs" block now stale), and the *Review as the Deliverable* header and concurrency-test follow-up all moved from "not built" to built as services, without adapters. Added *Executing Plan 3B*. | Staleness pass over every mention of plan 3B, "not built", buying, the sweeper, tests 2 and 6, confirm, release and cancel, the clock's sampling point and `DRAFT`. Checked by PR #25's fresh round 1 (review 5576525428): 2 BLOCKER, 4 SUGGESTION, 1 NIT, all fixed |
+| 2026-10-19 (plan 3B executed) | Plan 3B executed and merged (PR #24, `61f0a65`). Banner, *What We Built* (197 runs, a plan 3B block), concepts 2, 3 and 7 (sweeper, confirm and the lock order built; "an agent can't buy" still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (both gaps between `main` and the spec closed; the spec header's "Where `main` differs" block now stale), and the *Review as the Deliverable* header and concurrency-test follow-up all moved from "not built" to built as services, without adapters. Added *Executing Plan 3B*. | Staleness pass over every mention of plan 3B, "not built", buying, the sweeper, tests 2 and 6, confirm, release and cancel, the clock's sampling point and `DRAFT`. Checked by PR #25's fresh round 1 (review 5576525428): 2 BLOCKER, 4 SUGGESTION, 1 NIT, all fixed. PR #25's fresh round 2 (review 5576660010): 1 BLOCKER, 2 SUGGESTION, 4 NIT, all fixed |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
