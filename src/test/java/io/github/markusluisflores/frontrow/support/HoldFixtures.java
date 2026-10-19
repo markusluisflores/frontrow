@@ -155,6 +155,13 @@ public final class HoldFixtures {
                         WHERE o.hold_group_id = :group ORDER BY l.event_seat_id""").param("group", holdGroupId).query(Long.class).list();
     }
 
+    public String eventStatus(long eventId) {
+        return jdbc.sql("SELECT status FROM event WHERE id = :id")
+                .param("id", eventId)
+                .query(String.class)
+                .single();
+    }
+
     public void setEventStatus(long eventId, String status) {
         jdbc.sql("UPDATE event SET status = :status WHERE id = :id")
                 .param("status", status)
