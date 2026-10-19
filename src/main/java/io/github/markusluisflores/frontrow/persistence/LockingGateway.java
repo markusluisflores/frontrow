@@ -147,9 +147,11 @@ public class LockingGateway {
         if (holdIds.isEmpty()) {
             return 0;
         }
-        return jdbc.sql("UPDATE seat_hold SET status = :target WHERE id IN (:ids) AND status = 'ACTIVE'")
+        // One array parameter, not one per id: pgjdbc refuses a statement with more than 65,535 bind parameters,
+        // and cancelling a large event passes every ACTIVE hold on it.
+        return jdbc.sql("UPDATE seat_hold SET status = :target WHERE id = ANY(:ids) AND status = 'ACTIVE'")
                 .param("target", target.name())
-                .param("ids", holdIds)
+                .param("ids", holdIds.toArray(Long[]::new))
                 .update();
     }
 

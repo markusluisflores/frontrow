@@ -15,7 +15,7 @@ write path as a service in `service/`: hold creation with idempotent replay (`Ho
 the only purchase path (`ConfirmService`), release (`ReleaseService`), the event PATCH and cancellation
 (`EventPatchService`), and the expiry sweeper and 24-hour key purge (`ExpirySweepService`, scheduled by
 `config/SweepSchedule`). No REST endpoint or MCP tool exists yet.**
-196 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
+197 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
 `uq_claimed_seat`. Plans 4 (REST + security chains) and 5 (MCP) remain.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
 `docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.3; 2.6

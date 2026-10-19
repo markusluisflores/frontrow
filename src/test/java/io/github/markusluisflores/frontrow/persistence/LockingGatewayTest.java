@@ -22,6 +22,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.LongStream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -560,6 +561,20 @@ class LockingGatewayTest {
         Throwable thrown = catchThrowable(
                 () -> tx.executeWithoutResult(status -> gateway.endHolds(List.of(active), HoldStatus.ACTIVE)));
         assertThat(thrown).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void endsMoreHoldsThanOneStatementHasBindParameters() {
+        long active = insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        // pgjdbc caps a statement at 65,535 bind parameters; ids that match no row stand in for a huge event.
+        List<Long> ids = LongStream.concat(LongStream.of(active), LongStream.rangeClosed(-70_000, -1))
+                .boxed()
+                .toList();
+
+        tx.executeWithoutResult(status -> {
+            assertThat(gateway.endHolds(ids, HoldStatus.RELEASED)).isEqualTo(1);
+            assertThat(statusOf(active)).isEqualTo("RELEASED");
+        });
     }
 
     @Test
