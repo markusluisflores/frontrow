@@ -61,3 +61,11 @@ How should the application talk to Postgres?
 ## Amendment — Plan 3A (hold creation)
 
 The gateway also holds the statements that wait on a lock **implicitly**: the `hold_request` key insert (`ON CONFLICT DO NOTHING`, lock-order step 1, which waits on an in-flight duplicate key) and the `seat_hold` insert (step 4, which waits on `uq_claimed_seat` behind an uncommitted claim). The stored-response read and write that complete the `hold_request` protocol sit beside them. Hold creation therefore makes **no JPA write at all**, which is how it meets this ADR's warning about dirty `SeatHold` entities. Ordinary reads, such as `event_seat` prices, still go through JPA. Source: `docs/superpowers/plans/2026-10-14-phase-1-plan-3a-hold-creation.md`, decision 1.
+
+## Amendment — Plan 3B (confirm, release, cancellation, the sweeper)
+
+The gateway also holds every write to a row the transaction has already locked:
+- `endHolds`, which moves locked `ACTIVE` rows to `CONVERTED`, `RELEASED` or `EXPIRED` for confirm, release and cancellation;
+- `updateEvent`, which writes an event `PATCH` to the row it holds `FOR UPDATE`.
+
+The sweeper's `SKIP LOCKED` update is there because it is lock SQL. The `hold_request` purge is there because it completes the protocol the key claim starts. New rows that no other transaction can be locking yet, `ticket_order` and `order_line`, go through JPA. They are written with `saveAndFlush` inside the service's translation `try`, so a constraint violation surfaces there and not at commit. `SeatHold#transitionTo` is deleted. Its only possible callers were confirm and release, and both write through the gateway, so an entity-side transition would only invite the dirty-entity overwrite this ADR warns about. Source: `docs/superpowers/plans/2026-10-17-phase-1-plan-3b-confirm-release-cancel.md`, decision 1.

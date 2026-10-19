@@ -46,6 +46,29 @@ class SqlFailuresTest {
     }
 
     @Test
+    void aLockTimeoutOnThePatchPathAsksTheCallerToRetry() {
+        RuntimeException translated =
+                SqlFailures.translateOnPatchPath(new CannotAcquireLockException("timeout", psql("55P03", null)));
+        assertThat(translated).isInstanceOf(DomainException.class);
+        assertThat(((DomainException) translated).errorCode()).isEqualTo(ErrorCode.CONTENTION_RETRY);
+    }
+
+    @Test
+    void aLockTimeoutAnywhereElseIsABugAndIsRethrownUnchanged() {
+        DataAccessException timeout = new CannotAcquireLockException("timeout", psql("55P03", null));
+        assertThat(SqlFailures.translate(timeout)).isSameAs(timeout);
+    }
+
+    @Test
+    void thePatchPathStillMapsDeadlocksAndRethrowsTheRest() {
+        RuntimeException deadlock =
+                SqlFailures.translateOnPatchPath(new CannotAcquireLockException("lock", psql("40P01", null)));
+        assertThat(((DomainException) deadlock).errorCode()).isEqualTo(ErrorCode.CONTENTION_RETRY);
+        DataAccessException other = duplicate("uq_sold_once");
+        assertThat(SqlFailures.translateOnPatchPath(other)).isSameAs(other);
+    }
+
+    @Test
     void aFailureWithNoPostgresCauseIsRethrownUnchanged() {
         DataAccessException plain = new DuplicateKeyException("no driver error inside");
         assertThat(SqlFailures.translate(plain, 42L)).isSameAs(plain);

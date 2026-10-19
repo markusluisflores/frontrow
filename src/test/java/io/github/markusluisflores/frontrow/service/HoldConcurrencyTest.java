@@ -3,6 +3,7 @@ package io.github.markusluisflores.frontrow.service;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.markusluisflores.frontrow.config.FrontRowProperties;
+import io.github.markusluisflores.frontrow.config.SweepSchedule;
 import io.github.markusluisflores.frontrow.error.ErrorCode;
 import io.github.markusluisflores.frontrow.support.HoldFixtures;
 import io.github.markusluisflores.frontrow.support.Race;
@@ -20,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
@@ -45,6 +47,9 @@ class HoldConcurrencyTest {
 
     @Autowired
     FrontRowProperties properties;
+
+    @Autowired
+    ApplicationContext context;
 
     HoldFixtures fixtures;
     ExecutorService pool;
@@ -204,10 +209,12 @@ class HoldConcurrencyTest {
 
     /**
      * Test 7. Sequential, but it guards the correctness claim: with no sweeper, a lapsed hold must not block the next
-     * buyer. Plan 3A has no sweeper at all; Plan 3B must keep this test running with its sweeper disabled.
+     * buyer. Every test context runs with the sweeper off (src/test/resources/config/application.properties), and this
+     * test checks that it is.
      */
     @Test
     void lazyExpiryFreesSeatsWithoutTheSweeper() {
+        assertThat(context.getBeansOfType(SweepSchedule.class)).isEmpty();
         List<Long> seats = fixtures.eventSeats(eventId, venueId, 2);
         HoldResult first = holds.hold(new HoldCommand("alice", eventId, seats, "a-1"));
 

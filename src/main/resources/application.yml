@@ -19,3 +19,6 @@ frontrow:
   max-active-hold-groups: 3
   max-seats-per-hold: 8
   lock-timeout: 5s
+  sweep-interval: 1m
+  # Off in tests (src/test/resources/config/application.properties). Correctness never depends on the sweeper.
+  sweeper-enabled: true

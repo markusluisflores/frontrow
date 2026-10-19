@@ -173,12 +173,13 @@ class HoldServiceTest {
     }
 
     @Test
-    void aDraftEventIsNotOpenYet() {
-        long draft = fixtures.event(venueId, "DRAFT", NOW.minusSeconds(60), NOW.plusSeconds(60));
+    void aDraftEventIsNotFoundAndDisclosesNothing() {
+        // Its window opens later, so before spec rev 2.6.3 this answered sales_not_open with that opening time.
+        long draft = fixtures.event(venueId, "DRAFT", NOW.plusSeconds(60), NOW.plusSeconds(120));
         long seat = fixtures.eventSeats(draft, venueId, 1).getFirst();
         DomainException rejected = rejection(() -> holds.hold(new HoldCommand("alice", draft, List.of(seat), "k1")));
-        assertThat(rejected.errorCode()).isEqualTo(ErrorCode.SALES_NOT_OPEN);
-        assertThat(rejected.details()).containsEntry("sales_open_at", NOW.minusSeconds(60));
+        assertThat(rejected.errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(rejected.details()).isEmpty();
     }
 
     @Test

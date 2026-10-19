@@ -81,11 +81,15 @@ public final class HoldFixtures {
     }
 
     public void hold(long eventSeatId, String owner, String status, Instant expiresAt) {
+        holdInGroup(eventSeatId, UUID.randomUUID(), owner, status, expiresAt);
+    }
+
+    public void holdInGroup(long eventSeatId, UUID holdGroupId, String owner, String status, Instant expiresAt) {
         jdbc.sql("""
                         INSERT INTO seat_hold (event_seat_id, hold_group_id, owner, status, expires_at, created_at)
                         VALUES (:seat, :group, :owner, :status, :expires, :created)""")
                 .param("seat", eventSeatId)
-                .param("group", UUID.randomUUID())
+                .param("group", holdGroupId)
                 .param("owner", owner)
                 .param("status", status)
                 .param("expires", utc(expiresAt))
@@ -136,6 +140,53 @@ public final class HoldFixtures {
                 .param("key", idempotencyKey)
                 .query(String.class)
                 .single();
+    }
+
+    public int ordersForGroup(UUID holdGroupId) {
+        return jdbc.sql("SELECT count(*) FROM ticket_order WHERE hold_group_id = :group")
+                .param("group", holdGroupId)
+                .query(Integer.class)
+                .single();
+    }
+
+    public List<Long> orderedSeatsOfGroup(UUID holdGroupId) {
+        return jdbc.sql("""
+                        SELECT l.event_seat_id FROM order_line l JOIN ticket_order o ON o.id = l.order_id
+                        WHERE o.hold_group_id = :group ORDER BY l.event_seat_id""").param("group", holdGroupId).query(Long.class).list();
+    }
+
+    public String eventStatus(long eventId) {
+        return jdbc.sql("SELECT status FROM event WHERE id = :id")
+                .param("id", eventId)
+                .query(String.class)
+                .single();
+    }
+
+    public void setEventStatus(long eventId, String status) {
+        jdbc.sql("UPDATE event SET status = :status WHERE id = :id")
+                .param("status", status)
+                .param("id", eventId)
+                .update();
+    }
+
+    /** A stored key whose row no request has completed with a real result: for purge tests only. */
+    public void holdRequest(String owner, String idempotencyKey, Instant createdAt) {
+        jdbc.sql("""
+                        INSERT INTO hold_request (owner, idempotency_key, request_hash, response_json, created_at)
+                        VALUES (:owner, :key, 'stale', '{}', :created)""")
+                .param("owner", owner)
+                .param("key", idempotencyKey)
+                .param("created", utc(createdAt))
+                .update();
+    }
+
+    public Instant holdRequestCreatedAt(String owner, String idempotencyKey) {
+        return jdbc.sql("SELECT created_at FROM hold_request WHERE owner = :owner AND idempotency_key = :key")
+                .param("owner", owner)
+                .param("key", idempotencyKey)
+                .query(OffsetDateTime.class)
+                .single()
+                .toInstant();
     }
 
     private static OffsetDateTime utc(Instant instant) {

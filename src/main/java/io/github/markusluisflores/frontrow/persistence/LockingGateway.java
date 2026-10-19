@@ -8,6 +8,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -120,6 +121,70 @@ public class LockingGateway {
     }
 
     /**
+     * Step 4, a whole event, for cancellation: every ACTIVE hold on the event, lapsed or not, ascending by
+     * event_seat_id. Only the seat_hold rows are locked; the event_seat rows the join reads are not.
+     */
+    public List<HoldRow> lockActiveHoldsForEvent(long eventId) {
+        return jdbc.sql("""
+                        SELECT h.id, h.event_seat_id, h.hold_group_id, h.owner, h.status, h.expires_at
+                        FROM seat_hold h JOIN event_seat s ON s.id = h.event_seat_id
+                        WHERE s.event_id = :event AND h.status = 'ACTIVE'
+                        ORDER BY h.event_seat_id FOR UPDATE OF h""")
+                .param("event", eventId)
+                .query(LockingGateway::mapHold)
+                .list();
+    }
+
+    /**
+     * Ends hold rows this transaction has already locked: confirm, release and cancel decide under the lock, then
+     * write (spec §5). Only ACTIVE rows move, and only to an ended status, so a row is never rewritten once it has
+     * ended. Returns how many rows moved; the caller checks it against what it locked.
+     */
+    public int endHolds(Collection<Long> holdIds, HoldStatus target) {
+        if (!HoldStatus.ACTIVE.canTransitionTo(target)) {
+            throw new IllegalArgumentException("an ACTIVE hold cannot move to " + target);
+        }
+        if (holdIds.isEmpty()) {
+            return 0;
+        }
+        // One array parameter, not one per id: pgjdbc refuses a statement with more than 65,535 bind parameters,
+        // and cancelling a large event passes every ACTIVE hold on it.
+        return jdbc.sql("UPDATE seat_hold SET status = :target WHERE id = ANY(:ids) AND status = 'ACTIVE'")
+                .param("target", target.name())
+                .param("ids", holdIds.toArray(Long[]::new))
+                .update();
+    }
+
+    /**
+     * The sweeper (spec §5, Hold expiry): expires every lapsed ACTIVE hold it can lock without waiting. SKIP LOCKED
+     * means it never waits, so it takes no part in the lock order and cannot deadlock. A row another transaction
+     * holds is left to lazy expiry or the next sweep. Postgres re-checks the inner predicate on each row it locks,
+     * and the outer one repeats it, so a hold confirmed a moment earlier is never expired.
+     */
+    public int expireLapsedHolds(Instant now) {
+        return jdbc.sql("""
+                        UPDATE seat_hold SET status = 'EXPIRED'
+                        WHERE status = 'ACTIVE' AND expires_at <= :now AND id IN (
+                            SELECT id FROM seat_hold WHERE status = 'ACTIVE' AND expires_at <= :now
+                            FOR UPDATE SKIP LOCKED)""").param("now", utc(now)).update();
+    }
+
+    /** Writes an event PATCH to the row this transaction holds FOR UPDATE (spec §5, Event cancellation). */
+    public void updateEvent(long eventId, EventStatus status, Instant salesOpenAt, Instant salesCloseAt) {
+        int updated = jdbc.sql("""
+                        UPDATE event SET status = :status, sales_open_at = :open, sales_close_at = :close
+                        WHERE id = :id""")
+                .param("status", status.name())
+                .param("open", utc(salesOpenAt))
+                .param("close", utc(salesCloseAt))
+                .param("id", eventId)
+                .update();
+        if (updated != 1) {
+            throw new IllegalStateException("no event row " + eventId + " to update");
+        }
+    }
+
+    /**
      * The per-owner cap counts groups with at least one live row, so lapsed-but-unswept groups never count (spec §4).
      */
     public int countActiveHoldGroups(String owner, Instant now) {
@@ -194,6 +259,16 @@ public class LockingGateway {
                 .param("now", utc(now))
                 .query(Long.class)
                 .single();
+    }
+
+    /**
+     * The 24-hour key purge (spec §5): deletes hold_request rows created before the cutoff. It runs in a transaction
+     * of its own, and hold creation tolerates a row it saw vanishing before it read it (HoldService).
+     */
+    public int purgeHoldRequestsCreatedBefore(Instant cutoff) {
+        return jdbc.sql("DELETE FROM hold_request WHERE created_at < :cutoff")
+                .param("cutoff", utc(cutoff))
+                .update();
     }
 
     private static HoldRow mapHold(ResultSet rs, int rowNum) throws SQLException {

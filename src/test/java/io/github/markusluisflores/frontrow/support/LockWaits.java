@@ -28,4 +28,19 @@ public final class LockWaits {
         }
         throw new AssertionError("backend " + pid + " did not block on a lock within 10s");
     }
+
+    /** Waits up to 10s for some other backend to report that the given backend blocks it. */
+    public static void awaitBlockedBy(JdbcClient jdbc, int blockerPid) throws InterruptedException {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            int blocked = jdbc.sql("SELECT count(*) FROM pg_stat_activity WHERE :blocker = ANY (pg_blocking_pids(pid))")
+                    .param("blocker", blockerPid)
+                    .query(Integer.class)
+                    .single();
+            if (blocked > 0) {
+                return;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("no backend blocked behind " + blockerPid + " within 10s");
+    }
 }

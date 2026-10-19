@@ -24,6 +24,14 @@ final class SqlFailures {
         return translate(failure);
     }
 
+    /** The event PATCH, the one path that sets lock_timeout: a timeout there also asks for a retry (spec §5). */
+    static RuntimeException translateOnPatchPath(DataAccessException failure) {
+        if (PostgresErrors.LOCK_NOT_AVAILABLE.equals(PostgresErrors.sqlState(failure))) {
+            return DomainException.of(ErrorCode.CONTENTION_RETRY);
+        }
+        return translate(failure);
+    }
+
     /** Anywhere: deadlock and serialization failures are mapped defensively; the lock order should prevent both. */
     static RuntimeException translate(DataAccessException failure) {
         String state = PostgresErrors.sqlState(failure);
