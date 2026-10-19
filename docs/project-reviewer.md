@@ -1,7 +1,7 @@
 # FrontRow — Project Reviewer & Interview Guide
 
 > **Living document.** Updated as new concepts are added or lessons are learned.
-> Last updated: 2026-10-17
+> Last updated: 2026-10-18
 
 > ⚠️ **Phase 1 plans 1, 2 and 3A of 6 have landed. The service can place a hold, but nothing can buy a seat
 > yet, and there is no API.** Plan 3A (hold creation, PR #18) is the first write path. It is a Java service
@@ -516,10 +516,10 @@ with rulings rather than fixed, one of them a request that waits across
 when the spec did not yet fix the sampling point. The same cause has two more effects: a hold that lapsed during the
 wait can give a false `seat_taken`, and `expires_at` is short by the length of the wait. Spec revision 2.6.3 then
 decided the sampling point: after the locks that precede each transaction's first time-dependent decision (for hold
-creation, the event-row lock). Plan 3B, not yet written, is to move the read in hold creation and apply the same rule
-to confirm, release, cancel and the sweeper. Hold creation's seat-row waits will still come after its read, so a
-smaller residual of the same three effects stays by design. The same revision made a `DRAFT` event answer
-`not_found`, where `main` still answers `sales_not_open` with the planned opening time.
+creation, the event-row lock). Plan 3B, written (PR #22) but not yet executed, is to move the read in hold creation
+and apply the same rule to confirm, release, cancel and the sweeper. Hold creation's seat-row waits will still come
+after its read, so a smaller residual of the same three effects stays by design. The same revision made a `DRAFT`
+event answer `not_found`, where `main` still answers `sales_not_open` with the planned opening time.
 Until plan 3B, both are known gaps between `main` and the spec, not hidden defects. No adapter can reach `hold()`
 yet, nothing can be bought, and confirm will re-check the sales window. See *Building the First Write Path*.)
 Two things did reach `main`, and they should be named
@@ -862,6 +862,7 @@ a compiler probe, a reproduction or a mutation, so it was proven rather than arg
 | 2026-10-16 (wrap-up) | Plan 3A executed and merged (PR #18). Banner, *What We Built* (142 runs), concept 1 (the translation is built), concept 7 (seat-row locks proven; talking point no longer says the test is owed), the timeline answer, *Bugs Worth Remembering*, and the concurrency-test follow-up in *Review as the Deliverable* all moved from "not built" to built. Added *Building the First Write Path*. Retitled the spec-review section to *Seven Review Rounds, and a Claim We Got Wrong* and rewrote its narrative so the authoring session, not Markus, owns the mistake. | **DRIFT FOUND** by a fresh check: 3 drift and 7 nits, all fixed. All three drifts were in entries this run hadn't changed: the *Review as the Deliverable* header still called plans 3-5 documents, and two talking points (*Seven Review Rounds* and concept 8) still had the AI session's "I" in Markus's mouth, the same drift fixed on 2026-10-15 in another section. Nits: seat-row proofs credited to plan 2, the task reviewer's fail-open flag understated, concepts 2 and 3 without built notes, a closed test gap read as open, the lock order claimed as Markus's own writing, and "cancellation" ambiguous |
 | 2026-10-16 (spec 2.6.3) | Spec revision 2.6.3 and plan 3A's errata. *Bugs Worth Remembering* now says the spec decided the clock's sampling point (after the locks before each transaction's first time-dependent decision; for hold creation, the event-row lock) and made a `DRAFT` event answer `not_found`, and names both as known gaps between `main` and the spec until plan 3B. The `db228bc` line now includes the `CLAUDE.md` test count. Closes PR #19's two open NITs (4299944353, 4299944357). | Checked by PR #20's three fresh rounds (1, 0 and 0 BLOCKERs; the BLOCKER was in the spec). Guide findings, all fixed: the paragraph stated hold creation's read point as the general rule and implied 3B removes every effect (round 1), the lead "No runtime defect is known" now reads "reachable" (round 1), and "Plan 3B moves the read" was present tense about an unwritten plan (round 2). Merged 2026-10-17 as `d93ef7f` |
 | 2026-10-17 (PR #20 sync) | Recorded the result of the spec 2.6.3 row's review rounds in that row, which had been written before the rounds ran. No other entry was stale: *Bugs Worth Remembering* already names both gaps between `main` and the spec, and plan 3B is still unwritten. | Staleness pass over every mention of `DRAFT`, the clock's sampling point, plan 3B and spec 2.6.3; found only the forward-looking check note above. PR #21's fresh round 1 (review 5560522924): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all in this row or the journal; all fixed |
+| 2026-10-18 (plan 3B written) | Plan 3B is written and merged as a plan (PR #22, `af5b1a4`), not executed. *Bugs Worth Remembering* no longer calls it unwritten. No other entry was stale: the banner already lists 3B's work as not built, and *Review as the Deliverable* already counts 3B among the documents. | Staleness pass over every mention of plan 3B. Checked by PR #23's fresh round 1 (review 5565781561): 0 BLOCKER, 3 SUGGESTION, 3 NIT, all fixed |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
