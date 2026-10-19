@@ -87,12 +87,4 @@ public class SeatHold {
     public Instant getCreatedAt() {
         return createdAt;
     }
-
-    /** Only ACTIVE may move, and only to an ended status (domain rule). */
-    public void transitionTo(HoldStatus target) {
-        if (!this.status.canTransitionTo(target)) {
-            throw new IllegalStateException("illegal hold transition " + this.status + " -> " + target);
-        }
-        this.status = target;
-    }
 }

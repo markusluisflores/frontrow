@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 import io.github.markusluisflores.frontrow.TestcontainersConfiguration;
 import io.github.markusluisflores.frontrow.domain.EventStatus;
+import io.github.markusluisflores.frontrow.domain.HoldRules;
 import io.github.markusluisflores.frontrow.domain.HoldStatus;
 import io.github.markusluisflores.frontrow.error.PostgresErrors;
 import io.github.markusluisflores.frontrow.support.LockWaits;
@@ -58,6 +59,9 @@ class LockingGatewayTest {
 
     @Autowired
     JsonMapper json;
+
+    @Autowired
+    SeatHoldRepository seatHolds;
 
     ExecutorService pool;
     long eventId;
@@ -533,6 +537,170 @@ class LockingGatewayTest {
         release.countDown();
         first.get(10, TimeUnit.SECONDS);
         return second.get(10, TimeUnit.SECONDS);
+    }
+
+    @Test
+    void endsOnlyActiveHoldsAndCountsThem() {
+        long active = insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        long released =
+                insertHold(secondEventSeatId, UUID.randomUUID(), "alice", HoldStatus.RELEASED, NOW.plusSeconds(600));
+
+        tx.executeWithoutResult(status -> {
+            assertThat(gateway.endHolds(List.of(active, released), HoldStatus.CONVERTED))
+                    .isEqualTo(1);
+            assertThat(statusOf(active)).isEqualTo("CONVERTED");
+            assertThat(statusOf(released)).isEqualTo("RELEASED");
+            assertThat(gateway.endHolds(List.of(), HoldStatus.RELEASED)).isZero();
+        });
+    }
+
+    @Test
+    void refusesToMoveAHoldToActive() {
+        long active = insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        Throwable thrown = catchThrowable(
+                () -> tx.executeWithoutResult(status -> gateway.endHolds(List.of(active), HoldStatus.ACTIVE)));
+        assertThat(thrown).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void locksEveryActiveHoldOnTheEventAscendingLapsedOrNot() {
+        long otherEvent = insertEvent();
+        long otherEventsSeat = insertEventSeat(otherEvent, insertSeat("C", 1));
+        // Higher seat first, so ascending order cannot come from insertion order.
+        long live = insertHold(secondEventSeatId, UUID.randomUUID(), "bob", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        long lapsed = insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.minusSeconds(600));
+        insertHold(eventSeatId, UUID.randomUUID(), "carol", HoldStatus.EXPIRED, NOW.minusSeconds(900));
+        insertHold(otherEventsSeat, UUID.randomUUID(), "dave", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+
+        List<HoldRow> rows = tx.execute(status -> gateway.lockActiveHoldsForEvent(eventId));
+        assertThat(rows).extracting(HoldRow::id).containsExactly(lapsed, live);
+    }
+
+    @Test
+    void anEventsLockedHoldMakesTheCancellationLockWait() throws Exception {
+        insertHold(eventSeatId, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<Integer> waiterPid = new CompletableFuture<>();
+
+        Future<?> holder = pool.submit(() -> tx.executeWithoutResult(status -> {
+            gateway.lockActiveHoldForSeat(eventSeatId);
+            locked.countDown();
+            awaitQuietly(release);
+        }));
+        assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
+
+        Future<Integer> waiter = pool.submit(() -> tx.execute(status -> {
+            waiterPid.complete(LockWaits.backendPid(jdbc));
+            return gateway.lockActiveHoldsForEvent(eventId).size();
+        }));
+        LockWaits.awaitBlockedOnLock(jdbc, waiterPid.get(10, TimeUnit.SECONDS));
+        assertThat(waiter.isDone()).isFalse();
+
+        release.countDown();
+        holder.get(10, TimeUnit.SECONDS);
+        assertThat(waiter.get(10, TimeUnit.SECONDS)).isEqualTo(1);
+    }
+
+    @Test
+    void theSweepExpiresLapsedActiveHoldsAndSkipsLockedOnesWithoutWaiting() throws Exception {
+        long[] seats = new long[4];
+        for (int i = 0; i < seats.length; i++) {
+            seats[i] = insertEventSeat(insertSeat("D", i + 1));
+        }
+        long lapsed = insertHold(seats[0], UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW);
+        long lockedLapsed = insertHold(seats[1], UUID.randomUUID(), "bob", HoldStatus.ACTIVE, NOW.minusSeconds(1));
+        long live = insertHold(seats[2], UUID.randomUUID(), "carol", HoldStatus.ACTIVE, NOW.plusMillis(1));
+        long released = insertHold(seats[3], UUID.randomUUID(), "dave", HoldStatus.RELEASED, NOW.minusSeconds(1));
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+
+        Future<?> holder = pool.submit(() -> tx.executeWithoutResult(status -> {
+            gateway.lockActiveHoldForSeat(seats[1]);
+            locked.countDown();
+            awaitQuietly(release);
+        }));
+        assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
+        try {
+            // SKIP LOCKED: the sweep returns at once instead of waiting for the holder.
+            Future<Integer> sweep = pool.submit(() -> tx.execute(status -> gateway.expireLapsedHolds(NOW)));
+            assertThat(sweep.get(10, TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(statusOf(lapsed)).isEqualTo("EXPIRED");
+            assertThat(statusOf(lockedLapsed)).isEqualTo("ACTIVE");
+            assertThat(statusOf(live)).isEqualTo("ACTIVE");
+            assertThat(statusOf(released)).isEqualTo("RELEASED");
+        } finally {
+            release.countDown();
+            holder.get(10, TimeUnit.SECONDS);
+        }
+        assertThat(tx.<Integer>execute(status -> gateway.expireLapsedHolds(NOW)))
+                .isEqualTo(1);
+        assertThat(statusOf(lockedLapsed)).isEqualTo("EXPIRED");
+    }
+
+    @Test
+    void updatesTheEventRow() {
+        tx.executeWithoutResult(status -> {
+            gateway.lockEventForUpdate(eventId);
+            gateway.updateEvent(eventId, EventStatus.CANCELLED, NOW, NOW.plusSeconds(60));
+        });
+        EventRow row = tx.execute(status -> gateway.lockEventForShare(eventId)).orElseThrow();
+        assertThat(row.status()).isEqualTo(EventStatus.CANCELLED);
+        assertThat(row.salesOpenAt()).isEqualTo(NOW);
+        assertThat(row.salesCloseAt()).isEqualTo(NOW.plusSeconds(60));
+    }
+
+    @Test
+    void purgesOnlyKeysCreatedBeforeTheCutoff() {
+        tx.executeWithoutResult(status -> {
+            gateway.claimIdempotencyKey("alice", "old", "h", NOW.minusMillis(1));
+            gateway.claimIdempotencyKey("alice", "boundary", "h", NOW);
+        });
+        assertThat(tx.<Integer>execute(status -> gateway.purgeHoldRequestsCreatedBefore(NOW)))
+                .isEqualTo(1);
+        assertThat(tx.<Boolean>execute(
+                        status -> gateway.findHoldRequest("alice", "boundary").isPresent()))
+                .isTrue();
+    }
+
+    @Test
+    void findsAGroupsEventOnlyForItsOwner() {
+        UUID group = UUID.randomUUID();
+        insertHold(eventSeatId, group, "alice", HoldStatus.ACTIVE, NOW.plusSeconds(600));
+        insertHold(secondEventSeatId, group, "alice", HoldStatus.EXPIRED, NOW.plusSeconds(600));
+
+        assertThat(seatHolds.findEventIdOfGroup(group, "alice")).contains(eventId);
+        assertThat(seatHolds.findEventIdOfGroup(group, "bob")).isEmpty();
+        assertThat(seatHolds.findEventIdOfGroup(UUID.randomUUID(), "alice")).isEmpty();
+    }
+
+    @Test
+    void aHoldRowConvertsToTheDomainView() {
+        HoldRow row = new HoldRow(1L, 7L, UUID.randomUUID(), "alice", HoldStatus.ACTIVE, NOW);
+        assertThat(row.toRule()).isEqualTo(new HoldRules.HoldRow(7L, HoldStatus.ACTIVE, NOW));
+    }
+
+    private long insertEvent() {
+        return jdbc.sql("""
+                        INSERT INTO event (venue_id, name, starts_at, sales_open_at, sales_close_at, status, currency)
+                        VALUES (:venue, 'Other', :starts, :open, :close, 'ON_SALE', 'CAD') RETURNING id""")
+                .param("venue", venueId)
+                .param("starts", utc(NOW.plus(30, ChronoUnit.DAYS)))
+                .param("open", utc(NOW.minus(1, ChronoUnit.DAYS)))
+                .param("close", utc(NOW.plus(29, ChronoUnit.DAYS)))
+                .query(Long.class)
+                .single();
+    }
+
+    private long insertEventSeat(long event, long seatId) {
+        return jdbc.sql("""
+                        INSERT INTO event_seat (event_id, seat_id, venue_id, price_cents)
+                        VALUES (:event, :seat, :venue, 5000) RETURNING id""")
+                .param("event", event)
+                .param("seat", seatId)
+                .param("venue", venueId)
+                .query(Long.class)
+                .single();
     }
 
     private String statusOf(long holdId) {
