@@ -32,6 +32,7 @@ class ConfirmConcurrencyTest {
 
     private static final int REPETITIONS = 20;
     private static final int RELEASE_LAG_MS = 5;
+    private static final int CONFIRM_LAG_MS = 10;
 
     @Autowired
     HoldService holds;
@@ -71,7 +72,9 @@ class ConfirmConcurrencyTest {
 
     /**
      * Test 2. A 3-seat group, and two racers straddling its expiry, each on its own clock: the owner confirms at
-     * expires_at - 1ms, and a rival holds an overlapping set at expires_at + 1ms. Either may win, never both.
+     * expires_at - 1ms, and a rival holds an overlapping set at expires_at + 1ms. Either may win, never both. Confirm
+     * reaches the rows' locks before the rival does, so it starts up to CONFIRM_LAG_MS late, varied by repetition,
+     * for both outcomes to occur.
      */
     @Test
     void aConfirmAndAnOverlappingHoldAcrossExpiryHaveExactlyOneWinner() throws Exception {
@@ -83,13 +86,16 @@ class ConfirmConcurrencyTest {
             HoldResult group = holds.hold(new HoldCommand(owner, eventId, s.subList(0, 3), "group"));
             Instant expiry = group.expiresAt();
             List<Long> overlap = List.of(s.get(3), s.get(2), s.get(1));
+            long lag = rep % (CONFIRM_LAG_MS + 1);
 
             List<Race.Outcome<Object>> outcomes = Race.run(
                     pool,
                     List.of(
                             at(
                                     expiry.minusMillis(1),
-                                    () -> confirms.confirm(new HoldGroupCommand(owner, group.holdGroupId()))),
+                                    after(
+                                            lag,
+                                            () -> confirms.confirm(new HoldGroupCommand(owner, group.holdGroupId())))),
                             at(
                                     expiry.plusMillis(1),
                                     () -> holds.hold(new HoldCommand(rivalOwner, eventId, overlap, "rival")))));
