@@ -142,6 +142,26 @@ public final class HoldFixtures {
                 .single();
     }
 
+    public int ordersForGroup(UUID holdGroupId) {
+        return jdbc.sql("SELECT count(*) FROM ticket_order WHERE hold_group_id = :group")
+                .param("group", holdGroupId)
+                .query(Integer.class)
+                .single();
+    }
+
+    public List<Long> orderedSeatsOfGroup(UUID holdGroupId) {
+        return jdbc.sql("""
+                        SELECT l.event_seat_id FROM order_line l JOIN ticket_order o ON o.id = l.order_id
+                        WHERE o.hold_group_id = :group ORDER BY l.event_seat_id""").param("group", holdGroupId).query(Long.class).list();
+    }
+
+    public void setEventStatus(long eventId, String status) {
+        jdbc.sql("UPDATE event SET status = :status WHERE id = :id")
+                .param("status", status)
+                .param("id", eventId)
+                .update();
+    }
+
     public Instant holdRequestCreatedAt(String owner, String idempotencyKey) {
         return jdbc.sql("SELECT created_at FROM hold_request WHERE owner = :owner AND idempotency_key = :key")
                 .param("owner", owner)
