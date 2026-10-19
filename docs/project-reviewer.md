@@ -3,8 +3,9 @@
 > **Living document.** Updated as new concepts are added or lessons are learned.
 > Last updated: 2026-10-19
 
-> ⚠️ **Phase 1 plans 1, 2, 3A and 3B of 6 have landed. Every write path exists as a service, including the only
-> purchase path, but there is no API, so nobody can buy a seat yet.** Plans 3A (hold creation, PR #18) and 3B
+> ⚠️ **Phase 1 plans 1, 2, 3A and 3B of 6 have landed. Every write path on holds, orders and an existing event's
+> status and window exists as a service, including the only purchase path; creating an event does not yet. There is
+> no API, so nobody can buy a seat yet.** Plans 3A (hold creation, PR #18) and 3B
 > (confirm, release, cancellation and the sweeper, PR #24) are Java services exercised by integration tests
 > against real Postgres; no REST endpoint or MCP tool calls them yet.
 >
@@ -27,7 +28,8 @@
 > - all seven of spec §5's concurrency tests (1, 3, 4, 5 and 7 in plan 3A; 2 and 6 in plan 3B).
 >
 > **Not built:** the security chains, REST endpoints, MCP tools, seed data, and a
-> Dockerfile or compose file (plans 4 and 5). Nothing is deployed, and no adapter
+> Dockerfile or compose file (plans 4 and 5), and event creation (spec §6's `POST /api/events`
+> has no service behind it). Nothing is deployed, and no adapter
 > can call any service. Entries below that describe
 > unbuilt work are still *design decisions* supported by
 > `docs/superpowers/specs/2026-09-17-frontrow-design.md` — do not claim those
@@ -77,9 +79,11 @@
   that drops `uq_claimed_seat` and shows the same race then has several winners.
 
 **Plan 3B, confirm, release, cancellation and the sweeper** (PR #24, merged 2026-10-19):
-- `ConfirmService`, the only code that writes an order: it checks for an existing
-  order, then locks the event and the group's seat rows in the global order, and
-  decides on current state, re-checking the sales window.
+- `ConfirmService`, the only code that writes an order: an owner-scoped, unlocked
+  read finds the group's event; it then locks the event row `FOR SHARE` and the
+  group's seat rows in ascending order, reads `now`, and only then decides on
+  current state: an existing order first, then the event's status and sales
+  window, then the rows' state.
 - `ReleaseService`, which refuses a group already converted to an order and never
   takes the event lock.
 - `EventPatchService`, the event PATCH and cancellation. Cancellation is refused once
@@ -388,7 +392,7 @@ The subtle part was that hold creation interleaves locks and inserts. Taking
 all the locks first and then inserting sounds safe, but it breaks the ordering
 across the two phases, so the design claims seats one at a time. Every lock
 lives in one file, so 'one global order' is something you can check by reading
-that file. Every write path follows it. Racing overlapping multi-seat holds in
+that file. Every write path built so far follows it. Racing overlapping multi-seat holds in
 different orders produces no deadlock and no partial hold, and confirm is raced
 against expiry, cancellation and release. A reviewer once
 showed that nothing proved the seat-row locks block; there's now a test for
@@ -465,7 +469,8 @@ The cuttable parts were the organiser endpoints and the breadth of seed data."
 **Be ready for the timeline question, because the honest answer is better than a
 dodge.** The spec estimated "a full focused week" for Phase 1. *(Updated
 2026-10-19.)* Thirty-two days in (2026-09-17 to 2026-10-19), the foundation, the
-domain foundations and every write path (plans 3A and 3B) are built as services.
+domain foundations and every write path on holds, orders and an existing event's status and window (plans 3A and
+3B) are built as services; creating an event is not.
 Nobody can buy a seat yet, because there is no API in front of them. The reason
 is not drift: Phase 1 was re-planned from 3 documents into 5 when Plan 2 proved
 too large to review, and into 6 when Plan 3 did too (split into 3A and 3B on
@@ -553,9 +558,10 @@ wait can give a false `seat_taken`, and `expires_at` is short by the length of t
 decided the sampling point: after the locks that precede each transaction's first time-dependent decision (for hold
 creation, the event-row lock). The same revision made a `DRAFT` event answer `not_found`, not `sales_not_open`
 with the planned opening time. *(Updated 2026-10-19.)* Plan 3B (PR #24) closed both gaps: hold creation now reads the
-clock after the event lock, confirm, release, cancel and the sweeper follow the same rule, and `ClockReadPointTest`
-checks the read points. Hold creation's seat-row waits still come after its read, so a smaller residual of the same
-three effects stays by design. The spec header's "Where `main` differs" block still lists both gaps; it is owed a
+clock after the event lock, confirm and release read it after their row locks, the sweeper and purge read it at
+their start, and cancellation and the event PATCH read no clock at all (plan 3B decision 3). `ClockReadPointTest`
+covers hold creation, release and confirm only. Hold creation's seat-row waits still come after its read, so a
+smaller residual of the same three effects stays by design. The spec header's "Where `main` differs" block still lists both gaps; it is owed a
 sync on its own docs branch. No adapter can reach any service yet, nothing can be bought through an API, and
 confirm re-checks the sales window. See *Building the First Write Path*.)
 Two things did reach `main`, and they should be named
@@ -900,9 +906,11 @@ It merged on 2026-10-19 as `61f0a65`, with 197 test runs. I chose the Mandatory 
 and I made the merge call; the orchestrating session and its subagents did the building, measuring and reviewing.
 
 **A plan whose code had already been built.** Plan 3B's code came from a reference build that had been compiled and
-tested before the plan was approved. After execution, every task's source, ADR and `CLAUDE.md` tree was compared with
-that reference: all seven tasks were byte-identical to it, before the changes review asked for. So nothing below is
-code drifting from the plan. Each finding is something the plan's own build could not see:
+tested before the plan was approved. The orchestrating session compared each task's final source, ADR and
+`CLAUDE.md` tree with that reference (Task 2's after its review fix `deadad2`, which restored seven double-encoded
+comment lines), and all seven matched. That is the controller's own check: PR #24's fresh reviewers marked it not
+verified. So nothing below is code drifting from the plan, as far as that check shows. Each finding is something
+the plan's own build could not see:
 - **A cancellation that could never succeed at scale** (round 2). `endHolds` used `IN (:ids)`, one bind parameter
   per hold id, and the Postgres driver caps a statement at 65,535 parameters. Cancelling an event with that many
   `ACTIVE` holds would fail as a 500 every time. The reviewer reproduced it. The fix is `id = ANY(:ids)`, one array
@@ -922,13 +930,14 @@ code drifting from the plan. Each finding is something the plan's own build coul
   lag too (0-5 ms): started together, release won 60 of 60.
 
 **Interview talking point:** "The code for this part of the project was built and run before anyone executed the
-plan, and what the subagents produced matched that reference byte for byte. Review still found four things, and none
+plan, and once one encoding slip in a comment was fixed, the orchestrating session's own comparison found what the
+subagents produced matched that reference. Review still found four things, and none
 of them was the code disagreeing with the plan. One was a scaling limit: cancellation sent one SQL parameter per hold,
 so past 65,535 active holds the driver would refuse the statement and the cancel could never succeed. The other three
 were about evidence. A test that accepts either outcome of a race only tests both if both actually happen, and a
 reviewer counted: one side won 79 times out of 80. A test comment claimed a rounding behaviour the driver doesn't
 have. And the spec promised a release race no test ran. The AI session and its reviewer subagents did the building,
-measuring and reviewing; I chose the tier and the approach, read the results and made the merge call. What I take
+measuring and reviewing; I chose the tier and the approach and made the merge call. What I take
 from it is that 'it matches the plan' and 'the tests prove what they claim' are different questions, and only
 measuring answers the second."
 
@@ -963,7 +972,7 @@ measuring answers the second."
 | 2026-10-16 (spec 2.6.3) | Spec revision 2.6.3 and plan 3A's errata. *Bugs Worth Remembering* now says the spec decided the clock's sampling point (after the locks before each transaction's first time-dependent decision; for hold creation, the event-row lock) and made a `DRAFT` event answer `not_found`, and names both as known gaps between `main` and the spec until plan 3B. The `db228bc` line now includes the `CLAUDE.md` test count. Closes PR #19's two open NITs (4299944353, 4299944357). | Checked by PR #20's three fresh rounds (1, 0 and 0 BLOCKERs; the BLOCKER was in the spec). Guide findings, all fixed: the paragraph stated hold creation's read point as the general rule and implied 3B removes every effect (round 1), the lead "No runtime defect is known" now reads "reachable" (round 1), and "Plan 3B moves the read" was present tense about an unwritten plan (round 2). Merged 2026-10-17 as `d93ef7f` |
 | 2026-10-17 (PR #20 sync) | Recorded the result of the spec 2.6.3 row's review rounds in that row, which had been written before the rounds ran. No other entry was stale: *Bugs Worth Remembering* already names both gaps between `main` and the spec, and plan 3B is still unwritten. | Staleness pass over every mention of `DRAFT`, the clock's sampling point, plan 3B and spec 2.6.3; found only the forward-looking check note above. PR #21's fresh round 1 (review 5560522924): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all in this row or the journal; all fixed |
 | 2026-10-18 (plan 3B written) | Plan 3B is written and merged as a plan (PR #22, `af5b1a4`), not executed. *Bugs Worth Remembering* no longer calls it unwritten. No other entry was stale: the banner already lists 3B's work as not built, and *Review as the Deliverable* already counts 3B among the documents. | Staleness pass over every mention of plan 3B. Checked by PR #23's fresh round 1 (review 5565781561): 0 BLOCKER, 3 SUGGESTION, 3 NIT, all fixed |
-| 2026-10-19 (plan 3B executed) | Plan 3B executed and merged (PR #24, `61f0a65`). Banner, *What We Built* (197 runs, a plan 3B block), concepts 2, 3 and 7 (sweeper, confirm and the lock order built; "an agent can't buy" still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (both gaps between `main` and the spec closed; the spec header's "Where `main` differs" block now stale), and the *Review as the Deliverable* header and concurrency-test follow-up all moved from "not built" to built as services, without adapters. Added *Executing Plan 3B*. | Staleness pass over every mention of plan 3B, "not built", buying, the sweeper, tests 2 and 6, confirm, release and cancel, the clock's sampling point and `DRAFT`. Checked by the journal PR's review: reviewed in this PR |
+| 2026-10-19 (plan 3B executed) | Plan 3B executed and merged (PR #24, `61f0a65`). Banner, *What We Built* (197 runs, a plan 3B block), concepts 2, 3 and 7 (sweeper, confirm and the lock order built; "an agent can't buy" still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (both gaps between `main` and the spec closed; the spec header's "Where `main` differs" block now stale), and the *Review as the Deliverable* header and concurrency-test follow-up all moved from "not built" to built as services, without adapters. Added *Executing Plan 3B*. | Staleness pass over every mention of plan 3B, "not built", buying, the sweeper, tests 2 and 6, confirm, release and cancel, the clock's sampling point and `DRAFT`. Checked by PR #25's fresh round 1 (review 5576525428): 2 BLOCKER, 4 SUGGESTION, 1 NIT, all fixed |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
