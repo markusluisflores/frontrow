@@ -23,19 +23,24 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
  * Spec §5's centrepiece tests that need confirm and cancellation: 2 and 6, plus the double-clicked confirm the READ
- * COMMITTED list depends on. Every racer runs in its own transaction on its own virtual thread, against real Postgres.
+ * COMMITTED list depends on, and a release racing a confirm of the same group. Every racer runs in its own transaction
+ * on its own virtual thread, against real Postgres.
  */
 @SpringBootTest
 @Import(ServiceTestConfiguration.class)
 class ConfirmConcurrencyTest {
 
     private static final int REPETITIONS = 20;
+    private static final int RELEASE_LAG_MS = 5;
 
     @Autowired
     HoldService holds;
 
     @Autowired
     ConfirmService confirms;
+
+    @Autowired
+    ReleaseService releases;
 
     @Autowired
     EventPatchService patches;
@@ -164,6 +169,58 @@ class ConfirmConcurrencyTest {
             assertThat(outcomes.get(0).result()).isEqualTo(outcomes.get(1).result());
             assertThat(fixtures.ordersForGroup(group.holdGroupId())).isEqualTo(1);
         }
+    }
+
+    /**
+     * The owner releases while the same owner confirms one live group. Either the order exists, the release gets
+     * hold_not_active and the rows stay CONVERTED, or the rows are RELEASED, the confirm gets hold_not_active and no
+     * order exists. Never both, never contention_retry, and no deadlock. Release does less work before its lock than
+     * confirm does, so it starts up to RELEASE_LAG_MS late, varied by repetition, for both outcomes to occur.
+     */
+    @Test
+    void aReleaseAndAConfirmOfOneGroupHaveExactlyOneWinner() throws Exception {
+        for (int rep = 0; rep < REPETITIONS; rep++) {
+            long eventId = fixtures.onSaleEvent(venueId);
+            String owner = "releaser-r" + rep;
+            HoldResult group =
+                    holds.hold(new HoldCommand(owner, eventId, fixtures.eventSeats(eventId, venueId, 2), "k1"));
+            HoldGroupCommand command = new HoldGroupCommand(owner, group.holdGroupId());
+            long lag = rep % (RELEASE_LAG_MS + 1);
+
+            List<Race.Outcome<Object>> outcomes = Race.run(
+                    pool,
+                    List.<Callable<Object>>of(
+                            () -> confirms.confirm(command), after(lag, () -> releases.release(command))));
+
+            Race.Outcome<Object> confirm = outcomes.get(0);
+            Race.Outcome<Object> release = outcomes.get(1);
+            assertThat(outcomes)
+                    .as("repetition %d", rep)
+                    .extracting(Race.Outcome::errorCode)
+                    .doesNotContain(ErrorCode.CONTENTION_RETRY);
+            assertThat(outcomes)
+                    .as("repetition %d", rep)
+                    .filteredOn(Race.Outcome::won)
+                    .hasSize(1);
+            if (confirm.won()) {
+                assertThat(release.errorCode()).as("%s", release.failure()).isEqualTo(ErrorCode.HOLD_NOT_ACTIVE);
+                assertThat(fixtures.statusesOwnedBy(owner)).containsOnly("CONVERTED");
+                assertThat(fixtures.ordersForGroup(group.holdGroupId())).isEqualTo(1);
+            } else {
+                assertThat(confirm.errorCode()).as("%s", confirm.failure()).isEqualTo(ErrorCode.HOLD_NOT_ACTIVE);
+                assertThat(release.result()).isEqualTo(new ReleaseResult(group.holdGroupId(), 2, 0));
+                assertThat(fixtures.statusesOwnedBy(owner)).containsOnly("RELEASED");
+                assertThat(fixtures.ordersForGroup(group.holdGroupId())).isZero();
+            }
+        }
+    }
+
+    /** Starts the call the given number of milliseconds after the race does. */
+    private static Callable<Object> after(long millis, Callable<?> call) {
+        return () -> {
+            Thread.sleep(millis);
+            return call.call();
+        };
     }
 
     /** Runs the call on this racer's own clock: test 2 needs two instants at once. */

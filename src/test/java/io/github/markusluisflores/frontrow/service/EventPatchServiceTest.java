@@ -104,11 +104,11 @@ class EventPatchServiceTest {
 
     @Test
     void aWindowThatDoesNotOpenBeforeItClosesIsRefusedAsStored() {
-        // 500ns apart, but timestamptz keeps microseconds: stored, these would be equal and break
+        // 400ns apart, but timestamptz keeps microseconds: stored, these would be equal and break
         // ck_event_sales_window.
         Instant openAt = NOW.plusSeconds(60);
         DomainException rejected =
-                rejection(() -> patches.patch(new EventPatch(eventId, null, openAt, openAt.plusNanos(500))));
+                rejection(() -> patches.patch(new EventPatch(eventId, null, openAt, openAt.plusNanos(400))));
 
         assertThat(rejected.errorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
         assertThat(rejected.details()).containsEntry("parameter", "sales_window");
