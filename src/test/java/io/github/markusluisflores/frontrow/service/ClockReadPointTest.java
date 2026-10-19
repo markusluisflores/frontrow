@@ -42,6 +42,9 @@ class ClockReadPointTest {
     HoldService holds;
 
     @Autowired
+    ReleaseService releases;
+
+    @Autowired
     LockingGateway gateway;
 
     @Autowired
@@ -105,6 +108,22 @@ class ClockReadPointTest {
 
         assertThat(waiting.get(10, TimeUnit.SECONDS).expiresAt()).isEqualTo(afterTheWait.plus(properties.holdTtl()));
         assertThat(fixtures.holdRequestCreatedAt("alice", "k1")).isEqualTo(NOW);
+    }
+
+    @Test
+    void aReleaseThatWaitsOnItsRowsPastExpiryExpiresThemInsteadOfReleasing() throws Exception {
+        long event = fixtures.onSaleEvent(venueId);
+        HoldResult held = holds.hold(new HoldCommand("alice", event, fixtures.eventSeats(event, venueId, 2), "k1"));
+
+        Future<ReleaseResult> waiting;
+        try (LockHolder rows =
+                LockHolder.start(pool, tx, jdbc, () -> gateway.lockGroupRows(held.holdGroupId(), "alice"))) {
+            waiting = pool.submit(() -> releases.release(new HoldGroupCommand("alice", held.holdGroupId())));
+            rows.awaitSomeoneBlocked();
+            clock.set(held.expiresAt());
+        }
+
+        assertThat(waiting.get(10, TimeUnit.SECONDS)).isEqualTo(new ReleaseResult(held.holdGroupId(), 0, 2));
     }
 
     private static DomainException rejection(Future<?> call) {

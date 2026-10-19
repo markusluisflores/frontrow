@@ -15,7 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
  */
 class TransactionIsolationTest {
 
-    private static final List<Class<?>> SERVICES = List.of(HoldService.class);
+    private static final List<Class<?>> SERVICES = List.of(HoldService.class, ReleaseService.class);
 
     @Test
     void everyPublicServiceMethodRunsReadCommitted() {

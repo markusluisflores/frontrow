@@ -81,11 +81,15 @@ public final class HoldFixtures {
     }
 
     public void hold(long eventSeatId, String owner, String status, Instant expiresAt) {
+        holdInGroup(eventSeatId, UUID.randomUUID(), owner, status, expiresAt);
+    }
+
+    public void holdInGroup(long eventSeatId, UUID holdGroupId, String owner, String status, Instant expiresAt) {
         jdbc.sql("""
                         INSERT INTO seat_hold (event_seat_id, hold_group_id, owner, status, expires_at, created_at)
                         VALUES (:seat, :group, :owner, :status, :expires, :created)""")
                 .param("seat", eventSeatId)
-                .param("group", UUID.randomUUID())
+                .param("group", holdGroupId)
                 .param("owner", owner)
                 .param("status", status)
                 .param("expires", utc(expiresAt))
