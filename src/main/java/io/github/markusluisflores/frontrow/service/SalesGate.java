@@ -7,7 +7,10 @@ import io.github.markusluisflores.frontrow.persistence.EventRow;
 import java.time.Instant;
 import java.util.Map;
 
-/** Holds and confirmations need ON_SALE and sales_open_at <= now < sales_close_at (spec §4). */
+/**
+ * Holds and confirmations need ON_SALE and sales_open_at <= now < sales_close_at (spec §4). A DRAFT event is not
+ * disclosed: it answers not_found, the same as a missing id, and nothing about it (spec §4, rev 2.6.3).
+ */
 final class SalesGate {
 
     private SalesGate() {}
@@ -17,7 +20,7 @@ final class SalesGate {
         // that fails open.
         DomainException rejection =
                 switch (event.status()) {
-                    case DRAFT -> salesNotOpen(event);
+                    case DRAFT -> DomainException.of(ErrorCode.NOT_FOUND);
                     case CANCELLED -> DomainException.of(ErrorCode.SALES_CLOSED);
                     case ON_SALE ->
                         switch (SalesWindow.of(event.salesOpenAt(), event.salesCloseAt())

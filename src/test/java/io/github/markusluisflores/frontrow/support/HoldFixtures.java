@@ -138,6 +138,15 @@ public final class HoldFixtures {
                 .single();
     }
 
+    public Instant holdRequestCreatedAt(String owner, String idempotencyKey) {
+        return jdbc.sql("SELECT created_at FROM hold_request WHERE owner = :owner AND idempotency_key = :key")
+                .param("owner", owner)
+                .param("key", idempotencyKey)
+                .query(OffsetDateTime.class)
+                .single()
+                .toInstant();
+    }
+
     private static OffsetDateTime utc(Instant instant) {
         return OffsetDateTime.ofInstant(instant, ZoneOffset.UTC);
     }

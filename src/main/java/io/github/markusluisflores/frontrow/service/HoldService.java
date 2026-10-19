@@ -65,16 +65,20 @@ public class HoldService {
         if (command.eventSeatIds().size() > properties.maxSeatsPerHold()) {
             throw new DomainException(ErrorCode.TOO_MANY_SEATS, Map.of("max_seats", properties.maxSeatsPerHold()));
         }
-        // timestamptz keeps microseconds; one truncation here keeps every Java check and SQL bind on one instant.
-        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        // hold_request.created_at records when the request arrived, and only the 24-hour purge reads it (spec §5).
+        // timestamptz keeps microseconds, so every instant is truncated once, where it is read.
+        Instant arrivedAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
         String fingerprint = HoldRequestFingerprint.of(command.eventId(), command.eventSeatIds());
         try {
-            if (!gateway.claimIdempotencyKey(command.owner(), command.idempotencyKey(), fingerprint, now)) {
+            if (!gateway.claimIdempotencyKey(command.owner(), command.idempotencyKey(), fingerprint, arrivedAt)) {
                 return replay(command, fingerprint);
             }
             gateway.lockOwner(command.owner());
             EventRow event = gateway.lockEventForShare(command.eventId())
                     .orElseThrow(() -> DomainException.of(ErrorCode.NOT_FOUND));
+            // Every decision and every other timestamp uses one instant, read once the event lock is held: a request
+            // that waited across sales_close_at is refused, and expires_at is not short by the wait (spec §5).
+            Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
             SalesGate.requireOpen(event, now);
             List<Long> seatIds = distinctAscending(command.eventSeatIds());
             Map<Long, EventSeat> offered = offeredSeats(event.id(), seatIds);
