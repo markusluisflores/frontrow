@@ -548,8 +548,8 @@ would deadlock.
 2. **Scheduled sweeper (hygiene)** — an in-process job, registered by a
    `SchedulingConfigurer` as two fixed-delay tasks every
    `frontrow.sweep-interval`, so a failed sweep never skips a purge. The
-   property `frontrow.sweeper-enabled` (default `true`) switches both off. It expires
-   stale holds in bulk: `UPDATE … WHERE id IN (SELECT id … WHERE status =
+   property `frontrow.sweeper-enabled` (default `true`) switches both off. The sweep
+   expires stale holds in bulk: `UPDATE … WHERE id IN (SELECT id … WHERE status =
    'ACTIVE' AND expires_at <= :now FOR UPDATE SKIP LOCKED)`. Postgres re-checks
    the predicate after locking, so a hold confirmed a moment earlier is never
    expired. Purging `hold_request` rows older than 24 hours runs in a separate
