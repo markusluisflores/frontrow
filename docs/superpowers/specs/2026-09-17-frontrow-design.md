@@ -318,17 +318,17 @@ Release takes only step 4. It doesn't read event status, so it never needs
 step 3. Confirm first finds the group's `event_id` with an unlocked read. That
 is safe because a group's event never changes.
 
-**When `now` is read.** Each transaction uses one instant from the injected
-`Clock` for every decision it makes and every timestamp it writes. It reads
-that instant once the locks that come before its first time-dependent decision
-are held, not on arrival:
+**When `now` is read.** Each transaction uses at most one instant from the
+injected `Clock` for every decision it makes and every timestamp it writes. It
+reads that instant once the locks that come before its first time-dependent
+decision are held, not on arrival:
 - hold creation: once the event row is locked (step 3), before the sales-window check;
 - confirmation: once confirmation's step 1 locks are held (the event row, then
   the group's rows);
 - release: once the group's rows are locked;
 - an event `PATCH`, cancellation included: never. It makes no time-dependent
-  decision and writes no timestamp, so it reads no clock. If a later change
-  gives it one, it reads the clock there, after the event-row lock;
+  decision and writes no clock-derived timestamp, so it reads no clock. If a
+  later change gives it one, it reads the clock there, after the event-row lock;
 - the sweeper: at the start, because `SKIP LOCKED` never waits;
 - the 24-hour `hold_request` purge, which runs in its own transaction: at the start.
 
@@ -461,7 +461,7 @@ path, the only place a `lock_timeout` is set.
   normally. A retry never collides with its own first attempt on
   `uq_claimed_seat`.
 - **A key purged between the claim and the read.** If the step-1 insert
-  conflicts but the stored row is gone by the time the retry reads it, the
+  conflicts but the stored row is gone by the time the request reads it, the
   24-hour purge deleted it in between, so the key has expired. The request
   claims the key once more and, if that insert succeeds, runs as a new request.
   If the second insert conflicts too, another request with the same key has
@@ -547,13 +547,13 @@ would deadlock.
 1. **Lazy expiry (correctness)** — creation step 4, inside the hold transaction.
 2. **Scheduled sweeper (hygiene)** — an in-process job, registered by a
    `SchedulingConfigurer` as two fixed-delay tasks every
-   `frontrow.sweep-interval`, so a failed sweep never skips a purge. The
+   `frontrow.sweep-interval`: the sweep and the 24-hour `hold_request` purge,
+   each its own transaction, so a failed sweep never skips a purge. The
    property `frontrow.sweeper-enabled` (default `true`) switches both off. The sweep
    expires stale holds in bulk: `UPDATE … WHERE id IN (SELECT id … WHERE status =
    'ACTIVE' AND expires_at <= :now FOR UPDATE SKIP LOCKED)`. Postgres re-checks
    the predicate after locking, so a hold confirmed a moment earlier is never
-   expired. Purging `hold_request` rows older than 24 hours runs in a separate
-   transaction.
+   expired.
 
 Correctness never depends on the scheduler running. The sweeper only keeps the
 table tidy and keeps availability counts honest for read queries. Its `UPDATE`
@@ -898,4 +898,4 @@ redundant and should not be merged.
 | 2.6.1 | 2026-09-18 | Wording only: the Hibernate 7 lock-timeout note now describes only the checked 7.4.5 behaviour (a `SET LOCAL` around one query, then restored), not "7.x … on the connection". This was the closing review pair's deferred nit |
 | 2.6.2 | 2026-10-05 | Post-implementation sync, with no design change. The header now gives the implementation status: plans 1 and 2 of 5 are merged, PRs #5 and #10. Idempotent replay is specified as **JSON-equal, not byte-verbatim**. PR #10 showed that `jsonb` normalises stored responses (`{"ok":true}` comes back as `{"ok": true}`), so "verbatim" was unachievable, and a byte-comparing test would fail. The persistence split this section implies is now recorded as ADR-005 |
 | 2.6.3 | 2026-10-16 | Status sync, and two decisions from plan 3A's reviews. **Status:** Phase 1 is six plans; plans 1, 2 and 3A are merged (PRs #5, #10 and #18), and the header lists what `main` doesn't yet match. **Clock:** §5 now says when a transaction reads `now`: once the locks before its first time-dependent decision are held, not on arrival (PR #18 review thread 4296540439). An arrival-time read let a hold that waited across `sales_close_at` succeed, made a lapsed hold look live, and shortened `expires_at` by the wait. **Drafts:** a `DRAFT` event answers `not_found` to every caller on every read and hold by id, and list reads leave it out, instead of `sales_not_open` with its `sales_open_at` (PR #16 review finding N5). Plan 3B brings hold creation in line with both |
-| 2.6.4 | 2026-10-19 | Post-implementation sync after plan 3B (PR #24), with no design change. **Status:** plans 1, 2, 3A and 3B are merged; the header's "Where `main` differs from this revision" block is removed, because plan 3B made hold creation read the clock after the event-row lock and answer a `DRAFT` event with `not_found`. **Clock:** an event `PATCH` reads no clock, because it makes no time-dependent decision and writes no timestamp (plan 3B decision 3); 2.6.3 placed its read after the event lock. **Replay:** a key purged between the step-1 claim and the read is claimed once more, and a second conflict replays the request that just committed (plan 3B decision 8, PR #18 thread 4296540462). **Sweeper:** it is registered by a `SchedulingConfigurer` as two fixed-delay tasks and switched by `frontrow.sweeper-enabled`, not an `@Scheduled` method (plan 3B decision 7) |
+| 2.6.4 | 2026-10-19 | Post-implementation sync after plan 3B (PR #24), with no design change. **Status:** plans 1, 2, 3A and 3B are merged; the header's "Where `main` differs from this revision" block is removed, because plan 3B made hold creation read the clock after the event-row lock and answer a `DRAFT` event with `not_found`. **Clock:** an event `PATCH` reads no clock, because it makes no time-dependent decision and writes no clock-derived timestamp (plan 3B decision 3); 2.6.3 placed its read after the event lock. **Replay:** a key purged between the step-1 claim and the read is claimed once more, and a second conflict replays the request that just committed (plan 3B decision 8, PR #18 thread 4296540462). **Sweeper:** it is registered by a `SchedulingConfigurer` as two fixed-delay tasks and switched by `frontrow.sweeper-enabled`, not an `@Scheduled` method (plan 3B decision 7) |
