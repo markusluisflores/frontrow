@@ -1,11 +1,13 @@
 # FrontRow — Project Reviewer & Interview Guide
 
 > **Living document.** Updated as new concepts are added or lessons are learned.
-> Last updated: 2026-10-18
+> Last updated: 2026-10-19
 
-> ⚠️ **Phase 1 plans 1, 2 and 3A of 6 have landed. The service can place a hold, but nothing can buy a seat
-> yet, and there is no API.** Plan 3A (hold creation, PR #18) is the first write path. It is a Java service
-> exercised by integration tests against real Postgres; no REST endpoint or MCP tool calls it yet.
+> ⚠️ **Phase 1 plans 1, 2, 3A and 3B of 6 have landed. Every write path on holds, orders and an existing event's
+> status and window exists as a service, including the only purchase path; creating an event does not yet. There is
+> no API, so nobody can buy a seat yet.** Plans 3A (hold creation, PR #18) and 3B
+> (confirm, release, cancellation and the sweeper, PR #24) are Java services exercised by integration tests
+> against real Postgres; no REST endpoint or MCP tool calls them yet.
 >
 > **Built**, and proven by `./mvnw verify`:
 > - the Maven build and CI (build, CodeQL, dependency review, Dependabot);
@@ -17,13 +19,18 @@
 >   - JPA entities and repositories over V1;
 >   - a `LockingGateway` whose event and advisory locks are proven with concurrent
 >     transactions;
-> - hold creation with idempotent replay (plan 3A, PR #18), with five of spec §5's seven
->   concurrency tests (1, 3, 4, 5 and 7), and lock-wait proofs that the seat-row locks block.
+> - hold creation with idempotent replay (plan 3A, PR #18), and lock-wait proofs that the
+>   seat-row locks block;
+> - confirm (the only purchase path), release, the event PATCH and cancellation, the expiry
+>   sweeper and the 24-hour idempotency-key purge (plan 3B, PR #24), plus spec 2.6.3's two
+>   code changes (hold creation reads the clock after the event lock; a `DRAFT` event answers
+>   `not_found`);
+> - all seven of spec §5's concurrency tests (1, 3, 4, 5 and 7 in plan 3A; 2 and 6 in plan 3B).
 >
-> **Not built:** confirm, release and cancel (plan 3B), the expiry sweeper, §5
-> concurrency tests 2 and 6, the security chains, REST
-> endpoints, MCP tools, seed data, and a Dockerfile or compose file. Nothing is
-> deployed. Entries below that describe
+> **Not built:** the security chains, REST endpoints, MCP tools, seed data, and a
+> Dockerfile or compose file (plans 4 and 5), and event creation (spec §6's `POST /api/events`
+> has no service behind it). Nothing is deployed, and no adapter
+> can call any service. Entries below that describe
 > unbuilt work are still *design decisions* supported by
 > `docs/superpowers/specs/2026-09-17-frontrow-design.md` — do not claim those
 > as shipped work in an interview; the honest framing is "here's a design I
@@ -35,7 +42,7 @@
 
 ## What We Built
 
-**What exists, as of 2026-10-16:**
+**What exists, as of 2026-10-19:**
 
 **Plan 1, the foundation:**
 - A Maven build on Java 25. The wrapper is pinned to Maven 3.10.0 with its
@@ -71,10 +78,33 @@
 - Spec §5 concurrency tests 1, 3, 4, 5 and 7, against real Postgres, and a test
   that drops `uq_claimed_seat` and shows the same race then has several winners.
 
-There are **142 test runs** in total. Still missing: any code path that confirms
-an order or releases a hold, and any API in front of the service.
+**Plan 3B, confirm, release, cancellation and the sweeper** (PR #24, merged 2026-10-19):
+- `ConfirmService`, the only code that writes an order: an owner-scoped, unlocked
+  read finds the group's event; it then locks the event row `FOR SHARE` and the
+  group's seat rows in ascending order, reads `now`, and only then decides on
+  current state: an existing order first, then the event's status and sales
+  window, then the rows' state.
+- `ReleaseService`, which refuses a group already converted to an order and never
+  takes the event lock.
+- `EventPatchService`, the event PATCH and cancellation. Cancellation is refused once
+  anything is sold, and a lock timeout answers `contention_retry` on this path only.
+- `ExpirySweepService`: bulk expiry with `SKIP LOCKED` and a 24-hour purge of
+  idempotency keys, scheduled by `config/SweepSchedule`. The test properties
+  (`frontrow.sweeper-enabled=false`) turn the schedule off in Spring Boot test contexts, so
+  nothing runs the sweeper on a timer during tests; test 7 asserts its own context has no
+  `SweepSchedule` bean. `ExpirySweepServiceTest` calls the sweep and purge directly against
+  Postgres, and `SweepScheduleTest` checks the schedule's wiring with a stub sweeper and no
+  database.
+- Spec 2.6.3 in hold creation: `now` is read after the event lock, and a `DRAFT`
+  event answers `not_found`.
+- Spec §5 concurrency tests 2 and 6, a release-versus-confirm race, and a test that
+  ends one real hold among 70,001 ids in one statement.
 
-The *designed* system, most of which is not built: an event ticketing and
+There are **197 test runs** in total. Still missing: event creation (no service),
+every read path (none of spec §6's GETs has a service or query behind it), and any
+API in front of the services, so nothing outside the test suite can call them.
+
+The *designed* system, whose two adapters are not built: an event ticketing and
 seat-reservation service in Spring Boot, exposed through two inbound adapters
 over one domain core — a REST API for humans and an MCP server for agents.
 
@@ -166,9 +196,14 @@ means correctness never depends on the scheduler having run — a scheduler that
 is down, paused, or lagging degrades tidiness, not safety.
 
 **Built (plan 3A):** lazy expiry in hold creation, proven by §5 test 7 with no
-sweeper. The sweeper is plan 3B.
+sweeper. *(Updated 2026-10-19.)* The sweeper is built too (plan 3B, PR #24): a bulk
+expiry using `SKIP LOCKED`, so it skips rows another transaction has locked instead
+of waiting, plus a 24-hour purge of idempotency keys. Its schedule is off in the Spring
+Boot test contexts, so no test races a timed sweep. Test 7's context has no schedule and
+never calls the sweeper, so the correctness proof runs without it. `ExpirySweepServiceTest`
+calls the sweeper directly.
 
-**Interview talking point:** "Hold expiry runs two ways on purpose. The design has a
+**Interview talking point:** "Hold expiry runs two ways on purpose. There's a
 sweeper, but correctness doesn't depend on it — when someone tries to
 take a seat, any expired hold on that specific seat is cleaned up in the same
 transaction. That way a scheduler outage makes availability counts stale, which
@@ -201,8 +236,12 @@ endpoint lives on REST — so an agent token cannot reach the purchase path at a
 
 **Built (plan 3A):** the hold-side guardrails, in `HoldService`: `too_many_seats`,
 idempotent replay (`idempotency_key_reused` on a mismatch), the sales gate, and the
-active-group cap, raced in test 4. The MCP tools, credential chains and logging
-are not built.
+active-group cap, raced in test 4. *(Updated 2026-10-19.)* Plan 3B (PR #24) built
+confirmation as `ConfirmService`, the only code that writes an order, which the
+pre-PR security review checked. The MCP tools, credential chains and logging are
+not built, so "an agent can't buy" is still design: no adapter exists yet to keep
+away from `ConfirmService`. A structural check that no MCP adapter depends on it is
+an input to plan 5.
 
 **Interview talking point:** "I drew the line at reversibility rather than at
 read-versus-write. The agent can hold seats, which does mutate state — but a hold
@@ -344,20 +383,29 @@ inserts before updates.
   3A added a wait proof for each clause, scoped to one Postgres backend; with
   either clause deleted, its test fails with `did not block on a lock within 10s`.
 - **Built in plan 3A:** hold creation's claim-each-seat-in-order loop, raced in
-  §5 tests 1, 3, 4 and 5. **Still design (plan 3B):** confirm, release and
-  cancellation's ordering.
+  §5 tests 1, 3, 4 and 5.
+- **Built in plan 3B** *(updated 2026-10-19)*: confirm, release and cancellation
+  follow the same order: the event before any seat row, seat rows ascending, and
+  release never takes the event. The sweeper takes no part in it: its `FOR UPDATE
+  SKIP LOCKED` never waits, skipping any row another transaction holds, so it
+  cannot deadlock (`LockingGateway.expireLapsedHolds`). Tests 2 and 6 race confirm against
+  lazy expiry and against cancellation, and a third test races release against
+  confirm. Reviewers traced every pair of paths for opposite lock orders and found
+  none.
 
 **Interview talking point:** "The index guarantees no seat is ever claimed
 twice. The lock order keeps the other state transitions correct and
 deadlock-free: confirm, release, cancel and expiry all decide on current
-state. The spec fixes one lock order that every transaction follows, so
+state. The spec fixes one lock order that every waiting transaction follows, so
 deadlock-freedom is a property I can argue from the order rather than hope for.
 The subtle part was that hold creation interleaves locks and inserts. Taking
 all the locks first and then inserting sounds safe, but it breaks the ordering
 across the two phases, so the design claims seats one at a time. Every lock
 lives in one file, so 'one global order' is something you can check by reading
-that file. Hold creation follows it, and racing overlapping multi-seat requests
-in different orders produces no deadlock and no partial hold. A reviewer once
+that file. Every write path built so far that waits on a lock follows it; the
+sweeper never waits, because `SKIP LOCKED` skips rows it can't take. Racing overlapping multi-seat holds in
+different orders produces no deadlock and no partial hold, and confirm is raced
+against expiry, cancellation and release. A reviewer once
 showed that nothing proved the seat-row locks block; there's now a test for
 each, and deleting either lock clause fails it."
 
@@ -430,10 +478,11 @@ those are the differentiating parts.
 The cuttable parts were the organiser endpoints and the breadth of seed data."
 
 **Be ready for the timeline question, because the honest answer is better than a
-dodge.** The spec estimated "a full focused week" for Phase 1. Twenty-nine days
-in (2026-09-17 to 2026-10-16), the foundation, the domain foundations and Plan
-3A, the first write path (hold creation), are built. Nothing can buy a seat yet,
-and there is no API in front of the service. The reason
+dodge.** The spec estimated "a full focused week" for Phase 1. *(Updated
+2026-10-19.)* Thirty-two days in (2026-09-17 to 2026-10-19), the foundation, the
+domain foundations and every write path on holds, orders and an existing event's status and window (plans 3A and
+3B) are built as services; creating an event is not.
+Nobody can buy a seat yet, because there is no API in front of them. The reason
 is not drift: Phase 1 was re-planned from 3 documents into 5 when Plan 2 proved
 too large to review, and into 6 when Plan 3 did too (split into 3A and 3B on
 2026-10-14), and
@@ -475,8 +524,10 @@ record. Three more rounds (2.2–2.4) found smaller protocol bugs:
 - a release path whose outcome depended on the sweeper.
 
 These were design findings. Plan 2 (PR #10) built the lock-order primitives and
-lazy expiry as an immediate guarded `UPDATE`, both with tests. The cancel, confirm
-and release paths that use them are plan 3B, and are not built.
+lazy expiry as an immediate guarded `UPDATE`, both with tests. *(Updated
+2026-10-19.)* Plan 3B (PR #24) built the cancel, confirm and release paths that use
+them, with §5 tests 2 and 6 racing confirm against expiry and against cancellation.
+None of them is reachable through an API yet.
 
 ### Seven Review Rounds, and a Claim We Got Wrong
 
@@ -508,20 +559,22 @@ version we'll pin, before it goes into a spec."
 
 ## Bugs Worth Remembering
 
-*No runtime defect is reachable on `main`.* That covers plans 1, 2 and 3A: the
+*No runtime defect is reachable on `main`.* That covers plans 1, 2, 3A and 3B: the
 scaffold, CI, the V1 schema, the spike, the domain foundations, the locking
-gateway and hold creation. (Seven review findings on hold creation were parked
+gateway, hold creation, confirm, release, cancellation and the sweeper. (Seven review findings on hold creation were parked
 with rulings rather than fixed, one of them a request that waits across
 `sales_close_at` and can still get a hold. The clock is read once, at arrival, which was plan decision 5's design,
 when the spec did not yet fix the sampling point. The same cause has two more effects: a hold that lapsed during the
 wait can give a false `seat_taken`, and `expires_at` is short by the length of the wait. Spec revision 2.6.3 then
 decided the sampling point: after the locks that precede each transaction's first time-dependent decision (for hold
-creation, the event-row lock). Plan 3B, written (PR #22) but not yet executed, is to move the read in hold creation
-and apply the same rule to confirm, release, cancel and the sweeper. Hold creation's seat-row waits will still come
-after its read, so a smaller residual of the same three effects stays by design. The same revision made a `DRAFT`
-event answer `not_found`, where `main` still answers `sales_not_open` with the planned opening time.
-Until plan 3B, both are known gaps between `main` and the spec, not hidden defects. No adapter can reach `hold()`
-yet, nothing can be bought, and confirm will re-check the sales window. See *Building the First Write Path*.)
+creation, the event-row lock). The same revision made a `DRAFT` event answer `not_found`, not `sales_not_open`
+with the planned opening time. *(Updated 2026-10-19.)* Plan 3B (PR #24) closed both gaps: hold creation now reads the
+clock after the event lock, confirm and release read it after their row locks, the sweeper and purge read it at
+their start, and cancellation and the event PATCH read no clock at all (plan 3B decision 3). `ClockReadPointTest`
+covers hold creation, release and confirm only. Hold creation's seat-row waits still come after its read, so a
+smaller residual of the same three effects stays by design. The spec header's "Where `main` differs" block still lists both gaps; it is owed a
+sync on its own docs branch. No adapter can reach any service yet, nothing can be bought through an API, and
+confirm re-checks the sales window. See *Building the First Write Path*.)
 Two things did reach `main`, and they should be named
 rather than hidden:
 - **A test gap, now closed:** after plan 2, nothing proved the seat_hold row locks
@@ -532,6 +585,9 @@ rather than hidden:
 Several real defects were caught **before** merge, and those are the ones worth
 discussing, because catching them is the claim:
 
+- **Plan 3B, a scaling defect and three evidence gaps before merge:** a cancellation that could never succeed
+  with 65,535 or more active holds, a concurrency test whose losing branch almost never ran, a false test comment, and a
+  spec guarantee no test backed. The stories are in *Executing Plan 3B* below.
 - **Plan 3A, two defects and a test gap before merge:** the sales gate's switch failing open, two idempotency keys
   aliasing through a surrogate character, and a test gap where no test checked each seat's own price. The stories are in *Building
   the First Write Path* below.
@@ -588,15 +644,17 @@ idempotent in-process sweeper). What an interviewer could still press on:
 ## Review as the Deliverable (2026-10-02)
 
 *Written when plans 2-5 were still documents. As of 2026-10-05, plan 2 is built
-(PR #10), and the plan-2 items below carry "now built" notes. As of 2026-10-16,
-plans 2 and 3A are built (PR #10, PR #18); 3B, 4 and 5 are documents or
+(PR #10), and the plan-2 items below carry "now built" notes. As of 2026-10-19,
+plans 2, 3A and 3B are built (PR #10, PR #18, PR #24); 4 and 5 are
 unwritten.* The review of those documents is where most defects
 were caught before code existed. Unless an item says "now built", treat it as a
 **review or design outcome, not shipped code**, and say so if asked.
 
-**The mutation test, which *is* shipped.** Deleting `uq_claimed_seat` from the
-migration fails exactly three tests, and a reviewer independently checked every
-other test for hidden dependence on the index and found none.
+**The mutation test, which *is* shipped.** When plan 2 shipped, deleting
+`uq_claimed_seat` from the migration failed exactly three tests, and a reviewer
+independently checked every other test for hidden dependence on the index and
+found none. Since plan 3A, spec §5 test 1 and its drop-index companion depend on
+the index too, so the current count is higher; it has not been re-measured.
 
 *Follow-up to expect:* "Three tests prove the index exists, not that it holds
 under concurrency." It was correct when written. Spec §5's seven concurrency
@@ -604,8 +662,10 @@ tests (racing holds, confirms and cancels) are split between plan 3A (tests 1,
 3, 4, 5 and 7) and 3B (tests 2 and 6). *(Updated 2026-10-16.)* Plan 3A's five
 are built (PR #18): test 1 races eight buyers for one seat, twenty times, and
 expects exactly one winner and seven `seat_taken` errors. A companion test drops
-the index and shows the same race then has several winners. Tests 2 and 6 need
-confirm and cancel, so they wait for 3B.
+the index and shows the same race then has several winners. *(Updated
+2026-10-19.)* Tests 2 and 6 are built too (PR #24): test 2 races a confirm against
+lazy expiry by a rival hold, and test 6 races a confirm against a cancellation. How
+evenly those races split turned out to matter; see *Executing Plan 3B*.
 
 **Five defects caught in plan 2 before a line of its code existed.** Each would
 have failed at runtime or build time:
@@ -843,8 +903,71 @@ a compiler probe, a reproduction or a mutation, so it was proven rather than arg
   last fix; that could not be met here, the rule and the checklist disagreed, and I had the session log it on the
   process queue (item 8) for the next process audit.
 - Seven review findings were deliberately not fixed. They were carried to plan 3B and plan 4, with a reply on each
-  PR thread. Examples: when the clock is read relative to lock waits (since decided by spec revision 2.6.3; plan
-  3B changes the code), and what REST should call the idempotency-key parameter.
+  PR thread. Examples: when the clock is read relative to lock waits (since decided by spec revision 2.6.3, and
+  changed in the code by plan 3B, PR #24), and what REST should call the idempotency-key parameter.
+
+---
+
+## Executing Plan 3B: What Review Found in Code That Matched Its Reference Build (2026-10-19)
+
+**What happened.** Plan 3B (confirm, release, cancellation and the sweeper) was executed like 3A: subagents
+implemented its seven tasks one by one, each with a fresh reviewer, then a final whole-branch review, a pre-PR
+`reviewer`, a `security-reviewer` agent and `/security-review`, all before the PR existed. None of those found a
+BLOCKER. PR #24 then had three fresh review rounds, all BLOCKER-free: one SUGGESTION and one NIT in round 1, one
+SUGGESTION in round 2, one NIT in round 3. Each round's fixes were verified by its reviewer, resumed, and a fresh round followed every fix pass.
+It merged on 2026-10-19 as `61f0a65`, with 197 test runs. I chose the Mandatory tier and the subagent-driven approach,
+and I made the merge call; the orchestrating session and its subagents did the building, measuring and reviewing.
+
+**A plan whose code had already been built.** Plan 3B's code came from a reference build that had been compiled and
+tested before the plan was approved. The orchestrating session compared each task's final source, ADR and
+`CLAUDE.md` tree with that reference (Task 2's after its review fix `deadad2`, which restored seven double-encoded
+comment lines), and all seven matched. That is the controller's own check: PR #24's fresh reviewers marked it not
+verified. So nothing below is code drifting from the plan, as far as that check shows. Each finding is something
+the plan's own build could not see:
+- **A cancellation that could never succeed at scale** (round 2). `endHolds` used `IN (:ids)`, one bind parameter
+  per hold id, and the Postgres driver caps a statement at 65,535 parameters. Cancelling an event with that many
+  `ACTIVE` holds would fail as a 500 every time. The reviewer reproduced it. The fix is `id = ANY(:ids)`, one array
+  parameter, and a new test ends one real hold among 70,001 ids; before the fix it failed with
+  `PreparedStatement can have at most 65,535 parameters`.
+- **A concurrency test whose losing branch almost never ran** (round 1). Test 2 accepts either winner of a confirm
+  racing lazy expiry. Started together, the confirm won 79 of 80 repetitions over the reviewer's four runs, so the
+  `hold_expired` branch was barely tested. The confirm now starts 0-10 ms late, varied by repetition. In the session's
+  own three runs it won 25 of 60, with both branches in every run (PR #24 deviation 1), and round 1's resumed reviewer
+  measured 20 of 60. Every assertion is kept, and the index-predicate mutation still
+  fails the test.
+- **A test comment that was false** (final whole-branch review, NIT). A comment in `EventPatchServiceTest`, and plan
+  decision 6, said two instants 500 ns apart are stored as equal and break `ck_event_sales_window`. The driver rounds
+  to microseconds half-up, so they are stored 1 µs apart, a valid window. The test now uses 400 ns, where the claim
+  holds: a mutation removing the service's truncation fails with that constraint violation.
+- **A guarantee no test backed** (final whole-branch review, SUGGESTION). Spec §5's guarantee table says release is
+  tested under concurrency, and nothing raced release. A release-versus-confirm race was added. It needed a start
+  lag too (0-5 ms): started together, release won 60 of 60.
+
+**Interview talking point:** "The code for this part of the project was built and run before anyone executed the
+plan, and once one encoding slip in a comment was fixed, the orchestrating session's own comparison found what the
+subagents produced matched that reference. Review still found four things, and none
+of them was the code disagreeing with the plan. One was a scaling limit: cancellation sent one SQL parameter per hold,
+so with 65,535 or more active holds the driver would refuse the statement and the cancel could never succeed. The other three
+were about evidence. A test that accepts either outcome of a race only tests both if both actually happen, and a
+reviewer counted: one side won 79 times out of 80. A test comment claimed a rounding behaviour the driver doesn't
+have. And the spec promised a release race no test ran. The AI session and its reviewer subagents did the building,
+measuring and reviewing; I chose the tier and the approach and made the merge call. What I take
+from it is that 'it matches the plan' and 'the tests prove what they claim' are different questions, and only
+measuring answers the second."
+
+*Be accurate if pressed:*
+- Test 6 is still skewed: cancellation won 77 of 80 repetitions in round 1's four runs, with no confirm win at all in
+  one run, and 59 of 60 in the session's three runs. Its re-check is still guarded: round 1's reviewer moved
+  cancellation's "anything sold?" check before the event lock as a mutation, and test 6 failed in 3 of 3 runs.
+- Nothing here is reachable from outside the test suite, because no API exists. Deferred to plan 4: its error handler
+  must never echo `IllegalStateException` messages, which carry internal ids, and must answer driver errors such as
+  the old parameter-cap failure with a generic 500, never a conflict code. Deferred to plan 5: a structural check that
+  no MCP adapter depends on `ConfirmService` or `EventPatchService`.
+- A task first committed seven comment lines with `—` and `§` double-encoded by a cp1252 read; its task review
+  caught it, and it was restored before merge. No multi-model review ran: this repo has no cross-model reviewer
+  workflow.
+- The spec header's "Where `main` differs" block is now stale, and so are three smaller spec details the final review
+  noted; they are owed a sync on their own docs branch.
 
 ---
 
@@ -863,6 +986,7 @@ a compiler probe, a reproduction or a mutation, so it was proven rather than arg
 | 2026-10-16 (spec 2.6.3) | Spec revision 2.6.3 and plan 3A's errata. *Bugs Worth Remembering* now says the spec decided the clock's sampling point (after the locks before each transaction's first time-dependent decision; for hold creation, the event-row lock) and made a `DRAFT` event answer `not_found`, and names both as known gaps between `main` and the spec until plan 3B. The `db228bc` line now includes the `CLAUDE.md` test count. Closes PR #19's two open NITs (4299944353, 4299944357). | Checked by PR #20's three fresh rounds (1, 0 and 0 BLOCKERs; the BLOCKER was in the spec). Guide findings, all fixed: the paragraph stated hold creation's read point as the general rule and implied 3B removes every effect (round 1), the lead "No runtime defect is known" now reads "reachable" (round 1), and "Plan 3B moves the read" was present tense about an unwritten plan (round 2). Merged 2026-10-17 as `d93ef7f` |
 | 2026-10-17 (PR #20 sync) | Recorded the result of the spec 2.6.3 row's review rounds in that row, which had been written before the rounds ran. No other entry was stale: *Bugs Worth Remembering* already names both gaps between `main` and the spec, and plan 3B is still unwritten. | Staleness pass over every mention of `DRAFT`, the clock's sampling point, plan 3B and spec 2.6.3; found only the forward-looking check note above. PR #21's fresh round 1 (review 5560522924): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all in this row or the journal; all fixed |
 | 2026-10-18 (plan 3B written) | Plan 3B is written and merged as a plan (PR #22, `af5b1a4`), not executed. *Bugs Worth Remembering* no longer calls it unwritten. No other entry was stale: the banner already lists 3B's work as not built, and *Review as the Deliverable* already counts 3B among the documents. | Staleness pass over every mention of plan 3B. Checked by PR #23's fresh round 1 (review 5565781561): 0 BLOCKER, 3 SUGGESTION, 3 NIT, all fixed |
+| 2026-10-19 (plan 3B executed) | Plan 3B executed and merged (PR #24, `61f0a65`). Banner, *What We Built* (197 runs, a plan 3B block), concepts 2, 3 and 7 (sweeper, confirm and the lock order built; "an agent can't buy" still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (both gaps between `main` and the spec closed; the spec header's "Where `main` differs" block now stale), and the *Review as the Deliverable* header and concurrency-test follow-up all moved from "not built" to built as services, without adapters. Added *Executing Plan 3B*. | Staleness pass over every mention of plan 3B, "not built", buying, the sweeper, tests 2 and 6, confirm, release and cancel, the clock's sampling point and `DRAFT`. Checked by PR #25's fresh round 1 (review 5576525428): 2 BLOCKER, 4 SUGGESTION, 1 NIT, all fixed. PR #25's fresh round 2 (review 5576660010): 1 BLOCKER, 2 SUGGESTION, 4 NIT, all fixed. PR #25's fresh round 3 (review 5579432416): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all fixed. PR #25's fresh round 4 (review 5579460532): 0 BLOCKER, 1 SUGGESTION, fixed |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified

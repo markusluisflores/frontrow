@@ -11,10 +11,10 @@ cancellation, the sweeper) are complete. Together they provide: a Maven build, C
 migration, a principal-propagation spike, a pure `domain` package (money, statuses, sales window, hold
 rules, the request fingerprint), the shared error contract (`error`), JPA entities and repositories over
 all eight V1 tables (`persistence`), the locking gateway (`persistence/LockingGateway.java`), and every
-write path as a service in `service/`: hold creation with idempotent replay (`HoldService`), confirmation,
-the only purchase path (`ConfirmService`), release (`ReleaseService`), the event PATCH and cancellation
-(`EventPatchService`), and the expiry sweeper and 24-hour key purge (`ExpirySweepService`, scheduled by
-`config/SweepSchedule`). No REST endpoint or MCP tool exists yet.**
+write path on holds, orders and an existing event's status and window as a service in `service/`:
+hold creation with idempotent replay (`HoldService`), confirmation, the only purchase path (`ConfirmService`),
+release (`ReleaseService`), the event PATCH and cancellation (`EventPatchService`), and the expiry sweeper
+and 24-hour key purge (`ExpirySweepService`, scheduled by `config/SweepSchedule`). Creating an event has no service yet, and no REST endpoint or MCP tool exists.**
 197 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
 `uq_claimed_seat`. Plans 4 (REST + security chains) and 5 (MCP) remain.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
