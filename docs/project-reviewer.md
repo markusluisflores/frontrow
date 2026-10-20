@@ -572,8 +572,8 @@ with the planned opening time. *(Updated 2026-10-19.)* Plan 3B (PR #24) closed b
 clock after the event lock, confirm and release read it after their row locks, the sweeper and purge read it at
 their start, and cancellation and the event PATCH read no clock at all (plan 3B decision 3). `ClockReadPointTest`
 covers hold creation, release and confirm only. Hold creation's seat-row waits still come after its read, so a
-smaller residual of the same three effects stays by design. The spec header's "Where `main` differs" block still lists both gaps; it is owed a
-sync on its own docs branch. No adapter can reach any service yet, nothing can be bought through an API, and
+smaller residual of the same three effects stays by design. Spec revision 2.6.4 removed the header block that
+listed both gaps. No adapter can reach any service yet, nothing can be bought through an API, and
 confirm re-checks the sales window. See *Building the First Write Path*.)
 Two things did reach `main`, and they should be named
 rather than hidden:
@@ -966,8 +966,8 @@ measuring answers the second."
 - A task first committed seven comment lines with `—` and `§` double-encoded by a cp1252 read; its task review
   caught it, and it was restored before merge. No multi-model review ran: this repo has no cross-model reviewer
   workflow.
-- The spec header's "Where `main` differs" block is now stale, and so are three smaller spec details the final review
-  noted; they are owed a sync on their own docs branch.
+- The spec header's "Where `main` differs" block went stale, and so did three smaller spec details the final review
+  noted. Spec revision 2.6.4, on its own docs branch, synced all four.
 
 ---
 
@@ -987,6 +987,7 @@ measuring answers the second."
 | 2026-10-17 (PR #20 sync) | Recorded the result of the spec 2.6.3 row's review rounds in that row, which had been written before the rounds ran. No other entry was stale: *Bugs Worth Remembering* already names both gaps between `main` and the spec, and plan 3B is still unwritten. | Staleness pass over every mention of `DRAFT`, the clock's sampling point, plan 3B and spec 2.6.3; found only the forward-looking check note above. PR #21's fresh round 1 (review 5560522924): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all in this row or the journal; all fixed |
 | 2026-10-18 (plan 3B written) | Plan 3B is written and merged as a plan (PR #22, `af5b1a4`), not executed. *Bugs Worth Remembering* no longer calls it unwritten. No other entry was stale: the banner already lists 3B's work as not built, and *Review as the Deliverable* already counts 3B among the documents. | Staleness pass over every mention of plan 3B. Checked by PR #23's fresh round 1 (review 5565781561): 0 BLOCKER, 3 SUGGESTION, 3 NIT, all fixed |
 | 2026-10-19 (plan 3B executed) | Plan 3B executed and merged (PR #24, `61f0a65`). Banner, *What We Built* (197 runs, a plan 3B block), concepts 2, 3 and 7 (sweeper, confirm and the lock order built; "an agent can't buy" still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (both gaps between `main` and the spec closed; the spec header's "Where `main` differs" block now stale), and the *Review as the Deliverable* header and concurrency-test follow-up all moved from "not built" to built as services, without adapters. Added *Executing Plan 3B*. | Staleness pass over every mention of plan 3B, "not built", buying, the sweeper, tests 2 and 6, confirm, release and cancel, the clock's sampling point and `DRAFT`. Checked by PR #25's fresh round 1 (review 5576525428): 2 BLOCKER, 4 SUGGESTION, 1 NIT, all fixed. PR #25's fresh round 2 (review 5576660010): 1 BLOCKER, 2 SUGGESTION, 4 NIT, all fixed. PR #25's fresh round 3 (review 5579432416): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all fixed. PR #25's fresh round 4 (review 5579460532): 0 BLOCKER, 1 SUGGESTION, fixed |
+| 2026-10-19 (spec 2.6.4) | Spec revision 2.6.4, the post-3B sync. *Bugs Worth Remembering* and *Executing Plan 3B* no longer call the spec header's "Where `main` differs" block owed. | Staleness pass over every mention of that block and of a spec sync being owed. Its review rounds are recorded on its PR |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified

@@ -1,21 +1,18 @@
 # FrontRow — Design Spec
 
-**Date:** 2026-09-17 · **Revised:** 2026-10-16 (revision 2.6.3 — see §14)
-**Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 is six plans, and plans 1, 2 and 3A are merged.
+**Date:** 2026-09-17 · **Revised:** 2026-10-19 (revision 2.6.4 — see §14)
+**Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 is six plans, and plans 1, 2, 3A and 3B are merged.
 - Plan 1 (PR #5) built the build, CI, the V1 schema and the MCP spike.
 - Plan 2 (PR #10) built the domain core, the error contract, the JPA persistence model and the locking gateway (ADR-005).
 - Plan 3A (PR #18) built hold creation with idempotent replay, and §5 concurrency tests 1, 3, 4, 5 and 7.
+- Plan 3B (PR #24) built confirmation, release, the event `PATCH` and cancellation, and the sweeper with the 24-hour key purge, each as a service, and §5 concurrency tests 2 and 6. It also brought hold creation in line with revision 2.6.3's two decisions.
 
-Not yet built: confirm, release, the event `PATCH`/cancel service, the sweeper and §5 tests 2 and 6 (plan 3B), REST and the security chains (plan 4), and the MCP tools and evidence artifacts (plan 5).
-
-**Where `main` differs from this revision.** Revision 2.6.3 settled two questions after plan 3A was built. Until plan 3B changes the code, hold creation:
-- reads the clock on arrival, not once the event-row lock is held (§5 *Locking discipline*);
-- answers a `DRAFT` event with `sales_not_open` and its `sales_open_at`, not `not_found` (§5 *Hold creation*).
+Not yet built: REST and the security chains (plan 4), and the MCP tools and evidence artifacts (plan 5). No REST endpoint or MCP tool calls the services yet.
 
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
-**Revisions 2.1–2.6.1** (same day) apply the review rounds; **2.6.2** (2026-10-05) is a post-implementation sync; **2.6.3** (2026-10-16) syncs the status and settles two questions from plan 3A's reviews — see §14.
+**Revisions 2.1–2.6.1** (same day) apply the review rounds; **2.6.2** (2026-10-05) is a post-implementation sync; **2.6.3** (2026-10-16) syncs the status and settles two questions from plan 3A's reviews; **2.6.4** (2026-10-19) is a post-implementation sync after plan 3B — see §14.
 
 ---
 
@@ -329,7 +326,9 @@ are held, not on arrival:
 - confirmation: once confirmation's step 1 locks are held (the event row, then
   the group's rows);
 - release: once the group's rows are locked;
-- an event `PATCH`, cancellation included: once the event row is locked;
+- an event `PATCH`, cancellation included: never. It makes no time-dependent
+  decision and writes no timestamp, so it reads no clock. If a later change
+  gives it one, it reads the clock there, after the event-row lock;
 - the sweeper: at the start, because `SKIP LOCKED` never waits;
 - the 24-hour `hold_request` purge, which runs in its own transaction: at the start.
 
@@ -355,10 +354,9 @@ The residual is accepted:
 - `expires_at` is short by the seat waits.
 
 Confirmation and release read the clock after their seat-row locks, so they
-have no such residual. Cancellation reads it after the event-row lock, then
-waits on the event's `ACTIVE` seat rows. It makes no time-dependent decision
-there: it moves every `ACTIVE` row to `RELEASED`, lapsed or not (*Event
-cancellation*). No later answer depends on the difference, because confirm
+have no such residual. Cancellation reads no clock: after the event-row lock
+it waits on the event's `ACTIVE` seat rows and moves every one to `RELEASED`,
+lapsed or not (*Event cancellation*). No later answer depends on the difference, because confirm
 checks the event first and answers `sales_closed`.
 
 **Decisions use rows as read under the lock.** A locking query must return the
@@ -462,6 +460,14 @@ path, the only place a `lock_timeout` is set.
   If the first call rolled back, the retry's insert succeeds and it proceeds
   normally. A retry never collides with its own first attempt on
   `uq_claimed_seat`.
+- **A key purged between the claim and the read.** If the step-1 insert
+  conflicts but the stored row is gone by the time the retry reads it, the
+  24-hour purge deleted it in between, so the key has expired. The request
+  claims the key once more and, if that insert succeeds, runs as a new request.
+  If the second insert conflicts too, another request with the same key has
+  just committed, and its stored row is read and replayed as above. A purge
+  margin was rejected: any cutoff has the same boundary, and a margin only
+  moves it.
 - **A replay after the group has expired** returns the original response
   unchanged in content (JSON-equal, as above), including its original `expires_at`, so the agent can see the
   hold lapsed. Replays report what happened; they do not re-check current
@@ -539,7 +545,10 @@ would deadlock.
 ### Hold expiry — two mechanisms, deliberately
 
 1. **Lazy expiry (correctness)** — creation step 4, inside the hold transaction.
-2. **Scheduled sweeper (hygiene)** — an in-process `@Scheduled` job. It expires
+2. **Scheduled sweeper (hygiene)** — an in-process job, registered by a
+   `SchedulingConfigurer` as two fixed-delay tasks every
+   `frontrow.sweep-interval`, so a failed sweep never skips a purge. The
+   property `frontrow.sweeper-enabled` (default `true`) switches both off. It expires
    stale holds in bulk: `UPDATE … WHERE id IN (SELECT id … WHERE status =
    'ACTIVE' AND expires_at <= :now FOR UPDATE SKIP LOCKED)`. Postgres re-checks
    the predicate after locking, so a hold confirmed a moment earlier is never
@@ -851,9 +860,9 @@ Self-service issuance belongs with OAuth2 in Phase 2.
 
 ## 13. Next steps
 
-*Status 2026-10-16: Steps 1 and 2 are done; step 3 is under way. This spec was
-reviewed and merged in PR #1, and ADRs 001-003 are in `docs/adr/`. Phase 1 was split into six plans.
-Plans 1, 2 and 3A are written and merged (`docs/superpowers/plans/`); plans 3B,
+*Status 2026-10-19: Steps 1 and 2 are done; step 3 is under way. This spec was
+reviewed and merged in PR #1, and ADRs 001-005 are in `docs/adr/`. Phase 1 was split into six plans.
+Plans 1, 2, 3A and 3B are written, executed and merged (`docs/superpowers/plans/`); plans
 4 and 5 are not written yet.*
 
 1. This revision is reviewed by the user and merged.
@@ -889,3 +898,4 @@ redundant and should not be merged.
 | 2.6.1 | 2026-09-18 | Wording only: the Hibernate 7 lock-timeout note now describes only the checked 7.4.5 behaviour (a `SET LOCAL` around one query, then restored), not "7.x … on the connection". This was the closing review pair's deferred nit |
 | 2.6.2 | 2026-10-05 | Post-implementation sync, with no design change. The header now gives the implementation status: plans 1 and 2 of 5 are merged, PRs #5 and #10. Idempotent replay is specified as **JSON-equal, not byte-verbatim**. PR #10 showed that `jsonb` normalises stored responses (`{"ok":true}` comes back as `{"ok": true}`), so "verbatim" was unachievable, and a byte-comparing test would fail. The persistence split this section implies is now recorded as ADR-005 |
 | 2.6.3 | 2026-10-16 | Status sync, and two decisions from plan 3A's reviews. **Status:** Phase 1 is six plans; plans 1, 2 and 3A are merged (PRs #5, #10 and #18), and the header lists what `main` doesn't yet match. **Clock:** §5 now says when a transaction reads `now`: once the locks before its first time-dependent decision are held, not on arrival (PR #18 review thread 4296540439). An arrival-time read let a hold that waited across `sales_close_at` succeed, made a lapsed hold look live, and shortened `expires_at` by the wait. **Drafts:** a `DRAFT` event answers `not_found` to every caller on every read and hold by id, and list reads leave it out, instead of `sales_not_open` with its `sales_open_at` (PR #16 review finding N5). Plan 3B brings hold creation in line with both |
+| 2.6.4 | 2026-10-19 | Post-implementation sync after plan 3B (PR #24), with no design change. **Status:** plans 1, 2, 3A and 3B are merged; the header's "Where `main` differs from this revision" block is removed, because plan 3B made hold creation read the clock after the event-row lock and answer a `DRAFT` event with `not_found`. **Clock:** an event `PATCH` reads no clock, because it makes no time-dependent decision and writes no timestamp (plan 3B decision 3); 2.6.3 placed its read after the event lock. **Replay:** a key purged between the step-1 claim and the read is claimed once more, and a second conflict replays the request that just committed (plan 3B decision 8, PR #18 thread 4296540462). **Sweeper:** it is registered by a `SchedulingConfigurer` as two fixed-delay tasks and switched by `frontrow.sweeper-enabled`, not an `@Scheduled` method (plan 3B decision 7) |
