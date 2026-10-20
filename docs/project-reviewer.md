@@ -89,9 +89,12 @@
 - `EventPatchService`, the event PATCH and cancellation. Cancellation is refused once
   anything is sold, and a lock timeout answers `contention_retry` on this path only.
 - `ExpirySweepService`: bulk expiry with `SKIP LOCKED` and a 24-hour purge of
-  idempotency keys, scheduled by `config/SweepSchedule`. It is off in every Spring Boot test
-  context (test 7 asserts no `SweepSchedule` bean); only `SweepScheduleTest` turns it on, with
-  a stub sweeper and no database.
+  idempotency keys, scheduled by `config/SweepSchedule`. The test properties
+  (`frontrow.sweeper-enabled=false`) turn the schedule off in Spring Boot test contexts, so
+  nothing runs the sweeper on a timer during tests; test 7 asserts its own context has no
+  `SweepSchedule` bean. `ExpirySweepServiceTest` calls the sweep and purge directly against
+  Postgres, and `SweepScheduleTest` checks the schedule's wiring with a stub sweeper and no
+  database.
 - Spec 2.6.3 in hold creation: `now` is read after the event lock, and a `DRAFT`
   event answers `not_found`.
 - Spec §5 concurrency tests 2 and 6, a release-versus-confirm race, and a test that
@@ -195,9 +198,10 @@ is down, paused, or lagging degrades tidiness, not safety.
 **Built (plan 3A):** lazy expiry in hold creation, proven by §5 test 7 with no
 sweeper. *(Updated 2026-10-19.)* The sweeper is built too (plan 3B, PR #24): a bulk
 expiry using `SKIP LOCKED`, so it skips rows another transaction has locked instead
-of waiting, plus a 24-hour purge of idempotency keys. It is off in every Spring Boot
-test context, and test 7 asserts that, so the correctness proof still runs without it.
-Only `SweepScheduleTest` turns it on, with a stub sweeper and no database.
+of waiting, plus a 24-hour purge of idempotency keys. Its schedule is off in the Spring
+Boot test contexts, so no test races a timed sweep. Test 7's context has no schedule and
+never calls the sweeper, so the correctness proof runs without it. `ExpirySweepServiceTest`
+calls the sweeper directly.
 
 **Interview talking point:** "Hold expiry runs two ways on purpose. There's a
 sweeper, but correctness doesn't depend on it — when someone tries to
@@ -982,7 +986,7 @@ measuring answers the second."
 | 2026-10-16 (spec 2.6.3) | Spec revision 2.6.3 and plan 3A's errata. *Bugs Worth Remembering* now says the spec decided the clock's sampling point (after the locks before each transaction's first time-dependent decision; for hold creation, the event-row lock) and made a `DRAFT` event answer `not_found`, and names both as known gaps between `main` and the spec until plan 3B. The `db228bc` line now includes the `CLAUDE.md` test count. Closes PR #19's two open NITs (4299944353, 4299944357). | Checked by PR #20's three fresh rounds (1, 0 and 0 BLOCKERs; the BLOCKER was in the spec). Guide findings, all fixed: the paragraph stated hold creation's read point as the general rule and implied 3B removes every effect (round 1), the lead "No runtime defect is known" now reads "reachable" (round 1), and "Plan 3B moves the read" was present tense about an unwritten plan (round 2). Merged 2026-10-17 as `d93ef7f` |
 | 2026-10-17 (PR #20 sync) | Recorded the result of the spec 2.6.3 row's review rounds in that row, which had been written before the rounds ran. No other entry was stale: *Bugs Worth Remembering* already names both gaps between `main` and the spec, and plan 3B is still unwritten. | Staleness pass over every mention of `DRAFT`, the clock's sampling point, plan 3B and spec 2.6.3; found only the forward-looking check note above. PR #21's fresh round 1 (review 5560522924): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all in this row or the journal; all fixed |
 | 2026-10-18 (plan 3B written) | Plan 3B is written and merged as a plan (PR #22, `af5b1a4`), not executed. *Bugs Worth Remembering* no longer calls it unwritten. No other entry was stale: the banner already lists 3B's work as not built, and *Review as the Deliverable* already counts 3B among the documents. | Staleness pass over every mention of plan 3B. Checked by PR #23's fresh round 1 (review 5565781561): 0 BLOCKER, 3 SUGGESTION, 3 NIT, all fixed |
-| 2026-10-19 (plan 3B executed) | Plan 3B executed and merged (PR #24, `61f0a65`). Banner, *What We Built* (197 runs, a plan 3B block), concepts 2, 3 and 7 (sweeper, confirm and the lock order built; "an agent can't buy" still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (both gaps between `main` and the spec closed; the spec header's "Where `main` differs" block now stale), and the *Review as the Deliverable* header and concurrency-test follow-up all moved from "not built" to built as services, without adapters. Added *Executing Plan 3B*. | Staleness pass over every mention of plan 3B, "not built", buying, the sweeper, tests 2 and 6, confirm, release and cancel, the clock's sampling point and `DRAFT`. Checked by PR #25's fresh round 1 (review 5576525428): 2 BLOCKER, 4 SUGGESTION, 1 NIT, all fixed. PR #25's fresh round 2 (review 5576660010): 1 BLOCKER, 2 SUGGESTION, 4 NIT, all fixed. PR #25's fresh round 3 (review 5579432416): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all fixed |
+| 2026-10-19 (plan 3B executed) | Plan 3B executed and merged (PR #24, `61f0a65`). Banner, *What We Built* (197 runs, a plan 3B block), concepts 2, 3 and 7 (sweeper, confirm and the lock order built; "an agent can't buy" still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (both gaps between `main` and the spec closed; the spec header's "Where `main` differs" block now stale), and the *Review as the Deliverable* header and concurrency-test follow-up all moved from "not built" to built as services, without adapters. Added *Executing Plan 3B*. | Staleness pass over every mention of plan 3B, "not built", buying, the sweeper, tests 2 and 6, confirm, release and cancel, the clock's sampling point and `DRAFT`. Checked by PR #25's fresh round 1 (review 5576525428): 2 BLOCKER, 4 SUGGESTION, 1 NIT, all fixed. PR #25's fresh round 2 (review 5576660010): 1 BLOCKER, 2 SUGGESTION, 4 NIT, all fixed. PR #25's fresh round 3 (review 5579432416): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all fixed. PR #25's fresh round 4 (review 5579460532): 0 BLOCKER, 1 SUGGESTION, fixed |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
