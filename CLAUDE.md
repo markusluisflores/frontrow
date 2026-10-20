@@ -21,7 +21,7 @@ The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. T
 `docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.4; 2.6
 reviewed and merged 2026-09-18, 2.6.1 a wording fix, 2.6.2 a post-implementation
 sync, 2.6.3 a status sync plus two decisions — when `now` is read, and `DRAFT` as
-`not_found` — which plan 3B implements, 2.6.4 a post-implementation sync after plan 3B).
+`not_found` — which plan 3B implements; 2.6.4 a post-implementation sync after plan 3B).
 Plan 3A's text carries dated errata at its top. Five ADRs are in `docs/adr/`: the three from spec §13; ADR-004, recorded
 by plan 1's spike; and ADR-005, the JPA-plus-JDBC persistence split behind the
 lock rule below. Plan 1 was executed on `feat/phase-1-foundation`:
