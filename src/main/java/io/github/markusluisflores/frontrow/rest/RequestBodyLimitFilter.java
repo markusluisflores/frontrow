@@ -19,10 +19,15 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Bounds every request body, ahead of every security chain (plan 4A decision 8). The services copy what they receive
- * — HoldCommand copies its whole seat list — so the bound belongs at the edge. A declared Content-Length over the limit
- * is refused before anything is read. A chunked body is counted as it is read, through the stream or the reader, and
- * crossing the limit fails the read.
+ * Bounds every request body read through getInputStream() or getReader(), ahead of every security chain (plan 4A
+ * decision 8). The services copy what they receive — HoldCommand copies its whole seat list — so the bound belongs at
+ * the edge. A declared Content-Length over the limit is refused before anything is read. A chunked body is counted as
+ * it is read, through the stream or the reader, and crossing the limit fails the read.
+ *
+ * <p>So the bound on every path depends on the parsers that read a body for the application staying off, as both are in
+ * application.yml: Spring's multipart resolver has Tomcat parse the body from its own buffer, never through this
+ * wrapper; and Boot's FormContentFilter reads a form body before security answers, so an oversized one became an
+ * anonymous 500. Re-enabling either reopens the hole.
  */
 public class RequestBodyLimitFilter extends OncePerRequestFilter {
 

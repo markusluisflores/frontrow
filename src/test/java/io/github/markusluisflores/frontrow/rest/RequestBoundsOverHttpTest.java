@@ -12,7 +12,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Base64;
+import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,14 +27,17 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * The request bounds over a real socket (plan 4A decision 8), where MockMvc cannot reach: a chunked body declares no
- * length, so only the counting stream can stop it; and Tomcat's own header limit bounds Idempotency-Key. Boot's
- * FormContentFilter is off, so nothing reads a form body before security answers.
+ * length, so only the counting stream can stop it; a declared one is refused before security answers; and Tomcat's
+ * own header limit bounds Idempotency-Key. Boot's FormContentFilter and Spring's multipart resolver are off, so nothing
+ * reads a form or multipart body around the counting stream.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Import(ServiceTestConfiguration.class)
 class RequestBoundsOverHttpTest {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
     @LocalServerPort
     int port;
@@ -95,7 +100,7 @@ class RequestBoundsOverHttpTest {
         // Boot's FormContentFilter would read this PUT body before Spring Security, hit the bound and answer 500.
         byte[] form = ("a=" + "x".repeat(RequestBodyLimitFilter.MAX_BODY_BYTES)).getBytes(StandardCharsets.UTF_8);
         for (String path : new String[] {"/api/events/1", "/nowhere"}) {
-            HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+            HttpRequest request = request(path)
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .PUT(HttpRequest.BodyPublishers.ofInputStream(() -> new ByteArrayInputStream(form)))
                     .build();
@@ -136,6 +141,50 @@ class RequestBoundsOverHttpTest {
         assertThat(fixtures.holdRequestsOwnedBy("alice")).isZero();
     }
 
+    @Test
+    void aDeclaredLengthOverTheLimitIsRefusedBeforeSecurityAnswers() throws Exception {
+        // Anonymous, so security alone would answer 401: only the declared-length check can make it 413 unread.
+        byte[] body = new byte[RequestBodyLimitFilter.MAX_BODY_BYTES + 1];
+        for (String[] target :
+                new String[][] {{"POST", "/api/holds/" + UUID.randomUUID() + "/confirm"}, {"PUT", "/nowhere"}}) {
+            HttpResponse<String> response = send(request(target[1])
+                    .method(target[0], HttpRequest.BodyPublishers.ofByteArray(body))
+                    .build());
+
+            assertThat(response.statusCode()).as(target[1]).isEqualTo(413);
+            assertThat(JSON.readTree(response.body()).get("title").asString())
+                    .as(target[1])
+                    .isEqualTo("Content Too Large");
+        }
+    }
+
+    @Test
+    void anAnonymousChunkedMultipartBodyIsNeverParsed() throws Exception {
+        // Spring's multipart resolver would have Tomcat parse this from its own buffer, past the counting stream, on
+        // every anonymous path; over Boot's 1 MB part limit it answered "Maximum upload size exceeded". The resolver
+        // is off, so nothing parses the body and no path answers with the multipart refusal.
+        int size = 1536 * 1024;
+        for (String[] target :
+                new String[][] {{"POST", "/error"}, {"POST", "/actuator/health"}, {"GET", "/api/events"}}) {
+            HttpResponse<String> response = send(multipart(target[0], target[1], size));
+
+            assertThat(response.statusCode()).as(target[1]).isNotEqualTo(413);
+            assertThat(response.body()).as(target[1]).doesNotContain("Maximum upload size exceeded");
+        }
+    }
+
+    /** A chunked multipart/form-data body of exactly the given size: one file part of filler. */
+    private HttpRequest multipart(String method, String path, int size) {
+        String head = "--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"f\"\r\n"
+                + "Content-Type: application/octet-stream\r\n\r\n";
+        String tail = "\r\n--b--\r\n";
+        byte[] body = (head + "x".repeat(size - head.length() - tail.length()) + tail).getBytes(StandardCharsets.UTF_8);
+        return request(path)
+                .header("Content-Type", "multipart/form-data; boundary=b")
+                .method(method, HttpRequest.BodyPublishers.ofInputStream(() -> new ByteArrayInputStream(body)))
+                .build();
+    }
+
     /** A valid hold for the one seat, padded with whitespace to exactly the given size (or unpadded, for 0). */
     private byte[] paddedHold(int size) {
         String json = "{\"event_seat_ids\": [" + seatId + "]}";
@@ -146,16 +195,24 @@ class RequestBoundsOverHttpTest {
     private HttpRequest.Builder holdRequest(String idempotencyKey) {
         String basic = Base64.getEncoder()
                 .encodeToString(("alice:" + TestCredentials.password("alice")).getBytes(StandardCharsets.UTF_8));
-        return HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/api/events/" + eventId + "/holds"))
+        return request("/api/events/" + eventId + "/holds")
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Basic " + basic)
                 .header("Idempotency-Key", idempotencyKey);
     }
 
+    /** Every request carries a timeout, so a server that never answers fails the test instead of hanging the build. */
+    private HttpRequest.Builder request(String path) {
+        return HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                .timeout(REQUEST_TIMEOUT);
+    }
+
     private static HttpResponse<String> send(HttpRequest request) throws Exception {
         // HTTP/1.1, so a body with no declared length goes out chunked.
-        try (HttpClient http =
-                HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build()) {
+        try (HttpClient http = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(CONNECT_TIMEOUT)
+                .build()) {
             return http.send(request, HttpResponse.BodyHandlers.ofString());
         }
     }
