@@ -8,8 +8,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import io.github.markusluisflores.frontrow.domain.EventStatus;
 import io.github.markusluisflores.frontrow.error.DomainException;
 import io.github.markusluisflores.frontrow.error.ErrorCode;
+import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.io.Writer;
 import java.util.List;
@@ -78,6 +82,12 @@ class RestExceptionHandlerTest {
         @PostMapping("/t/body")
         Body body(@RequestBody Body body) {
             return body;
+        }
+
+        /** A read that crossed the limit, reaching MVC unwrapped: a reader that is not a message converter. */
+        @PostMapping("/t/unwrapped")
+        void unwrapped() throws IOException {
+            throw new RequestBodyLimitFilter.BodyTooLargeException();
         }
 
         @GetMapping("/t/groups/{holdGroupId}")
@@ -152,6 +162,37 @@ class RestExceptionHandlerTest {
 
     @Test
     void aDeclaredBodyOverTheLimitIsRefusedBeforeItIsRead() throws Exception {
+        // Straight through the filter, to a chain that would read the body: it is never opened.
+        MockHttpServletRequest declared = new MockHttpServletRequest("POST", "/t/body");
+        declared.setContent(new byte[RequestBodyLimitFilter.MAX_BODY_BYTES + 1]);
+        boolean[] opened = new boolean[1];
+        HttpServletRequest watched = new HttpServletRequestWrapper(declared) {
+            @Override
+            public ServletInputStream getInputStream() throws IOException {
+                opened[0] = true;
+                return super.getInputStream();
+            }
+
+            @Override
+            public BufferedReader getReader() throws IOException {
+                opened[0] = true;
+                return super.getReader();
+            }
+        };
+        MockHttpServletResponse refused = new MockHttpServletResponse();
+
+        new RequestBodyLimitFilter().doFilter(watched, refused, (request, ignored) -> {
+            try {
+                request.getInputStream().transferTo(OutputStream.nullOutputStream());
+            } catch (RequestBodyLimitFilter.BodyTooLargeException expected) {
+                // The counting stream's refusal; reaching it at all means the body was opened.
+            }
+        });
+
+        assertThat(opened[0]).as("body opened").isFalse();
+        assertThat(refused.getStatus()).isEqualTo(413);
+
+        // The same refusal through MVC, as Problem Details.
         MockHttpServletResponse response = perform(post("/t/body")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(new byte[RequestBodyLimitFilter.MAX_BODY_BYTES + 1]));
@@ -159,6 +200,17 @@ class RestExceptionHandlerTest {
         assertThat(response.getStatus()).isEqualTo(413);
         assertThat(body(response)).isEqualTo(JSON.readTree("""
                         {"title": "Content Too Large", "status": 413, "instance": "/t/body"}
+                        """));
+    }
+
+    @Test
+    void aBodyOverTheLimitIs413EvenWhenNoConverterWrapsIt() throws Exception {
+        MockHttpServletResponse response = perform(post("/t/unwrapped"));
+
+        assertThat(response.getStatus()).isEqualTo(413);
+        assertThat(response.getContentType()).isEqualTo("application/problem+json");
+        assertThat(body(response)).isEqualTo(JSON.readTree("""
+                        {"title": "Content Too Large", "status": 413, "instance": "/t/unwrapped"}
                         """));
     }
 

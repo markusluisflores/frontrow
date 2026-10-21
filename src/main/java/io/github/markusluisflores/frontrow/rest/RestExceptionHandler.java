@@ -41,6 +41,12 @@ public class RestExceptionHandler extends ResponseEntityExceptionHandler {
         return response.body(problem);
     }
 
+    /** A read over the limit that no message converter wrapped: the same 413 as the wrapped path, not a bug's 500. */
+    @ExceptionHandler(RequestBodyLimitFilter.BodyTooLargeException.class)
+    ResponseEntity<ProblemDetail> bodyTooLarge() {
+        return ResponseEntity.status(HttpStatus.CONTENT_TOO_LARGE).body(Problems.plain(HttpStatus.CONTENT_TOO_LARGE));
+    }
+
     @ExceptionHandler(Exception.class)
     ResponseEntity<ProblemDetail> unexpectedFailure(Exception failure) {
         LOG.error("Unhandled failure in a REST request", failure);
