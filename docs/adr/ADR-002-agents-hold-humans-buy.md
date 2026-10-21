@@ -3,10 +3,11 @@
 **Date:** 2026-09-18
 **Status:** Accepted
 
-Partly implemented. Phase 1 plan 4A built the two credential chains and the catch-all
-chain in `security/SecurityConfig.java`. The MCP tools arrive in plan 5, so `/mcp`
-authenticates agents but serves no tool yet. The full design is in the spec,
-`docs/superpowers/specs/2026-09-17-frontrow-design.md` §3 (*Caller identity*) and §6.
+Partly implemented. Phase 1 plan 4A built the two credential chains, the catch-all chain
+and the REST write endpoints, confirm included, in `security/SecurityConfig.java` and
+`rest/`. The MCP tools arrive in plan 5, so `/mcp` authenticates agents but serves no tool
+yet. The full design is in the spec, `docs/superpowers/specs/2026-09-17-frontrow-design.md`
+§3 (*Caller identity*) and §6.
 
 ## Context and Problem Statement
 
