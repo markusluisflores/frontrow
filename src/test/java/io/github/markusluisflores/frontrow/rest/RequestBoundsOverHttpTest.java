@@ -20,6 +20,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -105,12 +106,33 @@ class RequestBoundsOverHttpTest {
     }
 
     @Test
-    void anOversizedIdempotencyKeyNeverReachesTheService() throws Exception {
+    void anOversizedHeaderIsRefusedByTomcatBeforeTheApplication() throws Exception {
         HttpRequest request = holdRequest("k".repeat(9 * 1024))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(paddedHold(0)))
                 .build();
 
-        assertThat(send(request).statusCode()).isEqualTo(400);
+        HttpResponse<String> response = send(request);
+
+        // Tomcat's own refusal: a bare HTML error page, closed connection, nothing from the application's renderer.
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(response.headers().firstValue("Content-Type").orElse("")).startsWith("text/html");
+        assertThat(response.body()).doesNotContain("invalid_request");
+        assertThat(fixtures.holdRequestsOwnedBy("alice")).isZero();
+    }
+
+    @Test
+    void aKeyOverTheServiceLimitButUnderTomcatsIsRefusedByTheService() throws Exception {
+        HttpRequest request = holdRequest("k".repeat(1000))
+                .POST(HttpRequest.BodyPublishers.ofByteArray(paddedHold(0)))
+                .build();
+
+        HttpResponse<String> response = send(request);
+
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(response.headers().firstValue("Content-Type").orElse("")).startsWith("application/problem+json");
+        JsonNode problem = JSON.readTree(response.body());
+        assertThat(problem.get("code").asString()).isEqualTo("invalid_request");
+        assertThat(problem.get("parameter").asString()).isEqualTo("Idempotency-Key");
         assertThat(fixtures.holdRequestsOwnedBy("alice")).isZero();
     }
 
