@@ -47,7 +47,8 @@ class SecurityChainsTest {
 
     @Test
     void aBearerTokenIsRefusedOnAnonymousAndAuthenticatedApiEndpointsAlike() throws Exception {
-        for (MockHttpServletRequestBuilder request : List.of(get("/api/events"), post(CONFIRM))) {
+        for (MockHttpServletRequestBuilder request :
+                List.of(get("/api/events"), post(CONFIRM), get("/api/orders/x"), post("/api/events"))) {
             MockHttpServletResponse response =
                     perform(request.header(HttpHeaders.AUTHORIZATION, "Bearer " + TestCredentials.token("alice")));
             assertThat(response.getStatus()).isEqualTo(401);
@@ -90,16 +91,24 @@ class SecurityChainsTest {
                 () -> post("/api/events/1/holds"),
                 () -> post(CONFIRM),
                 () -> delete(group),
-                () -> get("/api/me/holds"));
+                () -> get("/api/me/holds"),
+                () -> get("/api/me/orders"));
         for (Supplier<MockHttpServletRequestBuilder> request : buyerOnly) {
             assertThat(perform(request.get().with(as("olivia"))).getStatus()).isEqualTo(403);
             assertThat(perform(request.get().with(as("adam"))).getStatus()).isEqualTo(403);
             assertThat(perform(request.get().with(as("alice"))).getStatus()).isNotIn(401, 403);
         }
-        assertThat(perform(patch("/api/events/1").with(as("alice"))).getStatus())
-                .isEqualTo(403);
-        assertThat(perform(patch("/api/events/1").with(as("olivia"))).getStatus())
-                .isNotIn(401, 403);
+        // ORGANISER only: a buyer and an admin are both refused.
+        for (Supplier<MockHttpServletRequestBuilder> request : List.<Supplier<MockHttpServletRequestBuilder>>of(
+                () -> patch("/api/events/1"), () -> post("/api/events"))) {
+            assertThat(perform(request.get().with(as("alice"))).getStatus()).isEqualTo(403);
+            assertThat(perform(request.get().with(as("adam"))).getStatus()).isEqualTo(403);
+            assertThat(perform(request.get().with(as("olivia"))).getStatus()).isNotIn(401, 403);
+        }
+        // BUYER or ADMIN, and not an organiser.
+        assertThat(perform(get("/api/orders/x").with(as("alice"))).getStatus()).isNotIn(401, 403);
+        assertThat(perform(get("/api/orders/x").with(as("adam"))).getStatus()).isNotIn(401, 403);
+        assertThat(perform(get("/api/orders/x").with(as("olivia"))).getStatus()).isEqualTo(403);
     }
 
     @Test
