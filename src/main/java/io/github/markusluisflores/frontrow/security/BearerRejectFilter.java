@@ -6,6 +6,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.Enumeration;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -20,11 +21,24 @@ final class BearerRejectFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        if (isBearer(request.getHeader(HttpHeaders.AUTHORIZATION))) {
+        if (anyBearer(request.getHeaders(HttpHeaders.AUTHORIZATION))) {
             Problems.write(request, response, Problems.plain(HttpStatus.UNAUTHORIZED));
             return;
         }
         chain.doFilter(request, response);
+    }
+
+    /**
+     * Every Authorization header, not just the first: Spring's Basic filter reads only the first, so a bearer second
+     * would ride along on a valid Basic one.
+     */
+    private static boolean anyBearer(Enumeration<String> authorizations) {
+        while (authorizations != null && authorizations.hasMoreElements()) {
+            if (isBearer(authorizations.nextElement())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static boolean isBearer(String authorization) {

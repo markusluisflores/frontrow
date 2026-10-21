@@ -10,6 +10,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 import io.github.markusluisflores.frontrow.TestcontainersConfiguration;
 import io.github.markusluisflores.frontrow.support.TestCredentials;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
@@ -28,9 +30,8 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 /**
- * The three chains (spec §3, §8; ADR-002), through the application's real filter chain. These run before any write
- * endpoint exists, so a request that passes security reaches no handler and gets 404: that 404 is the positive control
- * that the chain let it through.
+ * The three chains (spec §3, §8; ADR-002), through the application's real filter chain. A request that passes security
+ * reaches its handler, so any status other than 401 or 403 is the positive control that the chain let it through.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -53,6 +54,24 @@ class SecurityChainsTest {
                     perform(request.header(HttpHeaders.AUTHORIZATION, "Bearer " + TestCredentials.token("alice")));
             assertThat(response.getStatus()).isEqualTo(401);
         }
+    }
+
+    @Test
+    void aBearerTokenIsRefusedEvenBehindAValidBasicHeader() throws Exception {
+        // Spring's Basic filter reads only the first Authorization header, so a bearer second would otherwise ride
+        // along.
+        String basic = Base64.getEncoder()
+                .encodeToString(("alice:" + TestCredentials.password("alice")).getBytes(StandardCharsets.UTF_8));
+        MockHttpServletResponse response = perform(get("/api/me/holds")
+                .header(HttpHeaders.AUTHORIZATION, "Basic " + basic)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + TestCredentials.token("alice")));
+
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(response.getContentType()).isEqualTo("application/problem+json");
+        // The Basic header alone is served: only the extra bearer credential was refused.
+        assertThat(perform(get("/api/me/holds").header(HttpHeaders.AUTHORIZATION, "Basic " + basic))
+                        .getStatus())
+                .isNotIn(401, 403);
     }
 
     @Test
