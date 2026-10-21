@@ -22,3 +22,5 @@ frontrow:
   sweep-interval: 1m
   # Off in tests (src/test/resources/config/application.properties). Correctness never depends on the sweeper.
   sweeper-enabled: true
+  # frontrow.security (users and agent tokens) is deliberately absent: nothing usable is committed, and startup fails
+  # without it. scripts/demo-credentials.sh writes it to config/application-demo.yml; start with the demo profile.

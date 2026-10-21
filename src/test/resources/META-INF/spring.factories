@@ -1,0 +1,2 @@
+org.springframework.boot.EnvironmentPostProcessor=\
+io.github.markusluisflores.frontrow.support.TestCredentials.Environment
