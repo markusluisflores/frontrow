@@ -71,12 +71,12 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
 2. **Any `ORGANISER` may PATCH any event** (Markus). This is spec §6 as written: a role gate, with no per-event ownership, because the schema records no event owner. The limit is stated plainly here and in `EventController`'s javadoc. The README (plan 5) must say it too. Per-event ownership goes to Phase 2, with real authentication.
    - **Consequence for 4B:** an organiser still can't `GET` their own `DRAFT`. Spec 2.6.3 makes a draft `not_found` to every caller, and "own" has no data behind it. The organiser sees the draft in the `POST` and `PATCH` responses. This closes the "can't GET their own draft" input as a stated limit, not a feature.
    - The `BUYER`, `ADMIN` and agent-token cases are all refused, and Task 4 tests each one.
-3. **An owner is the Basic username, for both credentials** (Markus). The agent's principal name is its user's username, so a user and their own agent share the owner, the hold cap and the idempotency-key namespace. Spec §6's handover needs that: X sees and confirms what X's agent held.
+3. **An owner is the Basic username, for both credentials** (Markus). The agent's principal name is its user's username, so a user and their own agent share the owner, the hold cap and the idempotency-key namespace. Spec §6's handover needs that: X sees and confirms what X's agent held. It also gives a compromised agent more reach than spec §6's one-line threat model states; the follow-ups below carry that to plan 5's README.
    - **Read this way, PR #18's `/security-review` note bans accidental aliasing between different principals.** A user deliberately sharing an owner with their own agent is not aliasing. A human and their agent reusing one key replay each other's hold, which is the same owner's hold either way.
    - **No two principals can alias.** Every username must match `^[a-z0-9][a-z0-9._-]{0,63}$`, checked at startup by `@Validated` binding. So there are no case or Unicode look-alikes, no U+0000 and no unpaired surrogate. That closes thread 4296749409 where users are created, without changing the service.
    - **Each token's config entry names a username.** Startup fails if that user is missing or lacks `BUYER` (spec §3: tokens are issued only to `BUYER` users).
 4. **Every service entry point calls `TransactionBoundary.requireOwnTransaction()` as its first statement**, and keeps `REQUIRED` propagation with `READ_COMMITTED` (Markus chose this after the correction below). It throws `IllegalTransactionStateException` if the transaction it runs in was joined rather than started, so an outer transaction fails loudly as a 500, never as a silent loss of isolation (thread 4296540451).
-   - **`Propagation.NEVER` is rejected, with evidence.** It was the thread's suggestion and Markus's first choice, and it is wrong about Spring: `NEVER` runs the method *with no transaction at all*. The authoring build tried it. all 11 `EventPatchServiceTest` tests broke. `LockingGateway` is `MANDATORY`, so its calls threw before any lock was taken; the lock-timeout test's PATCH never blocked, and no `READ_COMMITTED` was ever applied. Spring has no propagation for "start one, and fail if one exists".
+   - **`Propagation.NEVER` is rejected, with evidence.** It was the thread's suggestion and Markus's first choice, and it is wrong about Spring: `NEVER` runs the method *with no transaction at all*. The authoring build tried it: all 11 `EventPatchServiceTest` tests broke. `LockingGateway` is `MANDATORY`, so its calls threw before any lock was taken; the lock-timeout test's PATCH never blocked, and no `READ_COMMITTED` was ever applied. Spring has no propagation for "start one, and fail if one exists".
    - **What proves it.** `ServiceTransactionBoundaryTest` calls all six entry points inside an outer transaction. Its reflection check fails the build if a public service method isn't covered. With the guard on one service only, the other services' calls joined the outer transaction silently, which is the thread's bug shown live.
    - **Rejected: a rule plus an architecture test that no adapter is `@Transactional`.** A `TransactionTemplate`, or a service calling a service, slips past it.
    - **At merge,** the reply on thread 4296540451 corrects its `NEVER` suggestion, so the next reader doesn't repeat it.
@@ -84,11 +84,14 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
    - **`scripts/demo-credentials.sh`** runs `security/DemoCredentials`. It writes bcrypt password hashes and SHA-256 token hashes to `config/application-demo.yml`, which is gitignored, and prints the raw values once. The app runs with the `demo` profile. Spring Boot reads `./config/application-{profile}.yml` from the working directory, so the file is not on the classpath and is not in the jar.
    - **Tests generate their own credentials once per JVM run.** `support/TestCredentials` holds the random values. Its nested `EnvironmentPostProcessor`, registered in `src/test/resources/META-INF/spring.factories`, adds their hashes to every `SpringApplication` the tests start, so every test context has users without any committed value. This replaces plan 1's spike approach (a per-run UUID in one test) with one used everywhere.
    - **The test users:** `alice` and `bob` (`BUYER`), `carol` (`BUYER`, `ORGANISER`), `olivia` (`ORGANISER`) and `adam` (`ADMIN`). `alice` and `carol` hold tokens. `carol` exists so a test can show a token for a user who is also an organiser carries no organiser power.
-6. **CSRF: Spring's CSRF token is off on every chain,** which is right for a stateless API with no session and no cookie. But Basic credentials become ambient once a browser has cached them after a `WWW-Authenticate: Basic` challenge. A hostile page could then submit a cross-site form `POST` to `/api/holds/{id}/confirm`, which has no body, and the browser would attach them. Two layers close that:
+6. **CSRF: Spring's CSRF token is off on every chain,** which is right for a stateless API with no session and no cookie. But Basic credentials become ambient once a browser has cached them after a `WWW-Authenticate: Basic` challenge. A hostile page could then make the browser send an unsafe request to `/api/holds/{id}/confirm`, which needs no body, with the credentials attached. A cross-site form `POST` does that, and so do a `fetch` with `mode: 'no-cors'` and a `navigator.sendBeacon`, which can send a bodyless `POST` with no `Content-Type` at all. Three layers stand against it:
    - **No 401 carries a Basic challenge,** so a browser never prompts and never caches the credentials. Swagger UI and `curl` send the header explicitly. RFC 9110 expects a challenge on a 401; omitting it is the documented trade.
-   - **Unsafe methods on `/api/**` refuse form-submittable content types** (`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`) with 415. Those are the only types a cross-site form can send without a CORS preflight, and no CORS is configured, so a preflight fails. An unparseable `Content-Type` is refused too.
+   - **Fetch Metadata.** An unsafe method on `/api/**` (anything but `GET`, `HEAD`, `OPTIONS` and `TRACE`) whose `Sec-Fetch-Site` is `cross-site` or `same-site`, in any case, is refused with 403. This is the layer that catches the bodyless request. `same-origin`, `none` (a user-initiated navigation) and an absent header pass, because `curl` and other non-browser clients send none.
+   - **Form types.** Unsafe methods on `/api/**` refuse form-submittable content types (`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`) with 415. Those are the only types a cross-site form can send without a CORS preflight, and no CORS is configured, so a preflight fails. An unparseable `Content-Type` is refused too.
 
-   This also gives a real argument for CodeQL alert #1's class of finding (`java/spring-disabled-csrf-protection`). The plan expects CodeQL to raise it again on the new chains. Dismissing it stays Markus's call.
+   Both refusals live in one filter, `security/CrossSiteWriteFilter`, ahead of Basic authentication. **A browser that sends no Fetch Metadata relies on the first layer alone** against a request with no form type, such as a bodyless `no-cors` `fetch` or a `sendBeacon`. If such a browser has cached the credentials by some other route, that request gets through.
+
+   **CodeQL.** The plan expects CodeQL to raise alert #1's class of finding (`java/spring-disabled-csrf-protection`) again on the new chains. These layers are an argument to present to Markus for dismissing it, not a certainty that the finding is false: the gap just named is real. Dismissing it stays his call.
 7. **Errors** (`rest/Problems`, `rest/RestExceptionHandler`):
    - **Statuses:**
 
@@ -101,7 +104,7 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
      | `contention_retry` | 503, with `Retry-After: 1` |
 
      The mapping is a switch expression with no default, so a new `ErrorCode` is a compile error.
-   - **Members:** `code`, `hint` and every detail are extension members, in key order (thread 4296749419). Every test compares bodies as parsed JSON trees, never strings. Spring 7 leaves `type` unset, which RFC 9457 reads as `about:blank`. The filter-side writer does the same, so both writers produce one shape.
+   - **Members:** `code`, `hint` and every detail are extension members, in key order (thread 4296749419). Every test compares bodies as parsed JSON trees, never strings. Spring 7 leaves `type` unset, which RFC 9457 reads as `about:blank`. The filter-side writer, `Problems.write` (the body filter, the security filters, and every chain's 401 and 403), does the same, and sets `instance` to the request URI as the MVC converter does. So for the same problem, a filter's body and a handler's body have the same members: `ProblemsTest#aFilterWritesTheSameShapeAsTheConverter` renders one problem through both and compares the parsed trees.
    - **Parameter names:** the service names MCP's parameter, so the renderer renames `idempotency_key` to `Idempotency-Key` (thread 4296541034). A missing header is named the same way.
    - **Framework failures become `invalid_request` with a `parameter`:**
      - unreadable JSON → `body` (a literal `null` body too: Spring refuses a required body that is null);
@@ -112,19 +115,19 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
    - **Everything else is a generic 500** with no detail, logged server-side. That covers any `RuntimeException`, `IllegalStateException` (they can carry internal ids) and `DataIntegrityViolationException`, which is never guessed into a conflict code.
    - **401, 403, 413 and 415 are Problem Details bodies with no `code`.** Spec §6's codes are domain codes.
 8. **Bounds.**
-   - **Bodies:** `rest/RequestBodyLimitFilter` is registered at `Ordered.HIGHEST_PRECEDENCE`, ahead of every security chain, on every path. It refuses a declared `Content-Length` over **16 KiB** with 413 before reading. A chunked body is counted as it is read, and the read that crosses the limit fails. The count lives on the request, so asking for the stream again can't reset it. That bounds what `HoldCommand` copies (the handoff's "bound request size" input).
+   - **Bodies:** `rest/RequestBodyLimitFilter` is registered at `Ordered.HIGHEST_PRECEDENCE`, ahead of every security chain, on every path. It refuses a declared `Content-Length` over **16 KiB** with 413 before reading. A chunked body is counted as it is read, through `getInputStream()` or `getReader()`, and the read that crosses the limit fails. The count lives on the request, so asking for the stream again can't reset it. That bounds what `HoldCommand` copies (the handoff's "bound request size" input).
    - **Headers:** Tomcat's default 8 KiB header limit bounds `Idempotency-Key` before the service's 200-character check. Task 6 proves both bounds over a real socket.
-   - **PATCH instants:** `EventPatchService` refuses an instant outside `0001-01-01T00:00:00Z` … `9999-12-31T23:59:59.999999Z` as `invalid_request` with `parameter: sales_window`, before any SQL (PR #22 thread 4305094277). That is what both `timestamptz` and a four-digit ISO 8601 year hold. It lives in the service, not the adapter, because the PATCH is the one write path that takes caller-supplied instants, whichever adapter calls. A test stores the widest window and reads it back exactly.
-9. **The wire is snake_case.** `spring.jackson.property-naming-strategy: SNAKE_CASE` matches MCP's parameter names and the error details. `HoldService.STORED_FORM` is deliberately independent of the application mapper (plan 3A decision 6), so replay of stored rows is unaffected. The MCP server uses its own mapper, and the spike test still passes.
+   - **PATCH instants:** `EventPatchService` refuses an instant outside `0001-01-01T00:00:00Z` … `9999-12-31T23:59:59.999999Z` as `invalid_request` with `parameter: sales_window`, before the instant reaches any SQL (PR #22 thread 4305094277). That is what both `timestamptz` and a four-digit ISO 8601 year hold. It lives in the service, not the adapter, because the PATCH is the one write path that takes caller-supplied instants, whichever adapter calls. A test stores the widest window and reads it back exactly.
+9. **The wire is snake_case.** `spring.jackson.property-naming-strategy: SNAKE_CASE` matches MCP's parameter names and the error details. `HoldService.STORED_FORM` is deliberately independent of the application mapper (plan 3A decision 6), so replay of stored rows is unaffected. The MCP server renders its successful responses with its own mapper, and the spike test still passes. **A transport error on `/mcp` is not the MCP server's, though** (security review of PR #28): malformed JSON, or a body over 16 KiB tripping the body filter, is rendered by the application's mapper, and that body includes a `stack_trace`. 4A serves no tool and leaves this to plan 5, as a requirement in the follow-ups below.
 10. **The chains** (`security/SecurityConfig`):
 
     | Order | Matcher | Takes | Notes |
     |---|---|---|---|
-    | 1 | `/api/**` | Basic | `BearerRejectFilter` and `FormContentTypeFilter` run before Basic authentication. The whole spec §6 table; any unlisted `/api/**` path is denied |
+    | 1 | `/api/**` | Basic | `BearerRejectFilter` and `CrossSiteWriteFilter` run before Basic authentication. The whole spec §6 table; any unlisted `/api/**` path is denied |
     | 2 | `/mcp`, `/mcp/**` | Agent bearer token | `AgentTokenFilter` authenticates a known token's user with `AGENT` only. The chain installs no Basic filter, so a Basic header authenticates nothing |
     | 3 | none, `LOWEST_PRECEDENCE` | — | `/error`, `/actuator/health`, `/swagger-ui/**` and `/v3/api-docs/**` anonymous (spec §3); everything else denied (ADR-002) |
 
-    - **Stateless:** every chain is stateless, with no request cache, and answers with the Problem Details 401 and 403.
+    - **Stateless:** every chain is stateless, with no request cache and no logout endpoint, and answers with the Problem Details 401 and 403. There is no session to end, and Spring's default `/logout` would otherwise answer anonymously on every chain.
     - **Users:** a `UserDetailsService` bean built from the credentials replaces Boot's generated `user`. Without it, that user would sit in the parent authentication manager and authenticate on `/api/**` as a fallback.
     - **Actuator:** `spring-boot-starter-actuator` is added, with only `health` exposed, so the catch-all's one actuator path is real and tested.
     - **ADR-002:** its stale "Plan 4 must add a catch-all chain" line becomes a statement of what was built, and its header says what is implemented.
@@ -139,7 +142,11 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
 **Follow-ups this plan leaves open, each named so it isn't lost:**
 - the post-4A spec sync: decisions 3 to 10 fill gaps rev 2.6.4 leaves open, on its own docs branch;
 - ADR-002's "⚠️ … unproven: the scaffold spike must show how the principal propagates" bullet, which ADR-004 has since answered;
-- the README statements decisions 2 and 6 require (plan 5).
+- the README statements decisions 2 and 6 require (plan 5);
+- **a plan 5 requirement: MCP error bodies carry no stack trace** (decision 9). Plan 5 adds a test that sends malformed JSON and an oversized body to `/mcp` with a valid token, and checks that neither response carries a `stack_trace`;
+- **two risks in Markus's decisions, for plan 5's README and threat model to state** (security review of PR #28; reported, not re-decided):
+  - decision 3's shared owner means a compromised agent can also release the human's own holds, fill the human's hold-group cap and replay the human's idempotency keys. That is wider than spec §6's one-line threat model. Confirm is tied only to a hold id, so the human confirms whatever that hold contains;
+  - decision 2 means one compromised organiser account can cancel every event.
 
 ## File Structure
 
@@ -152,7 +159,7 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
 | `src/test/java/.../support/TestCredentials.java`, `src/test/resources/META-INF/spring.factories` | Every test context's per-run credentials | 2 |
 | `src/main/java/.../rest/Problems.java`, `RestExceptionHandler.java` | Problem Details, statuses and parameter names (decision 7) | 3 |
 | `src/main/java/.../rest/RequestBodyLimitFilter.java`, `RestConfig.java` | The 16 KiB body bound (decision 8) | 3 |
-| `src/main/java/.../security/SecurityConfig.java`, `BearerRejectFilter.java`, `FormContentTypeFilter.java`, `AgentTokenFilter.java` | The three chains and their filters (decisions 6, 10) | 4 |
+| `src/main/java/.../security/SecurityConfig.java`, `BearerRejectFilter.java`, `CrossSiteWriteFilter.java`, `AgentTokenFilter.java` | The three chains and their filters (decisions 6, 10) | 4 |
 | `pom.xml`, `src/main/resources/application.yml` | Actuator and the test starters; snake_case, actuator exposure | 2, 3, 4 |
 | `src/test/java/.../mcp/PrincipalPropagationSpikeTest.java` | Re-proved on the real `/mcp` chain (decision 11) | 4 |
 | `docs/adr/ADR-002-agents-hold-humans-buy.md` | What was built | 4 |
@@ -923,7 +930,12 @@ case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) separator=";" ;; esac
 
 mkdir -p config
 umask 077
-java -cp "target/classes${separator}$(cat target/demo-classpath.txt)"   io.github.markusluisflores.frontrow.security.DemoCredentials > "$target"
+# Write to a temporary file and move it into place only on success, so a failed run leaves nothing behind.
+partial="$(mktemp config/.application-demo.yml.XXXXXX)"
+trap 'rm -f "$partial"' EXIT
+java -cp "target/classes${separator}$(cat target/demo-classpath.txt)"   io.github.markusluisflores.frontrow.security.DemoCredentials > "$partial"
+mv "$partial" "$target"
+trap - EXIT
 echo "Wrote $target (hashes only)." >&2
 ```
 
@@ -1219,7 +1231,7 @@ scripts/demo-credentials.sh 2>/dev/null && git status --short --ignored config
 
 Expected: `!! config/`, ignored, so it can never be staged.
 
-It printed the raw passwords and token to stderr; this command discards them. Run it without `2>/dev/null` to use the demo. To regenerate, delete `config/application-demo.yml` first: the script refuses to overwrite it.
+It printed the raw passwords and token to stderr; this command discards them. Run it without `2>/dev/null` to use the demo. To regenerate, delete `config/application-demo.yml` first: the script refuses to overwrite it. It writes to a temporary file and moves it into place only on success, so a failed run leaves nothing behind.
 
 - [ ] **Step 6: Run the whole build**
 
@@ -1254,7 +1266,7 @@ Expected: the commit-msg hook accepts the subject, and gitleaks reports `no leak
 **Interfaces:**
 - Consumes: `DomainException`, `ErrorCode`.
 - Produces:
-  - `rest.Problems`: `status(ErrorCode) : HttpStatus`, `of(DomainException) : ProblemDetail`, `invalidParameter(String)`, `plain(HttpStatus)`, and `write(HttpServletResponse, ProblemDetail)` for filters, which Task 4's filters and entry points use;
+  - `rest.Problems`: `status(ErrorCode) : HttpStatus`, `of(DomainException) : ProblemDetail`, `invalidParameter(String)`, `plain(HttpStatus)`, and `write(HttpServletRequest, HttpServletResponse, ProblemDetail)` for filters, which sets `instance` to the request URI and which Task 4's filters and entry points use;
   - `rest.RestExceptionHandler`, a `@RestControllerAdvice` that applies to Task 5's controllers;
   - `rest.RequestBodyLimitFilter.MAX_BODY_BYTES` (16 384), and its `BodyTooLargeException`.
 
@@ -1271,13 +1283,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.markusluisflores.frontrow.error.DomainException;
 import io.github.markusluisflores.frontrow.error.ErrorCode;
+import java.net.URI;
 import java.time.Instant;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.converter.json.JacksonJsonHttpMessageConverter;
+import org.springframework.mock.http.MockHttpOutputMessage;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -1341,18 +1358,25 @@ class ProblemsTest {
 
     @Test
     void aFilterWritesTheSameShapeAsTheConverter() throws Exception {
+        DomainException failure = new DomainException(
+                ErrorCode.SALES_NOT_OPEN, Map.of("sales_open_at", Instant.parse("2030-01-01T00:00:00Z")));
         MockHttpServletResponse response = new MockHttpServletResponse();
-        Problems.write(
-                response,
-                Problems.of(new DomainException(
-                        ErrorCode.SALES_NOT_OPEN, Map.of("sales_open_at", Instant.parse("2030-01-01T00:00:00Z")))));
+        Problems.write(new MockHttpServletRequest("POST", "/api/holds/x/confirm"), response, Problems.of(failure));
+
+        ProblemDetail rendered = Problems.of(failure);
+        rendered.setInstance(URI.create("/api/holds/x/confirm"));
+        MockHttpOutputMessage converted = new MockHttpOutputMessage();
+        new JacksonJsonHttpMessageConverter(JsonMapper.builder())
+                .write(rendered, MediaType.APPLICATION_PROBLEM_JSON, converted);
 
         assertThat(response.getStatus()).isEqualTo(409);
         assertThat(response.getContentType()).isEqualTo("application/problem+json");
         JsonNode body = JSON.readTree(response.getContentAsString());
+        assertThat(body).isEqualTo(JSON.readTree(converted.getBodyAsString()));
         assertThat(body).isEqualTo(JSON.readTree("""
-                        {"title": "Conflict", "status": 409, "code": "sales_not_open",
-                         "hint": "sales have not opened for this event yet", "sales_open_at": "2030-01-01T00:00:00Z"}
+                        {"title": "Conflict", "status": 409, "instance": "/api/holds/x/confirm",
+                         "code": "sales_not_open", "hint": "sales have not opened for this event yet",
+                         "sales_open_at": "2030-01-01T00:00:00Z"}
                         """));
     }
 }
@@ -1364,12 +1388,16 @@ Create `src/test/java/io/github/markusluisflores/frontrow/rest/RestExceptionHand
 package io.github.markusluisflores.frontrow.rest;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 import io.github.markusluisflores.frontrow.domain.EventStatus;
 import io.github.markusluisflores.frontrow.error.DomainException;
 import io.github.markusluisflores.frontrow.error.ErrorCode;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequestWrapper;
+import java.io.Writer;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -1377,6 +1405,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.JacksonJsonHttpMessageConverter;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.RequestBuilder;
@@ -1515,7 +1544,7 @@ class RestExceptionHandlerTest {
 
         assertThat(response.getStatus()).isEqualTo(413);
         assertThat(body(response)).isEqualTo(JSON.readTree("""
-                        {"title": "Content Too Large", "status": 413}
+                        {"title": "Content Too Large", "status": 413, "instance": "/t/body"}
                         """));
     }
 
@@ -1531,6 +1560,26 @@ class RestExceptionHandlerTest {
     }
 
     @Test
+    void aBodyReadThroughTheReaderIsBoundedToo() throws Exception {
+        RequestBodyLimitFilter filter = new RequestBodyLimitFilter();
+        long[] read = new long[1];
+
+        filter.doFilter(
+                undeclaredLength(RequestBodyLimitFilter.MAX_BODY_BYTES),
+                new MockHttpServletResponse(),
+                (request, response) ->
+                        read[0] = ((HttpServletRequest) request).getReader().transferTo(Writer.nullWriter()));
+        assertThat(read[0]).isEqualTo(RequestBodyLimitFilter.MAX_BODY_BYTES);
+
+        assertThatThrownBy(() -> filter.doFilter(
+                        undeclaredLength(RequestBodyLimitFilter.MAX_BODY_BYTES + 1),
+                        new MockHttpServletResponse(),
+                        (request, response) ->
+                                ((HttpServletRequest) request).getReader().transferTo(Writer.nullWriter())))
+                .isInstanceOf(RequestBodyLimitFilter.BodyTooLargeException.class);
+    }
+
+    @Test
     void wireNamesAreSnakeCase() {
         assertThat(RestExceptionHandler.snakeCase("holdGroupId")).isEqualTo("hold_group_id");
         assertThat(RestExceptionHandler.snakeCase("eventId")).isEqualTo("event_id");
@@ -1542,6 +1591,18 @@ class RestExceptionHandlerTest {
         JsonNode body = body(response);
         assertThat(body.get("code").asString()).isEqualTo("invalid_request");
         assertThat(body.get("parameter").asString()).isEqualTo(parameter);
+    }
+
+    /** A body that declares no Content-Length, as a chunked one does, so only the counting wrapper can refuse it. */
+    private static HttpServletRequest undeclaredLength(int bytes) {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/t/body");
+        request.setContent(new byte[bytes]);
+        return new HttpServletRequestWrapper(request) {
+            @Override
+            public long getContentLengthLong() {
+                return -1;
+            }
+        };
     }
 
     private MockHttpServletResponse perform(RequestBuilder request) throws Exception {
@@ -1571,6 +1632,7 @@ package io.github.markusluisflores.frontrow.rest;
 
 import io.github.markusluisflores.frontrow.error.DomainException;
 import io.github.markusluisflores.frontrow.error.ErrorCode;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.net.URI;
@@ -1630,8 +1692,12 @@ public final class Problems {
         return ProblemDetail.forStatus(status);
     }
 
-    /** Writes a problem from a filter, in the same RFC 9457 shape the MVC converter produces. */
-    public static void write(HttpServletResponse response, ProblemDetail problem) throws IOException {
+    /**
+     * Writes a problem from a filter, in the same RFC 9457 shape the MVC converter produces. The converter sets the
+     * instance to the request URI, and so does this writer.
+     */
+    public static void write(HttpServletRequest request, HttpServletResponse response, ProblemDetail problem)
+            throws IOException {
         Map<String, Object> body = new LinkedHashMap<>();
         // Spring leaves type unset, which RFC 9457 reads as about:blank; this writer does the same.
         URI type = problem.getType();
@@ -1640,6 +1706,7 @@ public final class Problems {
         }
         body.put("title", problem.getTitle());
         body.put("status", problem.getStatus());
+        body.put("instance", request.getRequestURI());
         Map<String, Object> properties = problem.getProperties();
         if (properties != null) {
             body.putAll(properties);
@@ -1669,14 +1736,19 @@ import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
  * Bounds every request body, ahead of every security chain (plan 4A decision 8). The services copy what they receive
  * — HoldCommand copies its whole seat list — so the bound belongs at the edge. A declared Content-Length over the limit
- * is refused before anything is read. A chunked body is counted as it is read, and crossing the limit fails the read.
+ * is refused before anything is read. A chunked body is counted as it is read, through the stream or the reader, and
+ * crossing the limit fails the read.
  */
 public class RequestBodyLimitFilter extends OncePerRequestFilter {
 
@@ -1686,7 +1758,7 @@ public class RequestBodyLimitFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         if (request.getContentLengthLong() > MAX_BODY_BYTES) {
-            Problems.write(response, Problems.plain(HttpStatus.CONTENT_TOO_LARGE));
+            Problems.write(request, response, Problems.plain(HttpStatus.CONTENT_TOO_LARGE));
             return;
         }
         chain.doFilter(new LimitedRequest(request), response);
@@ -1714,6 +1786,14 @@ public class RequestBodyLimitFilter extends OncePerRequestFilter {
         @Override
         public ServletInputStream getInputStream() throws IOException {
             return new LimitedInputStream(super.getInputStream());
+        }
+
+        /** The reader decodes the limited stream, so a body read as characters is bounded the same way. */
+        @Override
+        public BufferedReader getReader() throws IOException {
+            String encoding = getCharacterEncoding();
+            Charset charset = encoding == null ? StandardCharsets.UTF_8 : Charset.forName(encoding);
+            return new BufferedReader(new InputStreamReader(getInputStream(), charset));
         }
 
         private void counted(int n) throws BodyTooLargeException {
@@ -1928,7 +2008,7 @@ Replace it with:
 ./mvnw spotless:apply test -Dtest='ProblemsTest,RestExceptionHandlerTest'
 ```
 
-Expected: PASS, `Tests run: 15, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SUCCESS`.
+Expected: PASS, `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 5: Run the whole build.** This is the first build with snake_case on the wire, and it must not break the MCP spike.
 
@@ -1936,7 +2016,7 @@ Expected: PASS, `Tests run: 15, Failures: 0, Errors: 0, Skipped: 0` and `BUILD S
 ./mvnw spotless:apply verify
 ```
 
-Expected: `Tests run: 225, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 226, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 6: Commit**
 
@@ -1956,7 +2036,7 @@ Expected: the commit-msg hook accepts the subject, and gitleaks reports `no leak
 - Modify: `pom.xml`
 - Create: `src/main/java/io/github/markusluisflores/frontrow/security/AgentTokenFilter.java`
 - Create: `src/main/java/io/github/markusluisflores/frontrow/security/BearerRejectFilter.java`
-- Create: `src/main/java/io/github/markusluisflores/frontrow/security/FormContentTypeFilter.java`
+- Create: `src/main/java/io/github/markusluisflores/frontrow/security/CrossSiteWriteFilter.java`
 - Create: `src/main/java/io/github/markusluisflores/frontrow/security/SecurityConfig.java`
 - Modify: `src/main/resources/application.yml`
 - Modify: `src/test/java/io/github/markusluisflores/frontrow/mcp/PrincipalPropagationSpikeTest.java` (test)
@@ -1967,7 +2047,7 @@ Expected: the commit-msg hook accepts the subject, and gitleaks reports `no leak
 - Consumes: `Credentials` (Task 2); `Problems.write` and `Problems.plain` (Task 3); `TestCredentials` (Task 2).
 - Produces:
   - `security.SecurityConfig`, with beans `apiChain` (order 1), `mcpChain` (order 2), `catchAllChain` (lowest precedence) and `userDetailsService`;
-  - package-private `BearerRejectFilter.isBearer(String)`, `FormContentTypeFilter.isFormSubmittable(String)` and `AgentTokenFilter.AGENT`.
+  - package-private `BearerRejectFilter.isBearer(String)`, `CrossSiteWriteFilter.isCrossSite(String)` and `.isFormSubmittable(String)`, and `AgentTokenFilter.AGENT`.
 
 **No write endpoint exists until Task 5.** So in `SecurityChainsTest`, a request that passes security reaches no handler and gets 404. That 404 is the positive control that the chain let it through.
 
@@ -2303,6 +2383,18 @@ class SecurityChainsTest {
     }
 
     @Test
+    void aCrossSiteWriteIsRefusedEvenWithNoBody() throws Exception {
+        // A no-cors fetch or a sendBeacon from another site: a bodyless POST, with credentials a browser attached.
+        MockHttpServletResponse crossSite =
+                perform(post(CONFIRM).header("Sec-Fetch-Site", "cross-site").with(as("alice")));
+        assertThat(crossSite.getStatus()).isEqualTo(403);
+        assertThat(crossSite.getContentType()).isEqualTo("application/problem+json");
+        assertThat(perform(post(CONFIRM).header("Sec-Fetch-Site", "same-origin").with(as("alice")))
+                        .getStatus())
+                .isEqualTo(404);
+    }
+
+    @Test
     void mcpTakesOnlyAKnownBearerToken() throws Exception {
         assertThat(perform(mcpPing()).getStatus()).isEqualTo(401);
         assertThat(perform(mcpPing().with(as("alice"))).getStatus()).isEqualTo(401);
@@ -2317,11 +2409,20 @@ class SecurityChainsTest {
     @Test
     void theCatchAllOpensOnlyItsAnonymousPaths() throws Exception {
         assertThat(perform(get("/actuator/health")).getStatus()).isEqualTo(200);
-        for (MockHttpServletRequestBuilder request :
-                List.of(get("/actuator/env"), get("/nowhere"), post("/nowhere"), get("/apix"), get("/mcpx"))) {
+        for (MockHttpServletRequestBuilder request : List.of(
+                get("/actuator/env"),
+                get("/nowhere"),
+                post("/nowhere"),
+                get("/apix"),
+                get("/mcpx"),
+                // No chain keeps Spring's logout endpoint: there is no session to end.
+                post("/logout"),
+                get("/logout"))) {
             assertThat(perform(request).getStatus()).isEqualTo(401);
         }
         assertThat(perform(get("/actuator/env").with(as("adam"))).getStatus()).isEqualTo(401);
+        assertThat(perform(post("/api/logout")).getStatus()).isEqualTo(401);
+        assertThat(perform(post("/api/logout").with(as("alice"))).getStatus()).isEqualTo(403);
     }
 
     @Test
@@ -2385,6 +2486,34 @@ class SecurityFiltersTest {
     }
 
     @Test
+    void onlyACrossSiteOrSameSiteFetchIsRecognised() {
+        for (String value : List.of("cross-site", "same-site", "CROSS-SITE", " Same-Site ")) {
+            assertThat(CrossSiteWriteFilter.isCrossSite(value)).as(value).isTrue();
+        }
+        for (String value : List.of("same-origin", "none", "")) {
+            assertThat(CrossSiteWriteFilter.isCrossSite(value)).as(value).isFalse();
+        }
+        assertThat(CrossSiteWriteFilter.isCrossSite(null)).isFalse();
+    }
+
+    @Test
+    void anUnsafeCrossSiteRequestIsRefusedWith403WhateverItsContentType() throws Exception {
+        // A no-cors fetch or a sendBeacon: no Content-Type at all, so only Fetch Metadata shows where it came from.
+        assertThat(crossSiteFilterStatus("POST", "cross-site", null)).isEqualTo(403);
+        assertThat(crossSiteFilterStatus("DELETE", "same-site", null)).isEqualTo(403);
+        assertThat(crossSiteFilterStatus("PATCH", "cross-site", "application/json"))
+                .isEqualTo(403);
+        assertThat(crossSiteFilterStatus("POST", "cross-site", "text/plain")).isEqualTo(403);
+        // A same-origin or user-initiated request, or a client that sends no Fetch Metadata, passes.
+        assertThat(crossSiteFilterStatus("POST", "same-origin", null)).isEqualTo(200);
+        assertThat(crossSiteFilterStatus("POST", "none", null)).isEqualTo(200);
+        assertThat(crossSiteFilterStatus("POST", null, null)).isEqualTo(200);
+        // A form type is still refused when Fetch Metadata passes, and a safe method is never refused.
+        assertThat(crossSiteFilterStatus("POST", "same-origin", "text/plain")).isEqualTo(415);
+        assertThat(crossSiteFilterStatus("GET", "cross-site", "text/plain")).isEqualTo(200);
+    }
+
+    @Test
     void onlyFormSubmittableContentTypesAreRefused() {
         for (String type : List.of(
                 "application/x-www-form-urlencoded",
@@ -2392,12 +2521,12 @@ class SecurityFiltersTest {
                 "text/plain;charset=UTF-8",
                 "TEXT/PLAIN",
                 "not a media type")) {
-            assertThat(FormContentTypeFilter.isFormSubmittable(type)).as(type).isTrue();
+            assertThat(CrossSiteWriteFilter.isFormSubmittable(type)).as(type).isTrue();
         }
         for (String type : List.of("application/json", "application/merge-patch+json")) {
-            assertThat(FormContentTypeFilter.isFormSubmittable(type)).as(type).isFalse();
+            assertThat(CrossSiteWriteFilter.isFormSubmittable(type)).as(type).isFalse();
         }
-        assertThat(FormContentTypeFilter.isFormSubmittable(null)).isFalse();
+        assertThat(CrossSiteWriteFilter.isFormSubmittable(null)).isFalse();
     }
 
     @Test
@@ -2426,6 +2555,20 @@ class SecurityFiltersTest {
                         assertThat(authenticationFor(filter, header)).as(header).isEmpty();
                     }
                 });
+    }
+
+    /** The filter's status for one request: 200 means it passed the request on. */
+    private static int crossSiteFilterStatus(String method, String secFetchSite, String contentType) throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest(method, "/api/holds/x/confirm");
+        if (secFetchSite != null) {
+            request.addHeader("Sec-Fetch-Site", secFetchSite);
+        }
+        request.setContentType(contentType);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+        new CrossSiteWriteFilter().doFilter(request, response, chain);
+        assertThat(chain.getRequest() != null).isEqualTo(response.getStatus() == 200);
+        return response.getStatus();
     }
 
     private static Optional<Authentication> authenticationFor(AgentTokenFilter filter, String authorization)
@@ -2544,7 +2687,7 @@ final class BearerRejectFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         if (isBearer(request.getHeader(HttpHeaders.AUTHORIZATION))) {
-            Problems.write(response, Problems.plain(HttpStatus.UNAUTHORIZED));
+            Problems.write(request, response, Problems.plain(HttpStatus.UNAUTHORIZED));
             return;
         }
         chain.doFilter(request, response);
@@ -2561,7 +2704,7 @@ final class BearerRejectFilter extends OncePerRequestFilter {
 }
 ```
 
-Create `src/main/java/io/github/markusluisflores/frontrow/security/FormContentTypeFilter.java`:
+Create `src/main/java/io/github/markusluisflores/frontrow/security/CrossSiteWriteFilter.java`:
 
 ```java
 package io.github.markusluisflores.frontrow.security;
@@ -2579,12 +2722,23 @@ import org.springframework.http.MediaType;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * The second CSRF layer on /api/** (plan 4A decision 6). A cross-site HTML form can send only these three content
- * types without a CORS preflight, and no CORS is configured, so a preflight fails. Refusing them on unsafe methods means
- * no cross-site form reaches a write endpoint, confirm included, whatever credentials a browser might attach. The
- * first layer is that no 401 carries a Basic challenge, so a browser never caches the credentials.
+ * The second and third CSRF layers on /api/** (plan 4A decision 6). The first is that no 401 carries a Basic
+ * challenge, so a browser never prompts for the credentials and never caches them. On an unsafe method, this filter
+ * then refuses:
+ *
+ * <ul>
+ *   <li>with 403, a Sec-Fetch-Site of cross-site or same-site. That catches what carries no form type at all: a
+ *       no-cors fetch or a sendBeacon sends a bodyless POST with no Content-Type, and the browser attaches any cached
+ *       credentials. same-origin, none and an absent header pass; curl and other non-browser clients send none;
+ *   <li>with 415, the three content types a cross-site HTML form can send without a CORS preflight, and an unparseable
+ *       one. No CORS is configured, so a preflight fails.
+ * </ul>
+ *
+ * <p>A browser that sends no Fetch Metadata relies on the first layer alone against a request with no form type.
  */
-final class FormContentTypeFilter extends OncePerRequestFilter {
+final class CrossSiteWriteFilter extends OncePerRequestFilter {
+
+    private static final String SEC_FETCH_SITE = "Sec-Fetch-Site";
 
     private static final Set<String> SAFE_METHODS = Set.of("GET", "HEAD", "OPTIONS", "TRACE");
 
@@ -2594,11 +2748,26 @@ final class FormContentTypeFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        if (!SAFE_METHODS.contains(request.getMethod()) && isFormSubmittable(request.getContentType())) {
-            Problems.write(response, Problems.plain(HttpStatus.UNSUPPORTED_MEDIA_TYPE));
-            return;
+        if (!SAFE_METHODS.contains(request.getMethod())) {
+            if (isCrossSite(request.getHeader(SEC_FETCH_SITE))) {
+                Problems.write(request, response, Problems.plain(HttpStatus.FORBIDDEN));
+                return;
+            }
+            if (isFormSubmittable(request.getContentType())) {
+                Problems.write(request, response, Problems.plain(HttpStatus.UNSUPPORTED_MEDIA_TYPE));
+                return;
+            }
         }
         chain.doFilter(request, response);
+    }
+
+    /** The two Fetch Metadata values that mean another site started the request; matched case-insensitively. */
+    static boolean isCrossSite(String secFetchSite) {
+        if (secFetchSite == null) {
+            return false;
+        }
+        String value = secFetchSite.strip();
+        return value.equalsIgnoreCase("cross-site") || value.equalsIgnoreCase("same-site");
     }
 
     static boolean isFormSubmittable(String contentType) {
@@ -2642,9 +2811,11 @@ import org.springframework.security.web.authentication.www.BasicAuthenticationFi
  * only; everything else falls to a last chain with no matcher, which opens four anonymous paths and denies the rest.
  * Without that last chain, a path matching neither of the first two would be served with no security at all.
  *
- * <p>All three are stateless and keep Spring's CSRF token off: nothing here uses a session or a cookie. What makes
- * that safe for Basic is plan 4A decision 6: no 401 carries a Basic challenge, so a browser never caches the
- * credentials, and form-submittable content types are refused on unsafe /api/** methods.
+ * <p>All three are stateless and keep Spring's CSRF token off: nothing here uses a session or a cookie. Plan 4A
+ * decision 6 is what stands in for it on /api/**: no 401 carries a Basic challenge, so a browser never caches the
+ * credentials; and CrossSiteWriteFilter refuses an unsafe method that a browser's Fetch Metadata marks as sent from
+ * another site, and any form-submittable content type. A browser that sends no Fetch Metadata relies on the first
+ * layer alone against a request with no form type. No chain has a logout endpoint: there is no session to end.
  */
 @Configuration(proxyBeanMethods = false)
 public class SecurityConfig {
@@ -2680,7 +2851,7 @@ public class SecurityConfig {
                         .denyAll())
                 .httpBasic(basic -> basic.authenticationEntryPoint(unauthorized()))
                 .addFilterBefore(new BearerRejectFilter(), BasicAuthenticationFilter.class)
-                .addFilterBefore(new FormContentTypeFilter(), BasicAuthenticationFilter.class);
+                .addFilterBefore(new CrossSiteWriteFilter(), BasicAuthenticationFilter.class);
         return stateless(http).build();
     }
 
@@ -2707,6 +2878,7 @@ public class SecurityConfig {
 
     private static HttpSecurity stateless(HttpSecurity http) throws Exception {
         return http.csrf(csrf -> csrf.disable())
+                .logout(logout -> logout.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .requestCache(cache -> cache.disable())
                 .exceptionHandling(
@@ -2715,11 +2887,12 @@ public class SecurityConfig {
 
     /** 401 with no WWW-Authenticate challenge (plan 4A decision 6), and a Problem Details body. */
     static AuthenticationEntryPoint unauthorized() {
-        return (request, response, failure) -> Problems.write(response, Problems.plain(HttpStatus.UNAUTHORIZED));
+        return (request, response, failure) ->
+                Problems.write(request, response, Problems.plain(HttpStatus.UNAUTHORIZED));
     }
 
     static AccessDeniedHandler forbidden() {
-        return (request, response, failure) -> Problems.write(response, Problems.plain(HttpStatus.FORBIDDEN));
+        return (request, response, failure) -> Problems.write(request, response, Problems.plain(HttpStatus.FORBIDDEN));
     }
 }
 ```
@@ -2751,16 +2924,18 @@ frontrow:
 ./mvnw spotless:apply test -Dtest='SecurityChainsTest,SecurityFiltersTest,PrincipalPropagationSpikeTest'
 ```
 
-Expected: PASS, `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SUCCESS`.
+Expected: PASS, `Tests run: 19, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SUCCESS`.
 
-- [ ] **Step 5: Mutation checks, each restored afterwards.** Each claim below is Mandatory-tier, so check that its test can fail. Make one change in `SecurityConfig.java`, re-run `SecurityChainsTest`, check the named test fails, and restore. The authoring build ran all four and got these results:
+- [ ] **Step 5: Mutation checks, each restored afterwards.** Each claim below is Mandatory-tier, so check that its test can fail. Make one change, re-run `SecurityChainsTest`, check the named tests fail, and restore. The authoring build ran all six and got these results:
 
-  | Change | Fails |
-  |---|---|
-  | Delete `.addFilterBefore(new BearerRejectFilter(), BasicAuthenticationFilter.class)` | `aBearerTokenIsRefusedOnAnonymousAndAuthenticatedApiEndpointsAlike`. Only its anonymous endpoint shows the gap: on an authenticated endpoint, an ignored bearer falls to 401 anyway, which is why spec §8 asks for both |
-  | Replace the catch-all's four paths with `"/**"` | `theCatchAllOpensOnlyItsAnonymousPaths` |
-  | Replace `.httpBasic(basic -> basic.authenticationEntryPoint(unauthorized()))` with `.httpBasic(basic -> {})` | `noUnauthorizedResponseCarriesABasicChallenge` |
-  | Delete `.addFilterBefore(new FormContentTypeFilter(), BasicAuthenticationFilter.class)` | `aFormSubmittableContentTypeIsRefusedOnUnsafeMethods` |
+  | File | Change | Fails |
+  |---|---|---|
+  | `SecurityConfig.java` | Delete `.addFilterBefore(new BearerRejectFilter(), BasicAuthenticationFilter.class)` | `aBearerTokenIsRefusedOnAnonymousAndAuthenticatedApiEndpointsAlike`. Only its anonymous endpoint shows the gap: on an authenticated endpoint, an ignored bearer falls to 401 anyway, which is why spec §8 asks for both |
+  | `SecurityConfig.java` | Replace the catch-all's four paths with `"/**"` | `theCatchAllOpensOnlyItsAnonymousPaths`, and `noUnauthorizedResponseCarriesABasicChallenge`, whose `/nowhere` request now passes security |
+  | `SecurityConfig.java` | Replace `.httpBasic(basic -> basic.authenticationEntryPoint(unauthorized()))` with `.httpBasic(basic -> {})` | `noUnauthorizedResponseCarriesABasicChallenge` |
+  | `SecurityConfig.java` | Delete `.addFilterBefore(new CrossSiteWriteFilter(), BasicAuthenticationFilter.class)` | `aFormSubmittableContentTypeIsRefusedOnUnsafeMethods` and `aCrossSiteWriteIsRefusedEvenWithNoBody` |
+  | `SecurityConfig.java` | Delete `.logout(logout -> logout.disable())` | `theCatchAllOpensOnlyItsAnonymousPaths`: `/logout` no longer gets 401 |
+  | `CrossSiteWriteFilter.java` | Replace `isCrossSite(request.getHeader(SEC_FETCH_SITE))` with `isCrossSite(null)` | `aCrossSiteWriteIsRefusedEvenWithNoBody`, and only that: its bodyless request carries no form type, so nothing else refuses it |
 
 - [ ] **Step 6: Record what was built in ADR-002**
 
@@ -2818,12 +2993,12 @@ Replace it with:
 ./mvnw spotless:apply verify
 ```
 
-Expected: `Tests run: 237, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 241, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add docs/adr/ADR-002-agents-hold-humans-buy.md pom.xml src/main/java/io/github/markusluisflores/frontrow/security/AgentTokenFilter.java src/main/java/io/github/markusluisflores/frontrow/security/BearerRejectFilter.java src/main/java/io/github/markusluisflores/frontrow/security/FormContentTypeFilter.java src/main/java/io/github/markusluisflores/frontrow/security/SecurityConfig.java src/main/resources/application.yml src/test/java/io/github/markusluisflores/frontrow/mcp/PrincipalPropagationSpikeTest.java src/test/java/io/github/markusluisflores/frontrow/security/SecurityChainsTest.java src/test/java/io/github/markusluisflores/frontrow/security/SecurityFiltersTest.java
+git add docs/adr/ADR-002-agents-hold-humans-buy.md pom.xml src/main/java/io/github/markusluisflores/frontrow/security/AgentTokenFilter.java src/main/java/io/github/markusluisflores/frontrow/security/BearerRejectFilter.java src/main/java/io/github/markusluisflores/frontrow/security/CrossSiteWriteFilter.java src/main/java/io/github/markusluisflores/frontrow/security/SecurityConfig.java src/main/resources/application.yml src/test/java/io/github/markusluisflores/frontrow/mcp/PrincipalPropagationSpikeTest.java src/test/java/io/github/markusluisflores/frontrow/security/SecurityChainsTest.java src/test/java/io/github/markusluisflores/frontrow/security/SecurityFiltersTest.java
 git commit -m "feat(security): add the api, mcp and catch-all security chains"
 ```
 
@@ -3268,7 +3443,7 @@ Expected: PASS, `Tests run: 11, Failures: 0, Errors: 0, Skipped: 0` and `BUILD S
 ./mvnw spotless:apply verify
 ```
 
-Expected: `Tests run: 248, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 252, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 6: Commit**
 
@@ -3439,7 +3614,7 @@ Expected: PASS, `Tests run: 4, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SU
 ./mvnw spotless:apply verify
 ```
 
-Expected: `Tests run: 252, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 256, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 5: Commit**
 
@@ -3496,7 +3671,7 @@ and 24-hour key purge (`ExpirySweepService`, scheduled by `config/SweepSchedule`
 three security chains (`security/SecurityConfig`), hashed demo credentials, Problem Details errors and a
 16 KiB request-body bound (`rest/`), and four REST endpoints over those services: hold, release,
 confirm and the event PATCH. No read endpoint, no event creation and no MCP tool exists yet.**
-252 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
+256 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
 `uq_claimed_seat`. Plans 4B (the read services and GET endpoints, event creation, OpenAPI) and 5 (MCP)
 remain.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
@@ -3562,7 +3737,7 @@ Replace it with:
 ./mvnw clean verify
 ```
 
-Expected: `Tests run: 252, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 256, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 ```bash
 grep -rlniE "for (no key )?update|for (key )?share|pg_[a-z_]*advisory|@Lock\b|LockModeType|PESSIMISTIC|skip locked|nowait|lock table" src/main/java/
@@ -3598,6 +3773,7 @@ Expected: the commit-msg hook accepts the subject, and gitleaks reports `no leak
 | §3: everything outside the two chains closed, except `/swagger-ui/**`, `/v3/api-docs/**`, `/error` and `/actuator/health`; no other actuator endpoint | 4 |
 | §3: no tool parameter carries identity; the owner comes from the principal | 5 |
 | §6: an agent token cannot reach the purchase endpoint at all | 4 |
+| §6, the threat model (only a human can buy): a hostile page can't buy with a browser's credentials, within decision 6's stated limit for a browser that sends no Fetch Metadata | 4 |
 | §6: hold, release, confirm and `PATCH` endpoints, with their roles | 4, 5 |
 | §6: `Idempotency-Key` header required on the REST hold | 5 |
 | §6: another owner's hold answers `not_found` to release and confirm | 5 |
@@ -3629,23 +3805,23 @@ Expected: the commit-msg hook accepts the subject, and gitleaks reports `no leak
 
 ## How this plan was checked: the replay
 
-**The scratch chain.** This plan's code was written and built first, as seven commits off `main` (`683a308`):
+**The scratch chain.** This plan's code was written and built first, as seven commits off `main` (`683a308`), rebuilt after the round 1 review:
 - `0e672b8`: transaction guard and PATCH bounds;
-- `586792e`: credentials;
-- `56d0ead`: Problem Details and the body bound;
-- `862de58`: chains;
-- `55909a8`: endpoints;
-- `67fdc68`: bounds over HTTP;
-- `6e6f028`: `CLAUDE.md`.
+- `a9441d9`: credentials;
+- `5fc35c0`: Problem Details and the body bound;
+- `c0f074f`: chains;
+- `76c9f13`: endpoints;
+- `c99338b`: bounds over HTTP;
+- `23e2d11`: `CLAUDE.md`.
 
 Every code block above was generated from those commits.
 
-**The replay** (2026-10-20). A harness read *this document*, not the commits. On a fresh worktree of `main`, it applied every code block and ran every `bash` command, in order.
+**The replay** (2026-10-20, rerun after the round 1 review). A harness read *this document*, not the commits. On a fresh worktree of `main`, it applied every code block and ran every `bash` command, in order.
 - **Exit codes:** a command whose "Expected:" line says FAIL had to exit non-zero, and every other command had to exit zero.
 - **Output:** every backticked fragment in an "Expected:" line had to appear in the command's output.
 - **Commits:** after each commit command, the commit's tree had to be identical to its scratch commit's tree.
 
-**Result: 29 commands checked, 0 failures; all seven commit trees identical to the scratch chain.** The red steps of Tasks 1–5 failed as stated, and every green step, verify and commit passed as stated. The test-run counts at each task's verify were 201, 210, 225, 237, 248, 252 and 252 (clean).
+**Result: 29 commands checked, 0 failures; all seven commit trees identical to the scratch chain.** The red steps of Tasks 1–5 failed as stated, and every green step, verify and commit passed as stated. The test-run counts at each task's verify were 201, 210, 226, 241, 252, 256 and 256 (clean).
 
 **What the replay does not check:**
 - **The mutation steps** (Task 1 Step 5, Task 4 Step 5, Task 6 Step 3) are prose. The authoring build ran each one, and the plan states its result.
