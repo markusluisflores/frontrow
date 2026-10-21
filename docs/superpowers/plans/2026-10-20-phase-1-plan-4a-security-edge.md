@@ -77,7 +77,7 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
    - **Each token's config entry names a username.** Startup fails if that user is missing or lacks `BUYER` (spec §3: tokens are issued only to `BUYER` users).
 4. **Every service entry point calls `TransactionBoundary.requireOwnTransaction()` as its first statement**, and keeps `REQUIRED` propagation with `READ_COMMITTED` (Markus chose this after the correction below). It throws `IllegalTransactionStateException` if the transaction it runs in was joined rather than started, so an outer transaction fails loudly as a 500, never as a silent loss of isolation (thread 4296540451).
    - **`Propagation.NEVER` is rejected, with evidence.** It was the thread's suggestion and Markus's first choice, and it is wrong about Spring: `NEVER` runs the method *with no transaction at all*. The authoring build tried it: all 11 `EventPatchServiceTest` tests broke. `LockingGateway` is `MANDATORY`, so its calls threw before any lock was taken; the lock-timeout test's PATCH never blocked, and no `READ_COMMITTED` was ever applied. Spring has no propagation for "start one, and fail if one exists".
-   - **What proves it.** `ServiceTransactionBoundaryTest` calls all six entry points inside an outer transaction. Its reflection check fails the build if a public service method isn't covered. With the guard on one service only, the other services' calls joined the outer transaction silently, which is the thread's bug shown live.
+   - **What proves it.** The check is a chain: scan, list, boundary test. `TransactionIsolationTest#theListIsEveryServiceInThePackage` scans `service/` for `@Service` classes, with no application context, and fails unless they equal its hand-written `SERVICES` list. `ServiceTransactionBoundaryTest` calls all six entry points of the listed services inside an outer transaction, and its reflection check fails the build if a listed service's public method isn't covered. So a new service fails the build until it is listed and its entry points are covered. With the guard on one service only, the other services' calls joined the outer transaction silently, which is the thread's bug shown live.
    - **Rejected: a rule plus an architecture test that no adapter is `@Transactional`.** A `TransactionTemplate`, or a service calling a service, slips past it.
    - **At merge,** the reply on thread 4296540451 corrects its `NEVER` suggestion, so the next reader doesn't repeat it.
 5. **Demo credentials are hashes only** (Markus). The committed `application.yml` defines no user and no token. Startup fails without them, by design: a Basic chain with no users is a misconfiguration.
@@ -89,7 +89,7 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
    - **Fetch Metadata.** An unsafe method on `/api/**` (anything but `GET`, `HEAD`, `OPTIONS` and `TRACE`) whose `Sec-Fetch-Site` is `cross-site` or `same-site`, in any case, is refused with 403. This is the layer that catches the bodyless request. `same-origin`, `none` (a user-initiated navigation) and an absent header pass, because `curl` and other non-browser clients send none.
    - **Form types.** Unsafe methods on `/api/**` refuse form-submittable content types (`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`) with 415. Those are the only types a cross-site form can send without a CORS preflight, and no CORS is configured, so a preflight fails. An unparseable `Content-Type` is refused too.
 
-   Both refusals live in one filter, `security/CrossSiteWriteFilter`, ahead of Basic authentication. **A browser that sends no Fetch Metadata relies on the first layer alone** against a request with no form type, such as a bodyless `no-cors` `fetch` or a `sendBeacon`. If such a browser has cached the credentials by some other route, that request gets through.
+   Both refusals live in one filter, `security/CrossSiteWriteFilter`, ahead of Basic authentication. **A browser that sends no Fetch Metadata relies on the first layer alone** against a request with no form type, such as a bodyless `no-cors` `fetch` or a `sendBeacon`. That includes any browser reaching the app over plain HTTP on a host other than `localhost`: browsers send Fetch Metadata only to potentially trustworthy origins (HTTPS, or `localhost`). Phase 1 runs on `localhost` and Phase 2 is meant for HTTPS, so both get the second layer. If such a browser has cached the credentials by some other route, that request gets through.
 
    **CodeQL.** The plan expects CodeQL to raise alert #1's class of finding (`java/spring-disabled-csrf-protection`) again on the new chains. These layers are an argument to present to Markus for dismissing it, not a certainty that the finding is false: the gap just named is real. Dismissing it stays his call.
 7. **Errors** (`rest/Problems`, `rest/RestExceptionHandler`):
@@ -116,9 +116,10 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
    - **401, 403, 413 and 415 are Problem Details bodies with no `code`.** Spec §6's codes are domain codes.
 8. **Bounds.**
    - **Bodies:** `rest/RequestBodyLimitFilter` is registered at `Ordered.HIGHEST_PRECEDENCE`, ahead of every security chain, on every path. It refuses a declared `Content-Length` over **16 KiB** with 413 before reading. A chunked body is counted as it is read, through `getInputStream()` or `getReader()`, and the read that crosses the limit fails. The count lives on the request, so asking for the stream again can't reset it. That bounds what `HoldCommand` copies (the handoff's "bound request size" input).
+   - **Boot's `FormContentFilter` is off** (`spring.mvc.formcontent.filter.enabled: false`, security review of PR #28). It reads a form body on `PUT`, `PATCH` and `DELETE` before Spring Security runs, so a chunked form body over the bound became a 500 with an ERROR stack trace, for anonymous callers, on any path. No endpoint takes a form body. With it off, Task 6 shows that request gets the security answer instead: 415 on `/api/**`, 401 elsewhere.
    - **Headers:** Tomcat's default 8 KiB header limit bounds `Idempotency-Key` before the service's 200-character check. Task 6 proves both bounds over a real socket.
    - **PATCH instants:** `EventPatchService` refuses an instant outside `0001-01-01T00:00:00Z` … `9999-12-31T23:59:59.999999Z` as `invalid_request` with `parameter: sales_window`, before the instant reaches any SQL (PR #22 thread 4305094277). That is what both `timestamptz` and a four-digit ISO 8601 year hold. It lives in the service, not the adapter, because the PATCH is the one write path that takes caller-supplied instants, whichever adapter calls. A test stores the widest window and reads it back exactly.
-9. **The wire is snake_case.** `spring.jackson.property-naming-strategy: SNAKE_CASE` matches MCP's parameter names and the error details. `HoldService.STORED_FORM` is deliberately independent of the application mapper (plan 3A decision 6), so replay of stored rows is unaffected. The MCP server renders its successful responses with its own mapper, and the spike test still passes. **A transport error on `/mcp` is not the MCP server's, though** (security review of PR #28): malformed JSON, or a body over 16 KiB tripping the body filter, is rendered by the application's mapper, and that body includes a `stack_trace`. 4A serves no tool and leaves this to plan 5, as a requirement in the follow-ups below.
+9. **The wire is snake_case.** `spring.jackson.property-naming-strategy: SNAKE_CASE` matches MCP's parameter names and the error details. `HoldService.STORED_FORM` is deliberately independent of the application mapper (plan 3A decision 6), so replay of stored rows is unaffected. The MCP server renders its successful responses with its own mapper, and the spike test still passes. **A transport error on `/mcp` is not the MCP server's, though** (security review of PR #28): malformed JSON, or a chunked body over 16 KiB that the body filter refuses as it is read, is rendered by the application's mapper (a declared length over 16 KiB is refused by the body filter itself, with a clean 413), and that body includes a `stack_trace`. 4A serves no tool and leaves this to plan 5, as a requirement in the follow-ups below.
 10. **The chains** (`security/SecurityConfig`):
 
     | Order | Matcher | Takes | Notes |
@@ -130,7 +131,7 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
     - **Stateless:** every chain is stateless, with no request cache and no logout endpoint, and answers with the Problem Details 401 and 403. There is no session to end, and Spring's default `/logout` would otherwise answer anonymously on every chain.
     - **Users:** a `UserDetailsService` bean built from the credentials replaces Boot's generated `user`. Without it, that user would sit in the parent authentication manager and authenticate on `/api/**` as a fallback.
     - **Actuator:** `spring-boot-starter-actuator` is added, with only `health` exposed, so the catch-all's one actuator path is real and tested.
-    - **ADR-002:** its stale "Plan 4 must add a catch-all chain" line becomes a statement of what was built, and its header says what is implemented.
+    - **ADR-002:** its stale "Plan 4 must add a catch-all chain" line becomes a statement of what was built, and its header says what is implemented. Its "at worst tie up seats" consequence gains decision 3's qualification, and its plan-numbering note names the seven-plan Phase 1.
 11. **Plan 1's spike test moves onto the real `/mcp` chain.** Its own chain would collide with the new one. Its tools and its transport provider stay, its token becomes `TestCredentials.token("alice")`, and ADR-004's two mechanisms are re-proved through the production chain.
 12. **SpotBugs: no new exclusion.** Every record that holds a collection copies it with `List.copyOf` or `Set.copyOf`. SpotBugs recognises those copies and not `Collections.unmodifiableList`, as the authoring build found.
 
@@ -143,7 +144,7 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
 - the post-4A spec sync: decisions 3 to 10 fill gaps rev 2.6.4 leaves open, on its own docs branch;
 - ADR-002's "⚠️ … unproven: the scaffold spike must show how the principal propagates" bullet, which ADR-004 has since answered;
 - the README statements decisions 2 and 6 require (plan 5);
-- **a plan 5 requirement: MCP error bodies carry no stack trace** (decision 9). Plan 5 adds a test that sends malformed JSON and an oversized body to `/mcp` with a valid token, and checks that neither response carries a `stack_trace`;
+- **a plan 5 requirement: MCP error bodies carry no stack trace** (decision 9). Plan 5 adds a test that sends malformed JSON and an oversized **chunked** body (a declared length gets the body filter's clean 413) to `/mcp` with a valid token, and checks that neither response carries a `stack_trace`;
 - **two risks in Markus's decisions, for plan 5's README and threat model to state** (security review of PR #28; reported, not re-decided):
   - decision 3's shared owner means a compromised agent can also release the human's own holds, fill the human's hold-group cap and replay the human's idempotency keys. That is wider than spec §6's one-line threat model. Confirm is tied only to a hold id, so the human confirms whatever that hold contains;
   - decision 2 means one compromised organiser account can cancel every event.
@@ -190,7 +191,7 @@ Decisions 1, 2, 3 and 5 are Markus's (brainstorm, 2026-10-20). Decision 4 replac
 
 **Interfaces:**
 - Consumes: the five services plans 3A and 3B built, and `TransactionIsolationTest.SERVICES`.
-- Produces: `TransactionBoundary.requireOwnTransaction()`, package-private in `service`. `EventPatchService.EARLIEST` and `LATEST` are package-private `Instant`s. `TransactionIsolationTest.SERVICES` becomes package-private, so `ServiceTransactionBoundaryTest` can read it. No public signature changes.
+- Produces: `TransactionBoundary.requireOwnTransaction()`, package-private in `service`. `EventPatchService.EARLIEST` and `LATEST` are package-private `Instant`s. `TransactionIsolationTest.SERVICES` becomes package-private, so `ServiceTransactionBoundaryTest` can read it, and a new test checks it against a scan of the package. No public signature changes.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -343,6 +344,28 @@ class ServiceTransactionBoundaryTest {
 In `src/test/java/io/github/markusluisflores/frontrow/service/TransactionIsolationTest.java`, find:
 
 ```java
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import org.springframework.transaction.annotation.Isolation;
+```
+
+Replace it with:
+
+```java
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
+import org.springframework.core.type.filter.AnnotationTypeFilter;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+```
+
+In `src/test/java/io/github/markusluisflores/frontrow/service/TransactionIsolationTest.java`, find:
+
+```java
  * Postgres defaults to READ COMMITTED, so a forgotten setting fails no behavioural test — which is why spec §5's
  * requirement is checked here instead. Plan 3B appends its services to the list.
  */
@@ -357,12 +380,38 @@ Replace it with:
 ```java
  * Postgres defaults to READ COMMITTED, so a forgotten setting fails no behavioural test — which is why spec §5's
  * requirement is checked here instead. Plan 3B appends its services to the list. Joining a caller's transaction
- * would defeat the setting, so ServiceTransactionBoundaryTest proves each listed method refuses one (plan 4A).
+ * would defeat the setting, so ServiceTransactionBoundaryTest proves each listed method refuses one (plan 4A). The list
+ * itself is checked against a scan of this package, so a new service that nobody lists fails the build.
  */
 class TransactionIsolationTest {
 
     static final List<Class<?>> SERVICES = List.of(
             HoldService.class,
+```
+
+In `src/test/java/io/github/markusluisflores/frontrow/service/TransactionIsolationTest.java`, find:
+
+```java
+            ExpirySweepService.class);
+```
+
+Replace it with:
+
+```java
+            ExpirySweepService.class);
+
+    @Test
+    void theListIsEveryServiceInThePackage() {
+        ClassPathScanningCandidateComponentProvider scanner = new ClassPathScanningCandidateComponentProvider(false);
+        scanner.addIncludeFilter(new AnnotationTypeFilter(Service.class));
+        Set<String> scanned = scanner.findCandidateComponents(TransactionIsolationTest.class.getPackageName()).stream()
+                .map(BeanDefinition::getBeanClassName)
+                .collect(Collectors.toSet());
+
+        assertThat(scanned)
+                .isNotEmpty()
+                .isEqualTo(SERVICES.stream().map(Class::getName).collect(Collectors.toSet()));
+    }
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -545,9 +594,9 @@ final class TransactionBoundary {
 ./mvnw spotless:apply test -Dtest='TransactionIsolationTest,ServiceTransactionBoundaryTest,EventPatchServiceTest'
 ```
 
-Expected: PASS, `Tests run: 14, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SUCCESS`.
+Expected: PASS, `Tests run: 15, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SUCCESS`.
 
-- [ ] **Step 5: Mutation check, then restore.** Delete the `TransactionBoundary.requireOwnTransaction();` line from `ReleaseService#release` and re-run Step 4's command. Expected: `everyEntryPointRefusesAnOuterTransaction` fails at `[ReleaseService#release]`, with `DomainException: not_found` where `IllegalTransactionStateException` was expected. Without the guard, release joined the outer transaction and ran, and answered for the made-up group instead of refusing. Restore the line. The authoring build ran this mutation and got that result.
+- [ ] **Step 5: Mutation checks, each restored afterwards.** First, in `TransactionIsolationTest.SERVICES`, replace `ExpirySweepService.class` with a second `ConfirmService.class` and re-run Step 4's command. Expected: `theListIsEveryServiceInThePackage` fails, because the scan finds a service the list no longer names. Then delete the `TransactionBoundary.requireOwnTransaction();` line from `ReleaseService#release` and re-run Step 4's command. Expected: `everyEntryPointRefusesAnOuterTransaction` fails at `[ReleaseService#release]`, with `DomainException: not_found` where `IllegalTransactionStateException` was expected. Without the guard, release joined the outer transaction and ran, and answered for the made-up group instead of refusing. Restore the line. The authoring build ran both mutations and got these results.
 
 - [ ] **Step 6: Run the whole build**
 
@@ -555,7 +604,7 @@ Expected: PASS, `Tests run: 14, Failures: 0, Errors: 0, Skipped: 0` and `BUILD S
 ./mvnw spotless:apply verify
 ```
 
-Expected: `Tests run: 201, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 202, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 7: Commit**
 
@@ -1239,7 +1288,7 @@ It printed the raw passwords and token to stderr; this command discards them. Ru
 ./mvnw spotless:apply verify
 ```
 
-Expected: `Tests run: 210, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 211, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 7: Commit**
 
@@ -1397,6 +1446,7 @@ import io.github.markusluisflores.frontrow.error.DomainException;
 import io.github.markusluisflores.frontrow.error.ErrorCode;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
+import java.io.UnsupportedEncodingException;
 import java.io.Writer;
 import java.util.List;
 import java.util.Map;
@@ -1580,6 +1630,21 @@ class RestExceptionHandlerTest {
     }
 
     @Test
+    void anUnknownCharsetIsTheServletContractsCheckedException() {
+        MockHttpServletRequest unknown = new MockHttpServletRequest("POST", "/t/body");
+        unknown.setContent(new byte[1]);
+        unknown.setCharacterEncoding("no-such-charset");
+
+        assertThatThrownBy(() -> new RequestBodyLimitFilter()
+                        .doFilter(
+                                unknown,
+                                new MockHttpServletResponse(),
+                                (request, response) -> ((HttpServletRequest) request).getReader()))
+                .isInstanceOf(UnsupportedEncodingException.class)
+                .hasMessage("no-such-charset");
+    }
+
+    @Test
     void wireNamesAreSnakeCase() {
         assertThat(RestExceptionHandler.snakeCase("holdGroupId")).isEqualTo("hold_group_id");
         assertThat(RestExceptionHandler.snakeCase("eventId")).isEqualTo("event_id");
@@ -1739,8 +1804,11 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.UnsupportedEncodingException;
 import java.nio.charset.Charset;
+import java.nio.charset.IllegalCharsetNameException;
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.UnsupportedCharsetException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -1792,7 +1860,13 @@ public class RequestBodyLimitFilter extends OncePerRequestFilter {
         @Override
         public BufferedReader getReader() throws IOException {
             String encoding = getCharacterEncoding();
-            Charset charset = encoding == null ? StandardCharsets.UTF_8 : Charset.forName(encoding);
+            Charset charset;
+            try {
+                charset = encoding == null ? StandardCharsets.UTF_8 : Charset.forName(encoding);
+            } catch (IllegalCharsetNameException | UnsupportedCharsetException unknown) {
+                // The servlet contract: an encoding the JVM can't decode is a checked UnsupportedEncodingException.
+                throw new UnsupportedEncodingException(encoding);
+            }
             return new BufferedReader(new InputStreamReader(getInputStream(), charset));
         }
 
@@ -1996,9 +2070,16 @@ Replace it with:
 ```yaml
         type: SYNC
   jackson:
-    # The wire form matches MCP's parameter names and the error details (plan 4A decision 7). HoldService's stored
+    # The wire form matches MCP's parameter names and the error details (plan 4A decision 9). HoldService's stored
     # replay form uses its own mapper, so this does not reach rows stored before it.
     property-naming-strategy: SNAKE_CASE
+  mvc:
+    formcontent:
+      filter:
+        # Boot's FormContentFilter reads a form body on PUT, PATCH and DELETE before Spring Security runs, so a chunked
+        # form body over the 16 KiB bound became an anonymous 500 on any path (plan 4A decision 8). No endpoint takes a
+        # form body, so the filter is off.
+        enabled: false
   jpa:
 ```
 
@@ -2008,7 +2089,7 @@ Replace it with:
 ./mvnw spotless:apply test -Dtest='ProblemsTest,RestExceptionHandlerTest'
 ```
 
-Expected: PASS, `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SUCCESS`.
+Expected: PASS, `Tests run: 17, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 5: Run the whole build.** This is the first build with snake_case on the wire, and it must not break the MCP spike.
 
@@ -2016,7 +2097,7 @@ Expected: PASS, `Tests run: 16, Failures: 0, Errors: 0, Skipped: 0` and `BUILD S
 ./mvnw spotless:apply verify
 ```
 
-Expected: `Tests run: 226, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 228, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 6: Commit**
 
@@ -2734,7 +2815,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       one. No CORS is configured, so a preflight fails.
  * </ul>
  *
- * <p>A browser that sends no Fetch Metadata relies on the first layer alone against a request with no form type.
+ * <p>A browser that sends no Fetch Metadata relies on the first layer alone against a request with no form type. That
+ * includes every browser reaching the app over plain HTTP on a host other than localhost: browsers send Fetch Metadata
+ * only to potentially trustworthy origins (HTTPS, or localhost).
  */
 final class CrossSiteWriteFilter extends OncePerRequestFilter {
 
@@ -2814,8 +2897,9 @@ import org.springframework.security.web.authentication.www.BasicAuthenticationFi
  * <p>All three are stateless and keep Spring's CSRF token off: nothing here uses a session or a cookie. Plan 4A
  * decision 6 is what stands in for it on /api/**: no 401 carries a Basic challenge, so a browser never caches the
  * credentials; and CrossSiteWriteFilter refuses an unsafe method that a browser's Fetch Metadata marks as sent from
- * another site, and any form-submittable content type. A browser that sends no Fetch Metadata relies on the first
- * layer alone against a request with no form type. No chain has a logout endpoint: there is no session to end.
+ * another site, and any form-submittable content type. A browser that sends no Fetch Metadata, which includes any
+ * browser on plain HTTP to a host other than localhost, relies on the first layer alone against a request with no form
+ * type. No chain has a logout endpoint: there is no session to end.
  */
 @Configuration(proxyBeanMethods = false)
 public class SecurityConfig {
@@ -2964,12 +3048,32 @@ yet. The full design is in the spec, `docs/superpowers/specs/2026-09-17-frontrow
 In `docs/adr/ADR-002-agents-hold-humans-buy.md`, find:
 
 ````markdown
+* ✅ A fully compromised agent can at worst tie up seats until its holds expire,
+  within the per-owner caps. It cannot spend money.
+* ✅ The boundary is testable in both directions. Security tests must show a
+````
+
+Replace it with:
+
+````markdown
+* ✅ A fully compromised agent can at worst tie up seats until its holds expire,
+  within the per-owner caps. It cannot spend money. Because an agent shares its
+  human's owner (plan 4A decision 3), it can also release that human's holds and
+  fill their hold-group cap; it still cannot buy.
+* ✅ The boundary is testable in both directions. Security tests must show a
+````
+
+In `docs/adr/ADR-002-agents-hold-humans-buy.md`, find:
+
+````markdown
   matcher — is served with no security applied, silently: no test fails.
   Plan 4 must add a catch-all chain with no `securityMatcher` that is
   evaluated *last* — Spring tries chains in ascending order and stops at
   the first match, so this chain needs the largest order value,
   `@Order(Ordered.LOWEST_PRECEDENCE)` — with `anyRequest().denyAll()`, plus
   a test that hits an unmatched path and expects 401/403.
+
+*Plan numbering updated 2026-10-15 (PR #17) to the current six-plan Phase 1, after the 2026-10-02 re-plan and the 2026-10-14 split of Plan 3 into 3A and 3B; no decision changed.*
 ````
 
 Replace it with:
@@ -2985,6 +3089,8 @@ Replace it with:
   `SecurityChainsTest#theCatchAllOpensOnlyItsAnonymousPaths` hits unmatched
   paths, `/actuator/env` among them, and expects 401. Widening the chain to
   permit everything fails that test.
+
+*Plan numbering updated 2026-10-15 (PR #17) after the 2026-10-02 re-plan and the 2026-10-14 split of Plan 3 into 3A and 3B, and again by plan 4A's split of Plan 4 into 4A and 4B, to the current seven-plan Phase 1 (1, 2, 3A, 3B, 4A, 4B, 5); no decision changed.*
 ````
 
 - [ ] **Step 7: Run the whole build**
@@ -2993,7 +3099,7 @@ Replace it with:
 ./mvnw spotless:apply verify
 ```
 
-Expected: `Tests run: 241, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 243, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 8: Commit**
 
@@ -3443,7 +3549,7 @@ Expected: PASS, `Tests run: 11, Failures: 0, Errors: 0, Skipped: 0` and `BUILD S
 ./mvnw spotless:apply verify
 ```
 
-Expected: `Tests run: 252, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 254, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 6: Commit**
 
@@ -3465,7 +3571,7 @@ Expected: the commit-msg hook accepts the subject, and gitleaks reports `no leak
 - Consumes: `RequestBodyLimitFilter` (Task 3), the hold endpoint (Task 5), `TestCredentials` (Task 2).
 - Produces: nothing new.
 
-MockMvc never opens a socket. So it can't send a chunked body that declares no length, and it never applies Tomcat's header limit. This test starts the app on a random port and uses `java.net.http` over HTTP/1.1. **It passes on its first run,** because Task 3 built the filter. Step 3's mutation is what shows it can fail.
+MockMvc never opens a socket. So it can't send a chunked body that declares no length, and it never applies Tomcat's header limit. This test starts the app on a random port and uses `java.net.http` over HTTP/1.1. **It passes on its first run,** because Task 3 built the filter and turned Boot's `FormContentFilter` off. Step 3's mutations are what show it can fail.
 
 - [ ] **Step 1: Write the test**
 
@@ -3498,7 +3604,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * The request bounds over a real socket (plan 4A decision 8), where MockMvc cannot reach: a chunked body declares no
- * length, so only the counting stream can stop it; and Tomcat's own header limit bounds Idempotency-Key.
+ * length, so only the counting stream can stop it; and Tomcat's own header limit bounds Idempotency-Key. Boot's
+ * FormContentFilter is off, so nothing reads a form body before security answers.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Import(ServiceTestConfiguration.class)
@@ -3563,6 +3670,21 @@ class RequestBoundsOverHttpTest {
     }
 
     @Test
+    void anAnonymousChunkedFormBodyOverTheLimitIsRefusedNotA500() throws Exception {
+        // Boot's FormContentFilter would read this PUT body before Spring Security, hit the bound and answer 500.
+        byte[] form = ("a=" + "x".repeat(RequestBodyLimitFilter.MAX_BODY_BYTES)).getBytes(StandardCharsets.UTF_8);
+        for (String path : new String[] {"/api/events/1", "/nowhere"}) {
+            HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .PUT(HttpRequest.BodyPublishers.ofInputStream(() -> new ByteArrayInputStream(form)))
+                    .build();
+
+            int expected = path.startsWith("/api/") ? 415 : 401;
+            assertThat(send(request).statusCode()).as(path).isEqualTo(expected);
+        }
+    }
+
+    @Test
     void anOversizedIdempotencyKeyNeverReachesTheService() throws Exception {
         HttpRequest request = holdRequest("k".repeat(9 * 1024))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(paddedHold(0)))
@@ -3604,9 +3726,9 @@ class RequestBoundsOverHttpTest {
 ./mvnw spotless:apply test -Dtest='RequestBoundsOverHttpTest'
 ```
 
-Expected: PASS, `Tests run: 4, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SUCCESS`.
+Expected: PASS, `Tests run: 5, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SUCCESS`.
 
-- [ ] **Step 3: Mutation check, then restore.** In `RequestBodyLimitFilter`, replace `chain.doFilter(new LimitedRequest(request), response);` with `chain.doFilter(request, response);` and re-run Step 2. Expected: `aChunkedBodyOverTheLimitIsRefusedAsItIsRead` fails, and only that test: a declared length is still refused before the wrapper. Restore the line. This is the authoring build's result.
+- [ ] **Step 3: Mutation checks, each restored afterwards.** First, in `RequestBodyLimitFilter`, replace `chain.doFilter(new LimitedRequest(request), response);` with `chain.doFilter(request, response);` and re-run Step 2. Expected: `aChunkedBodyOverTheLimitIsRefusedAsItIsRead` fails, and only that test: a declared length is still refused before the wrapper. Restore the line. Then, in `application.yml`, set `spring.mvc.formcontent.filter.enabled` to `true` and re-run Step 2. Expected: `anAnonymousChunkedFormBodyOverTheLimitIsRefusedNotA500` fails, with 500 where 415 was expected on `/api/events/1`. Restore it. These are the authoring build's results.
 
 - [ ] **Step 4: Run the whole build**
 
@@ -3614,7 +3736,7 @@ Expected: PASS, `Tests run: 4, Failures: 0, Errors: 0, Skipped: 0` and `BUILD SU
 ./mvnw spotless:apply verify
 ```
 
-Expected: `Tests run: 256, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 259, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 - [ ] **Step 5: Commit**
 
@@ -3671,7 +3793,7 @@ and 24-hour key purge (`ExpirySweepService`, scheduled by `config/SweepSchedule`
 three security chains (`security/SecurityConfig`), hashed demo credentials, Problem Details errors and a
 16 KiB request-body bound (`rest/`), and four REST endpoints over those services: hold, release,
 confirm and the event PATCH. No read endpoint, no event creation and no MCP tool exists yet.**
-256 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
+259 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
 `uq_claimed_seat`. Plans 4B (the read services and GET endpoints, event creation, OpenAPI) and 5 (MCP)
 remain.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
@@ -3709,8 +3831,10 @@ Replace it with:
 - Every service entry point is `@Transactional(isolation = READ_COMMITTED)` and calls
   `TransactionBoundary.requireOwnTransaction()` as its first statement; no adapter is
   `@Transactional`. `Propagation.NEVER` is not the answer: it runs the method with no transaction
-  at all (plan 4A decision 4). `ServiceTransactionBoundaryTest` fails on a public service method it
-  doesn't cover.
+  at all (plan 4A decision 4). The check is a chain: `TransactionIsolationTest` scans `service/`
+  for `@Service` classes and fails unless they equal its `SERVICES` list, and
+  `ServiceTransactionBoundaryTest` fails on a public method of a listed service it doesn't cover.
+  So a new service fails the build until it is listed and its entry points are covered.
 - REST errors are RFC 9457 Problem Details from `rest/RestExceptionHandler`: a `DomainException`
   carries its `code`, and anything else is a generic 500 that echoes nothing.
 ````
@@ -3737,7 +3861,7 @@ Replace it with:
 ./mvnw clean verify
 ```
 
-Expected: `Tests run: 256, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
+Expected: `Tests run: 259, Failures: 0, Errors: 0, Skipped: 0`, `BugInstance size is 0` and `BUILD SUCCESS`.
 
 ```bash
 grep -rlniE "for (no key )?update|for (key )?share|pg_[a-z_]*advisory|@Lock\b|LockModeType|PESSIMISTIC|skip locked|nowait|lock table" src/main/java/
@@ -3805,23 +3929,23 @@ Expected: the commit-msg hook accepts the subject, and gitleaks reports `no leak
 
 ## How this plan was checked: the replay
 
-**The scratch chain.** This plan's code was written and built first, as seven commits off `main` (`683a308`), rebuilt after the round 1 review:
-- `0e672b8`: transaction guard and PATCH bounds;
-- `a9441d9`: credentials;
-- `5fc35c0`: Problem Details and the body bound;
-- `c0f074f`: chains;
-- `76c9f13`: endpoints;
-- `c99338b`: bounds over HTTP;
-- `23e2d11`: `CLAUDE.md`.
+**The scratch chain.** This plan's code was written and built first, as seven commits off `main` (`683a308`), rebuilt after the round 1 and round 2 reviews:
+- `31ee273`: transaction guard and PATCH bounds;
+- `f8c6596`: credentials;
+- `d9a517f`: Problem Details and the body bound;
+- `c7615dd`: chains;
+- `c10944e`: endpoints;
+- `4a09cd8`: bounds over HTTP;
+- `b06cee5`: `CLAUDE.md`.
 
 Every code block above was generated from those commits.
 
-**The replay** (2026-10-20, rerun after the round 1 review). A harness read *this document*, not the commits. On a fresh worktree of `main`, it applied every code block and ran every `bash` command, in order.
+**The replay** (2026-10-20, rerun after the round 2 review). A harness read *this document*, not the commits. On a fresh worktree of `main`, it applied every code block and ran every `bash` command, in order.
 - **Exit codes:** a command whose "Expected:" line says FAIL had to exit non-zero, and every other command had to exit zero.
 - **Output:** every backticked fragment in an "Expected:" line had to appear in the command's output.
 - **Commits:** after each commit command, the commit's tree had to be identical to its scratch commit's tree.
 
-**Result: 29 commands checked, 0 failures; all seven commit trees identical to the scratch chain.** The red steps of Tasks 1–5 failed as stated, and every green step, verify and commit passed as stated. The test-run counts at each task's verify were 201, 210, 226, 241, 252, 256 and 256 (clean).
+**Result: 29 commands checked, 0 failures; all seven commit trees identical to the scratch chain.** The red steps of Tasks 1–5 failed as stated, and every green step, verify and commit passed as stated. The test-run counts at each task's verify were 202, 211, 228, 243, 254, 259 and 259 (clean).
 
 **What the replay does not check:**
 - **The mutation steps** (Task 1 Step 5, Task 4 Step 5, Task 6 Step 3) are prose. The authoring build ran each one, and the plan states its result.
