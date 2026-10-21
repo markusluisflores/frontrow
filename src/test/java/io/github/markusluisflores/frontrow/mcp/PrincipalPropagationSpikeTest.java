@@ -3,6 +3,7 @@ package io.github.markusluisflores.frontrow.mcp;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.markusluisflores.frontrow.TestcontainersConfiguration;
+import io.github.markusluisflores.frontrow.support.TestCredentials;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
@@ -11,20 +12,13 @@ import io.modelcontextprotocol.json.jackson3.JacksonMcpJsonMapper;
 import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletException;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.security.Principal;
 import java.time.Duration;
-import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.server.common.autoconfigure.properties.McpServerStreamableHttpProperties;
@@ -36,31 +30,21 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.http.SessionCreationPolicy;
-import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
-import org.springframework.security.web.authentication.HttpStatusEntryPoint;
-import org.springframework.security.web.context.RequestAttributeSecurityContextRepository;
-import org.springframework.web.filter.OncePerRequestFilter;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Spike (spec §3): how does an authenticated principal reach an {@code @McpTool} method over Streamable HTTP?
  * Real bearer token, real HTTP, real MCP client. Mechanism A is SecurityContextHolder, mechanism B is
- * McpTransportContext populated by a contextExtractor.
+ * McpTransportContext populated by a contextExtractor. Since plan 4A the token passes the application's own /mcp chain
+ * (security/SecurityConfig), not a spike-only one.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Import({TestcontainersConfiguration.class, PrincipalPropagationSpikeTest.SpikeConfig.class})
 class PrincipalPropagationSpikeTest {
 
-    /** Generated per run: spec §12 allows no raw token in the repository, even a test one. */
-    static final String SPIKE_TOKEN = UUID.randomUUID().toString();
+    /** alice's agent token, generated per run: spec §12 allows no raw token in the repository, even a test one. */
+    static final String SPIKE_TOKEN = TestCredentials.token("alice");
 
     static final String SPIKE_USER = "alice";
     static final String PRINCIPAL_KEY = "frontrow.principal";
@@ -94,7 +78,7 @@ class PrincipalPropagationSpikeTest {
         assertThat(postPing(null).statusCode()).isEqualTo(401);
     }
 
-    /** Positive control: the spike's own bearer filter admits the token, so A/B results are about mechanism. */
+    /** Positive control: the /mcp chain admits the token, so A/B results are about mechanism. */
     @Test
     void authenticatedMcpRequestPassesTheSecurityChain() throws Exception {
         assertThat(postPing("Bearer " + SPIKE_TOKEN).statusCode()).isNotIn(401, 403);
@@ -137,18 +121,6 @@ class PrincipalPropagationSpikeTest {
             return new WhoAmITools();
         }
 
-        @Bean
-        SecurityFilterChain spikeMcpChain(HttpSecurity http) throws Exception {
-            http.securityMatcher("/mcp", "/mcp/**")
-                    .authorizeHttpRequests(auth -> auth.anyRequest().hasAuthority("AGENT"))
-                    .csrf(csrf -> csrf.disable())
-                    .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                    .exceptionHandling(
-                            ex -> ex.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
-                    .addFilterBefore(new SpikeBearerFilter(), AnonymousAuthenticationFilter.class);
-            return http.build();
-        }
-
         /** Replaces the auto-configured provider (it is @ConditionalOnMissingBean) to add mechanism B. */
         @Bean
         WebMvcStreamableServerTransportProvider spikeTransportProvider(
@@ -177,26 +149,6 @@ class PrincipalPropagationSpikeTest {
         public String whoAmIFromTransportContext(McpTransportContext context) {
             Object principal = context.get(PRINCIPAL_KEY);
             return principal == null ? ANONYMOUS : principal.toString();
-        }
-    }
-
-    /** Spike-only: one fixed token maps to one user with the AGENT authority. Plan 2 builds the real chain. */
-    static final class SpikeBearerFilter extends OncePerRequestFilter {
-
-        private final RequestAttributeSecurityContextRepository repository =
-                new RequestAttributeSecurityContextRepository();
-
-        @Override
-        protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
-                throws ServletException, IOException {
-            if (("Bearer " + SPIKE_TOKEN).equals(request.getHeader(HttpHeaders.AUTHORIZATION))) {
-                SecurityContext context = SecurityContextHolder.createEmptyContext();
-                context.setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
-                        SPIKE_USER, null, List.of(new SimpleGrantedAuthority("AGENT"))));
-                SecurityContextHolder.setContext(context);
-                repository.saveContext(context, request, response);
-            }
-            chain.doFilter(request, response);
         }
     }
 }

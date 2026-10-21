@@ -25,6 +25,13 @@ spring:
     properties:
       hibernate.jdbc.batch_size: 0
 
+management:
+  endpoints:
+    web:
+      exposure:
+        # Boot's default, stated: health is the one actuator endpoint, and the only one the catch-all chain opens.
+        include: health
+
 frontrow:
   hold-ttl: 10m
   max-active-hold-groups: 3

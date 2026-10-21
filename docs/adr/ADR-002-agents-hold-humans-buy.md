@@ -3,11 +3,10 @@
 **Date:** 2026-09-18
 **Status:** Accepted
 
-Not yet implemented. The REST and MCP adapters and the two credential chains this
-governs arrive in Phase 1 plans 4 and 5. Plans 1 and 2 built only what sits beneath
-them (plan 1's MCP spike aside), and plan 3A (hold creation) adds more beneath them. The full
-design is in the spec, `docs/superpowers/specs/2026-09-17-frontrow-design.md`
-§3 (*Caller identity*) and §6.
+Partly implemented. Phase 1 plan 4A built the two credential chains and the catch-all
+chain in `security/SecurityConfig.java`. The MCP tools arrive in plan 5, so `/mcp`
+authenticates agents but serves no tool yet. The full design is in the spec,
+`docs/superpowers/specs/2026-09-17-frontrow-design.md` §3 (*Caller identity*) and §6.
 
 ## Context and Problem Statement
 
@@ -73,7 +72,9 @@ The rejected options:
 ### Consequences
 
 * ✅ A fully compromised agent can at worst tie up seats until its holds expire,
-  within the per-owner caps. It cannot spend money.
+  within the per-owner caps. It cannot spend money. Because an agent shares its
+  human's owner (plan 4A decision 3), it can also release that human's holds and
+  fill their hold-group cap; it still cannot buy.
 * ✅ The boundary is testable in both directions. Security tests must show a
   bearer token rejected on `/api/**`, on both an anonymous and an authenticated
   endpoint, and Basic rejected on `/mcp`.
@@ -98,10 +99,14 @@ The rejected options:
   `securityMatcher`-scoped chains, everything outside both matchers —
   actuator, a later endpoint, a path-normalisation variant that slips a
   matcher — is served with no security applied, silently: no test fails.
-  Plan 4 must add a catch-all chain with no `securityMatcher` that is
-  evaluated *last* — Spring tries chains in ascending order and stops at
-  the first match, so this chain needs the largest order value,
-  `@Order(Ordered.LOWEST_PRECEDENCE)` — with `anyRequest().denyAll()`, plus
-  a test that hits an unmatched path and expects 401/403.
+  Plan 4A added the catch-all chain this called for:
+  `SecurityConfig#catchAllChain` has no `securityMatcher` and is evaluated
+  *last*, with `@Order(Ordered.LOWEST_PRECEDENCE)`, since Spring tries chains in
+  ascending order and stops at the first match. It opens only spec §3's
+  anonymous paths (`/error`, `/actuator/health`, `/swagger-ui/**`,
+  `/v3/api-docs/**`) and denies everything else.
+  `SecurityChainsTest#theCatchAllOpensOnlyItsAnonymousPaths` hits unmatched
+  paths, `/actuator/env` among them, and expects 401. Widening the chain to
+  permit everything fails that test.
 
-*Plan numbering updated 2026-10-15 (PR #17) to the current six-plan Phase 1, after the 2026-10-02 re-plan and the 2026-10-14 split of Plan 3 into 3A and 3B; no decision changed.*
+*Plan numbering updated 2026-10-15 (PR #17) after the 2026-10-02 re-plan and the 2026-10-14 split of Plan 3 into 3A and 3B, and again by plan 4A's split of Plan 4 into 4A and 4B, to the current seven-plan Phase 1 (1, 2, 3A, 3B, 4A, 4B, 5); no decision changed.*
