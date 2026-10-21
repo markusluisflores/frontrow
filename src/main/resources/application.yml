@@ -7,6 +7,17 @@ spring:
         name: frontrow
         protocol: STREAMABLE
         type: SYNC
+  jackson:
+    # The wire form matches MCP's parameter names and the error details (plan 4A decision 9). HoldService's stored
+    # replay form uses its own mapper, so this does not reach rows stored before it.
+    property-naming-strategy: SNAKE_CASE
+  mvc:
+    formcontent:
+      filter:
+        # Boot's FormContentFilter reads a form body on PUT, PATCH and DELETE before Spring Security runs, so a chunked
+        # form body over the 16 KiB bound became an anonymous 500 on any path (plan 4A decision 8). No endpoint takes a
+        # form body, so the filter is off.
+        enabled: false
   jpa:
     open-in-view: false
     hibernate:
