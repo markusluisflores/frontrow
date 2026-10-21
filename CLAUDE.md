@@ -19,7 +19,7 @@ and 24-hour key purge (`ExpirySweepService`, scheduled by `config/SweepSchedule`
 three security chains (`security/SecurityConfig`), hashed demo credentials, Problem Details errors and a
 16 KiB request-body bound (`rest/`), and four REST endpoints over those services: hold, release,
 confirm and the event PATCH. No read endpoint, no event creation and no MCP tool exists yet.**
-260 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
+264 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
 `uq_claimed_seat`. Plans 4B (the read services and GET endpoints, event creation, OpenAPI) and 5 (MCP)
 remain.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
@@ -75,10 +75,12 @@ bootstrap. The scaffold task must land all of them, not just the build:
 - No MCP tool may complete a purchase. Agents hold; humans buy. `/api/**` and
   `/mcp` are disjoint credential chains (ADR-002).
 - MCP is served over Streamable HTTP only — no stdio, no SSE (ADR-003).
-- Every security rule lives in `security/SecurityConfig.java`: the `/api/**` chain (Basic only, with
-  the spec §6 role table), the `/mcp` chain (agent bearer tokens only, `AGENT` authority), and a last
-  catch-all chain that denies everything but four anonymous paths. An `/api/**` path the table
-  doesn't list is denied, so a new endpoint needs its rule there.
+- Every authentication and authorization rule lives in `security/SecurityConfig.java`: the `/api/**`
+  chain (Basic only, with the spec §6 role table), the `/mcp` chain (agent bearer tokens only, `AGENT`
+  authority), and a last catch-all chain that denies everything but four anonymous paths. An `/api/**`
+  path the table doesn't list is denied, so a new endpoint needs its rule there. The 16 KiB body bound
+  is not in a chain: `rest/RestConfig` registers `RequestBodyLimitFilter` ahead of all of them, and it
+  holds only while Boot's FormContentFilter and multipart resolver stay off (`application.yml`).
 - Every service entry point is `@Transactional(isolation = READ_COMMITTED)` and calls
   `TransactionBoundary.requireOwnTransaction()` as its first statement; no adapter is
   `@Transactional`. `Propagation.NEVER` is not the answer: it runs the method with no transaction
@@ -87,7 +89,8 @@ bootstrap. The scaffold task must land all of them, not just the build:
   `ServiceTransactionBoundaryTest` fails on a public method of a listed service it doesn't cover.
   So a new service fails the build until it is listed and its entry points are covered.
 - REST errors are RFC 9457 Problem Details from `rest/RestExceptionHandler`: a `DomainException`
-  carries its `code`, and anything else is a generic 500 that echoes nothing.
+  carries its `code`, and anything else is a generic 500 that echoes nothing. Errors a filter
+  answers before MVC (401, 403, 413, 415) are written by `rest/Problems.write`, in the same shape.
 
 ## Conventions
 

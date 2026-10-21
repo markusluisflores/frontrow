@@ -81,9 +81,10 @@ The rejected options:
   endpoint, and Basic rejected on `/mcp`.
 * ⚠️ Every purchase needs a human step, even when the user wants their agent to
   buy. This is deliberate.
-* ⚠️ Owner-scoped guardrails depend on the principal reaching `@McpTool`
-  methods. That is unproven: the scaffold spike (spec §3) must show how the
-  principal propagates before any guardrail is planned.
+* ✅ Owner-scoped guardrails depend on the principal reaching `@McpTool`
+  methods. Plan 1's spike answered how (ADR-004: `McpTransportContext`), and
+  plan 4A re-proved it through the production `/mcp` chain
+  (`PrincipalPropagationSpikeTest`).
 * ⚠️ Phase 1 security is demo-grade: in-memory Basic users, and static bearer
   tokens stored only as SHA-256 hashes. The README must say so. Real
   authentication (OAuth2 / OIDC) is Phase 2.
