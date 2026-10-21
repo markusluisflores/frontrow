@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Generates the local demo's credentials (spec §9): bcrypt and SHA-256 hashes go to config/application-demo.yml,
-# which is gitignored, and the raw passwords and agent token are printed once. Start the app with the demo profile:
+# which is gitignored, and the raw passwords and agent token are printed once. Start the app with the demo profile
+# and a Postgres datasource (application.yml sets none; SPRING_DATASOURCE_URL, _USERNAME and _PASSWORD work):
 #   ./mvnw spring-boot:run -Dspring-boot.run.profiles=demo
 set -euo pipefail
 cd "$(dirname "$0")/.."

@@ -75,10 +75,13 @@ bootstrap. The scaffold task must land all of them, not just the build:
 - No MCP tool may complete a purchase. Agents hold; humans buy. `/api/**` and
   `/mcp` are disjoint credential chains (ADR-002).
 - MCP is served over Streamable HTTP only — no stdio, no SSE (ADR-003).
-- Every authentication and authorization rule lives in `security/SecurityConfig.java`: the `/api/**`
+- Every credential and role rule lives in `security/SecurityConfig.java`: the `/api/**`
   chain (Basic only, with the spec §6 role table), the `/mcp` chain (agent bearer tokens only, `AGENT`
   authority), and a last catch-all chain that denies everything but four anonymous paths. An `/api/**`
-  path the table doesn't list is denied, so a new endpoint needs its rule there. The 16 KiB body bound
+  path the table doesn't list is denied, so a new endpoint needs its rule there. Owner scoping is not a role rule: the services enforce
+  it (release and confirm answer `not_found` for another owner's hold via
+  `LockingGateway#lockGroupRows(group, owner)`), so an owner-only read such as 4B's `GET /api/orders/{id}`
+  is not covered by its table row alone. The 16 KiB body bound
   is not in a chain: `rest/RestConfig` registers `RequestBodyLimitFilter` ahead of all of them, and it
   holds only while Boot's FormContentFilter and multipart resolver stay off (`application.yml`).
 - Every service entry point is `@Transactional(isolation = READ_COMMITTED)` and calls
@@ -104,8 +107,10 @@ bootstrap. The scaffold task must land all of them, not just the build:
   the spec) + AssertJ + Testcontainers. Run everything with `./mvnw verify`.
 - No usable credential is committed. `scripts/demo-credentials.sh` writes bcrypt and SHA-256 hashes
   to the gitignored `config/application-demo.yml` and prints the raw values once; run the app with
-  `./mvnw spring-boot:run -Dspring-boot.run.profiles=demo`. Without that profile, startup fails:
-  there are no users. Tests generate their own credentials per run (`support/TestCredentials`).
+  `./mvnw spring-boot:run -Dspring-boot.run.profiles=demo`. The app also needs a Postgres datasource:
+  `application.yml` sets none, so supply `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and
+  `SPRING_DATASOURCE_PASSWORD` in the environment. Without a datasource startup fails at DataSource
+  auto-configuration, and without the demo profile it fails because there are no users. Tests generate their own credentials per run (`support/TestCredentials`).
 
 ## CI Runbook
 
