@@ -66,6 +66,7 @@ public class ConfirmService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public OrderResult confirm(HoldGroupCommand command) {
+        TransactionBoundary.requireOwnTransaction();
         UUID group = command.holdGroupId();
         String owner = command.owner();
         try {

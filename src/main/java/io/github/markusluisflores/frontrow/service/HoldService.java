@@ -61,6 +61,7 @@ public class HoldService {
     /** READ COMMITTED, explicitly: every check after a lock wait must see what committed during the wait (spec §5). */
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public HoldResult hold(HoldCommand command) {
+        TransactionBoundary.requireOwnTransaction();
         requireWellFormed(command);
         // On the raw list, before the fingerprint and the key claim: an oversized request costs no sort and no lock.
         if (command.eventSeatIds().size() > properties.maxSeatsPerHold()) {

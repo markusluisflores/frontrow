@@ -6,17 +6,22 @@ the user-level CLAUDE.md and apply here.
 
 ## Current state
 
-**Phase 1 plans 1 (foundation), 2 (domain foundations), 3A (hold creation) and 3B (confirm, release,
-cancellation, the sweeper) are complete. Together they provide: a Maven build, CI, the V1 schema
+**Phase 1 plans 1 (foundation), 2 (domain foundations), 3A (hold creation), 3B (confirm, release,
+cancellation, the sweeper) and 4A (the security edge and the REST write endpoints) are complete.
+Together they provide: a Maven build, CI, the V1 schema
 migration, a principal-propagation spike, a pure `domain` package (money, statuses, sales window, hold
 rules, the request fingerprint), the shared error contract (`error`), JPA entities and repositories over
 all eight V1 tables (`persistence`), the locking gateway (`persistence/LockingGateway.java`), and every
 write path on holds, orders and an existing event's status and window as a service in `service/`:
 hold creation with idempotent replay (`HoldService`), confirmation, the only purchase path (`ConfirmService`),
 release (`ReleaseService`), the event PATCH and cancellation (`EventPatchService`), and the expiry sweeper
-and 24-hour key purge (`ExpirySweepService`, scheduled by `config/SweepSchedule`). Creating an event has no service yet, and no REST endpoint or MCP tool exists.**
-197 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
-`uq_claimed_seat`. Plans 4 (REST + security chains) and 5 (MCP) remain.
+and 24-hour key purge (`ExpirySweepService`, scheduled by `config/SweepSchedule`). Plan 4A adds the
+three security chains (`security/SecurityConfig`), hashed demo credentials, Problem Details errors and a
+16 KiB request-body bound (`rest/`), and four REST endpoints over those services: hold, release,
+confirm and the event PATCH. No read endpoint, no event creation and no MCP tool exists yet.**
+264 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
+`uq_claimed_seat`. Plans 4B (the read services and GET endpoints, event creation, OpenAPI) and 5 (MCP)
+remain.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
 `docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.4; 2.6
 reviewed and merged 2026-09-18, 2.6.1 a wording fix, 2.6.2 a post-implementation
@@ -31,7 +36,8 @@ executed on `feat/phase-1-domain-foundations` and merged as PR #10 (`e432c3c`,
 PR #10's description carries the plan deviations and the list Plan 3 must address.
 Plan 3A was merged as PR #16 (`ed1566a`) and executed on `feat/phase-1-hold-creation`, merged as PR #18 (`4de410e`, 2026-10-16):
 `docs/superpowers/plans/2026-10-14-phase-1-plan-3a-hold-creation.md`. Plan 3B:
-`docs/superpowers/plans/2026-10-17-phase-1-plan-3b-confirm-release-cancel.md`.
+`docs/superpowers/plans/2026-10-17-phase-1-plan-3b-confirm-release-cancel.md`. Plan 4A:
+`docs/superpowers/plans/2026-10-20-phase-1-plan-4a-security-edge.md`.
 
 ## Deferred bootstrap items — owed by the Phase 1 scaffold task
 
@@ -69,6 +75,26 @@ bootstrap. The scaffold task must land all of them, not just the build:
 - No MCP tool may complete a purchase. Agents hold; humans buy. `/api/**` and
   `/mcp` are disjoint credential chains (ADR-002).
 - MCP is served over Streamable HTTP only — no stdio, no SSE (ADR-003).
+- Every credential and role rule lives in `security/SecurityConfig.java`: the `/api/**`
+  chain (Basic only, with the spec §6 role table), the `/mcp` chain (agent bearer tokens only, `AGENT`
+  authority), and a last catch-all chain that denies everything but four anonymous paths. An `/api/**`
+  path the table doesn't list is denied, so a new endpoint needs its rule there. Owner scoping is not a role rule: the services enforce
+  it (release and confirm answer `not_found` for another owner's hold via
+  `LockingGateway#lockGroupRows(group, owner)`), so a read scoped by owner, such as 4B's `GET /api/orders/{id}` (`BUYER` sees only their own, `ADMIN` any),
+  is not covered by its table row alone. The 16 KiB body bound
+  is not in a chain: `rest/RestConfig` registers `RequestBodyLimitFilter` ahead of all of them, and it
+  holds only while Boot's FormContentFilter and multipart resolver stay off and Tomcat's form-post cap stays at 16 KB
+  (`application.yml`).
+- Every service entry point is `@Transactional(isolation = READ_COMMITTED)` and calls
+  `TransactionBoundary.requireOwnTransaction()` as its first statement; no adapter is
+  `@Transactional`. `Propagation.NEVER` is not the answer: it runs the method with no transaction
+  at all (plan 4A decision 4). The check is a chain: `TransactionIsolationTest` scans `service/`
+  for `@Service` classes and fails unless they equal its `SERVICES` list, and
+  `ServiceTransactionBoundaryTest` fails on a public method of a listed service it doesn't cover.
+  So a new service fails the build until it is listed and its entry points are covered.
+- REST errors are RFC 9457 Problem Details from `rest/RestExceptionHandler`: a `DomainException`
+  carries its `code`, and anything else is a generic 500 that echoes nothing. Errors a filter
+  answers before MVC (401, 403, 413, 415) are written by `rest/Problems.write`, in the same shape.
 
 ## Conventions
 
@@ -80,6 +106,12 @@ bootstrap. The scaffold task must land all of them, not just the build:
   claim shipped work.
 - Tests: JUnit Jupiter 6 (Boot 4.1.1-managed; same API as the "JUnit 5" named in
   the spec) + AssertJ + Testcontainers. Run everything with `./mvnw verify`.
+- No usable credential is committed. `scripts/demo-credentials.sh` writes bcrypt and SHA-256 hashes
+  to the gitignored `config/application-demo.yml` and prints the raw values once; run the app with
+  `./mvnw spring-boot:run -Dspring-boot.run.profiles=demo`. The app also needs a Postgres datasource:
+  `application.yml` sets none, so supply `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and
+  `SPRING_DATASOURCE_PASSWORD` in the environment. Without a datasource startup fails at DataSource
+  auto-configuration, and without the demo profile it fails because there are no users. Tests generate their own credentials per run (`support/TestCredentials`).
 
 ## CI Runbook
 

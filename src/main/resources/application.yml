@@ -7,12 +7,43 @@ spring:
         name: frontrow
         protocol: STREAMABLE
         type: SYNC
+  jackson:
+    # The wire form matches MCP's parameter names and the error details (plan 4A decision 9). HoldService's stored
+    # replay form uses its own mapper, so this does not reach rows stored before it.
+    property-naming-strategy: SNAKE_CASE
+  mvc:
+    formcontent:
+      filter:
+        # Boot's FormContentFilter reads a form body on PUT, PATCH and DELETE before Spring Security runs, so a chunked
+        # form body over the 16 KiB bound became an anonymous 500 on any path (plan 4A decision 8). No endpoint takes a
+        # form body, so the filter is off.
+        enabled: false
+  servlet:
+    multipart:
+      # Spring's multipart resolver has Tomcat parse a multipart body from its own buffer, past RequestBodyLimitFilter's
+      # counting stream, so an anonymous multipart body up to Boot's 1 MB/10 MB limits was parsed on every path open to
+      # anonymous callers (/error, /actuator/health, GET /api/events). No endpoint takes a multipart body, so it is off.
+      enabled: false
   jpa:
     open-in-view: false
     hibernate:
       ddl-auto: validate
     properties:
       hibernate.jdbc.batch_size: 0
+
+server:
+  tomcat:
+    # A form-encoded POST to /mcp is rebuilt from request.getParameterMap(), which Tomcat parses from its own buffer past
+    # RequestBodyLimitFilter's counting stream, up to its 2 MB default. No endpoint takes a form body, so the cap matches
+    # the 16 KiB bound.
+    max-http-form-post-size: 16KB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Boot's default, stated: health is the one actuator endpoint, and the only one the catch-all chain opens.
+        include: health
 
 frontrow:
   hold-ttl: 10m
@@ -22,3 +53,5 @@ frontrow:
   sweep-interval: 1m
   # Off in tests (src/test/resources/config/application.properties). Correctness never depends on the sweeper.
   sweeper-enabled: true
+  # frontrow.security (users and agent tokens) is deliberately absent: nothing usable is committed, and startup fails
+  # without it. scripts/demo-credentials.sh writes it to config/application-demo.yml; start with the demo profile.

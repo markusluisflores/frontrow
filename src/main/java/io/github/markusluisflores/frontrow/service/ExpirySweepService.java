@@ -31,6 +31,7 @@ public class ExpirySweepService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public int expireLapsedHolds() {
+        TransactionBoundary.requireOwnTransaction();
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         try {
             return gateway.expireLapsedHolds(now);
@@ -41,6 +42,7 @@ public class ExpirySweepService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public int purgeHoldRequests() {
+        TransactionBoundary.requireOwnTransaction();
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         try {
             return gateway.purgeHoldRequestsCreatedBefore(now.minus(KEY_RETENTION));

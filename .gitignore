@@ -11,6 +11,8 @@ target/
 .settings/
 
 # Local environment and secrets
+# config/ holds scripts/demo-credentials.sh's generated application-demo.yml (plan 4A decision 5)
+/config/
 .env
 .env.*
 !.env.example

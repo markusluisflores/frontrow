@@ -12,6 +12,7 @@ import io.github.markusluisflores.frontrow.support.LockHolder;
 import io.github.markusluisflores.frontrow.support.ServiceTestConfiguration;
 import io.github.markusluisflores.frontrow.support.TestClock;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -193,6 +194,37 @@ class EventPatchServiceTest {
             assertThat(((DomainException) thrown.getCause()).errorCode()).isEqualTo(ErrorCode.CONTENTION_RETRY);
         }
         assertThat(fixtures.eventStatus(eventId)).isEqualTo("ON_SALE");
+    }
+
+    @Test
+    void anInstantPostgresCannotStoreIsInvalidRequestNotA500() {
+        // Year 300000 is past timestamptz's upper bound: unbounded, Postgres raises 22008, which surfaces as a 500
+        // (PR #22 thread 4305094277). Instant.MIN is past the lower bound.
+        for (EventPatch outOfRange : List.of(
+                new EventPatch(eventId, null, null, Instant.parse("+300000-01-01T00:00:00Z")),
+                new EventPatch(eventId, null, Instant.MIN, null),
+                new EventPatch(eventId, null, EventPatchService.EARLIEST.minusNanos(1000), null),
+                new EventPatch(eventId, null, EventPatchService.LATEST, EventPatchService.LATEST.plusNanos(1000)))) {
+            DomainException rejected = rejection(() -> patches.patch(outOfRange));
+            assertThat(rejected.errorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+            assertThat(rejected.details()).containsEntry("parameter", "sales_window");
+        }
+    }
+
+    @Test
+    void theWidestAllowedWindowIsStoredExactly() {
+        EventPatchResult result =
+                patches.patch(new EventPatch(eventId, null, EventPatchService.EARLIEST, EventPatchService.LATEST));
+
+        assertThat(result.salesOpenAt()).isEqualTo(EventPatchService.EARLIEST);
+        assertThat(result.salesCloseAt()).isEqualTo(EventPatchService.LATEST);
+        assertThat(jdbc.sql("SELECT sales_open_at, sales_close_at FROM event WHERE id = :id")
+                        .param("id", eventId)
+                        .query((rs, row) -> List.of(
+                                rs.getObject(1, OffsetDateTime.class).toInstant(),
+                                rs.getObject(2, OffsetDateTime.class).toInstant()))
+                        .single())
+                .containsExactly(EventPatchService.EARLIEST, EventPatchService.LATEST);
     }
 
     private static DomainException rejection(ThrowingCallable call) {

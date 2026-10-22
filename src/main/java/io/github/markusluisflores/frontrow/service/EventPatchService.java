@@ -21,10 +21,20 @@ import org.springframework.transaction.annotation.Transactional;
  * The event PATCH, cancellation included (spec §5, Event cancellation). It locks the event row exclusively, which
  * waits for every hold creation and confirmation in flight on the event and blocks new ones until it commits. So no
  * confirm can commit against a window it has just closed, or an event it has just cancelled. A lock timeout bounds
- * every wait, and a timeout asks the organiser to retry (spec §5, Liveness). Who may call this is Plan 4's concern.
+ * every wait, and a timeout asks the organiser to retry (spec §5, Liveness). The REST adapter lets any ORGANISER call
+ * it, for any event: Phase 1 has no per-event ownership (plan 4A decision 2).
  */
 @Service
 public class EventPatchService {
+
+    /**
+     * The widest sales window a PATCH may set: what both timestamptz and a four-digit ISO 8601 year can hold. An
+     * instant outside it would otherwise reach Postgres and fail there as a 500 (PR #22 thread 4305094277). This is the
+     * one write path that takes caller-supplied instants, so the bound lives here, whichever adapter calls.
+     */
+    static final Instant EARLIEST = Instant.parse("0001-01-01T00:00:00Z");
+
+    static final Instant LATEST = Instant.parse("9999-12-31T23:59:59.999999Z");
 
     private final LockingGateway gateway;
     private final TicketOrderRepository orders;
@@ -36,6 +46,7 @@ public class EventPatchService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public EventPatchResult patch(EventPatch patch) {
+        TransactionBoundary.requireOwnTransaction();
         try {
             // First, so that it bounds every lock below, including a cancellation's seat rows.
             gateway.setLockTimeout();
@@ -71,6 +82,9 @@ public class EventPatchService {
                 };
         if (!statusAllowed) {
             throw invalid("status");
+        }
+        if (openAt.isBefore(EARLIEST) || closeAt.isAfter(LATEST)) {
+            throw invalid("sales_window");
         }
         boolean windowChanged = !openAt.equals(event.salesOpenAt()) || !closeAt.equals(event.salesCloseAt());
         if ((event.status() == EventStatus.CANCELLED && windowChanged) || !openAt.isBefore(closeAt)) {

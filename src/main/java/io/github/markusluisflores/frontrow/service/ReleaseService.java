@@ -35,6 +35,7 @@ public class ReleaseService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public ReleaseResult release(HoldGroupCommand command) {
+        TransactionBoundary.requireOwnTransaction();
         try {
             List<HoldRow> rows = gateway.lockGroupRows(command.holdGroupId(), command.owner());
             if (rows.isEmpty()) {
