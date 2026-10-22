@@ -27,7 +27,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * <p>So the bound on every path depends on the parsers that read a body for the application staying off, as both are in
  * application.yml: Spring's multipart resolver has Tomcat parse the body from its own buffer, never through this
  * wrapper; and Boot's FormContentFilter reads a form body before security answers, so an oversized one became an
- * anonymous 500. Re-enabling either reopens the hole.
+ * anonymous 500. Re-enabling either reopens the hole. Tomcat can still parse a form-encoded POST from its own buffer
+ * (the MCP transport's body read rebuilds it from the parameter map), so server.tomcat.max-http-form-post-size in
+ * application.yml caps that container-side parsing at the same 16 KiB.
  */
 public class RequestBodyLimitFilter extends OncePerRequestFilter {
 

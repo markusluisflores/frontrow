@@ -31,6 +31,13 @@ spring:
     properties:
       hibernate.jdbc.batch_size: 0
 
+server:
+  tomcat:
+    # A form-encoded POST to /mcp is rebuilt from request.getParameterMap(), which Tomcat parses from its own buffer past
+    # RequestBodyLimitFilter's counting stream, up to its 2 MB default. No endpoint takes a form body, so the cap matches
+    # the 16 KiB bound.
+    max-http-form-post-size: 16KB
+
 management:
   endpoints:
     web:

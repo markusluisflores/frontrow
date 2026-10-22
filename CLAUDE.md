@@ -80,10 +80,11 @@ bootstrap. The scaffold task must land all of them, not just the build:
   authority), and a last catch-all chain that denies everything but four anonymous paths. An `/api/**`
   path the table doesn't list is denied, so a new endpoint needs its rule there. Owner scoping is not a role rule: the services enforce
   it (release and confirm answer `not_found` for another owner's hold via
-  `LockingGateway#lockGroupRows(group, owner)`), so an owner-only read such as 4B's `GET /api/orders/{id}`
+  `LockingGateway#lockGroupRows(group, owner)`), so a read scoped by owner, such as 4B's `GET /api/orders/{id}` (`BUYER` sees only their own, `ADMIN` any),
   is not covered by its table row alone. The 16 KiB body bound
   is not in a chain: `rest/RestConfig` registers `RequestBodyLimitFilter` ahead of all of them, and it
-  holds only while Boot's FormContentFilter and multipart resolver stay off (`application.yml`).
+  holds only while Boot's FormContentFilter and multipart resolver stay off and Tomcat's form-post cap stays at 16 KB
+  (`application.yml`).
 - Every service entry point is `@Transactional(isolation = READ_COMMITTED)` and calls
   `TransactionBoundary.requireOwnTransaction()` as its first statement; no adapter is
   `@Transactional`. `Propagation.NEVER` is not the answer: it runs the method with no transaction
