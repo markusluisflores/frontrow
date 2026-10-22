@@ -6,7 +6,9 @@
 > ⚠️ **Phase 1 plans 1, 2, 3A, 3B and 4A of 7 have landed. Every write path on holds, orders and an existing event's
 > status and window exists as a service, and four of them have REST endpoints behind the security chains: hold,
 > release, confirm (the only purchase path) and the event `PATCH`. Creating an event, reading anything, and every
-> MCP tool do not exist yet, and the app has no datasource configuration, so it runs only in the test suite.**
+> MCP tool do not exist yet. No datasource configuration, compose file or seed data is committed, so the app starts
+> only against a Postgres supplied through the environment (`CLAUDE.md`), and with nothing to hold the golden path
+> has run only in the test suite.**
 > Plans 3A (hold creation, PR #18) and 3B (confirm, release, cancellation and the sweeper, PR #24) are Java
 > services; plan 4A (PR #29) put them behind HTTP. All of it is exercised by tests against real Postgres: the REST
 > golden path through the full filter chain with MockMvc, and the request bounds over a real socket.
@@ -119,7 +121,9 @@
 
 There are **264 test runs** in total. Still missing: event creation (no service),
 every read path (none of spec §6's GETs has a service or query behind it), every
-MCP tool, and a datasource configuration, so the app runs only in the test suite.
+MCP tool, and a committed datasource configuration, compose file and seed data. The app starts only against a
+Postgres supplied through the environment (`CLAUDE.md`), and with no seed data and no way to create an event there
+is nothing to hold, so the golden path has run only in the test suite.
 
 The *designed* system, whose REST adapter is partly built and whose MCP adapter is not: an event ticketing and
 seat-reservation service in Spring Boot, exposed through two inbound adapters
@@ -502,8 +506,9 @@ dodge.** The spec estimated "a full focused week" for Phase 1. *(Updated
 domain foundations and every write path on holds, orders and an existing event's status and window (plans 3A and
 3B) are built as services, and plan 4A put four of them behind REST and the security chains; creating an event is
 not built, nor is any read endpoint or MCP tool. A human can hold and buy seats through the REST endpoints in the
-test suite (with MockMvc, not over a socket), but the app has no datasource configuration or compose file yet, so it
-does not run on its own. The reason
+test suite (with MockMvc, not over a socket). No datasource configuration, compose file or seed data is committed
+yet: the app starts only against a Postgres supplied through the environment, and with no event to hold it has not
+been run that way. The reason
 is not drift: Phase 1 was re-planned from 3 documents into 5 when Plan 2 proved
 too large to review, into 6 when Plan 3 did too (split into 3A and 3B on
 2026-10-14), and into 7 when Plan 4 was split into 4A and 4B (2026-10-20), and
@@ -1019,7 +1024,7 @@ measuring answers the second."
 | 2026-10-18 (plan 3B written) | Plan 3B is written and merged as a plan (PR #22, `af5b1a4`), not executed. *Bugs Worth Remembering* no longer calls it unwritten. No other entry was stale: the banner already lists 3B's work as not built, and *Review as the Deliverable* already counts 3B among the documents. | Staleness pass over every mention of plan 3B. Checked by PR #23's fresh round 1 (review 5565781561): 0 BLOCKER, 3 SUGGESTION, 3 NIT, all fixed |
 | 2026-10-19 (plan 3B executed) | Plan 3B executed and merged (PR #24, `61f0a65`). Banner, *What We Built* (197 runs, a plan 3B block), concepts 2, 3 and 7 (sweeper, confirm and the lock order built; "an agent can't buy" still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (both gaps between `main` and the spec closed; the spec header's "Where `main` differs" block now stale), and the *Review as the Deliverable* header and concurrency-test follow-up all moved from "not built" to built as services, without adapters. Added *Executing Plan 3B*. | Staleness pass over every mention of plan 3B, "not built", buying, the sweeper, tests 2 and 6, confirm, release and cancel, the clock's sampling point and `DRAFT`. Checked by PR #25's fresh round 1 (review 5576525428): 2 BLOCKER, 4 SUGGESTION, 1 NIT, all fixed. PR #25's fresh round 2 (review 5576660010): 1 BLOCKER, 2 SUGGESTION, 4 NIT, all fixed. PR #25's fresh round 3 (review 5579432416): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all fixed. PR #25's fresh round 4 (review 5579460532): 0 BLOCKER, 1 SUGGESTION, fixed |
 | 2026-10-19 (spec 2.6.4) | Spec revision 2.6.4, the post-3B sync. *Bugs Worth Remembering* and *Executing Plan 3B* no longer call the spec header's "Where `main` differs" block owed. | Staleness pass over every mention of that block and of a spec sync being owed. Its review rounds are recorded on its PR |
-| 2026-10-22 (plan 4A executed; spec 2.6.5) | Plan 4A written (PR #28) and executed (PR #29, `290b60b`), and spec revision 2.6.5. A sync only, with no new section: the banner (seven plans; four REST write endpoints behind the security chains; no read endpoint, MCP tool or datasource), *What We Built* (264 runs, a plan 4A block), concept 3 (the chains and the confirm endpoint built; the agent side still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (the gaps plan 4A defers), and in *Review as the Deliverable* its header and the catch-all finding (now built). The banner and the timeline answer say the REST golden path runs with MockMvc, not over a socket, and *What We Built* scopes Problem Details to errors the application answers on `/api/**`. The *Executing Plan 3B* note on the error handler now says plan 4A built it. | Staleness pass over every mention of "no API", "not built", plan 4, the security chains, the catch-all chain, buying, and "reachable". Its review rounds are recorded on its PR |
+| 2026-10-22 (plan 4A executed; spec 2.6.5) | Plan 4A written (PR #28) and executed (PR #29, `290b60b`), and spec revision 2.6.5. A sync only, with no new section: the banner (seven plans; four REST write endpoints behind the security chains; no read endpoint or MCP tool; no committed datasource, compose file or seed data, so a standalone run needs a Postgres supplied through the environment), *What We Built* (264 runs, a plan 4A block), concept 3 (the chains and the confirm endpoint built; the agent side still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (the gaps plan 4A defers), and in *Review as the Deliverable* its header and the catch-all finding (now built). The banner and the timeline answer say the REST golden path runs with MockMvc, not over a socket, and *What We Built* scopes Problem Details to errors the application answers on `/api/**`. The *Executing Plan 3B* note on the error handler now says plan 4A built it. | Staleness pass over every mention of "no API", "not built", plan 4, the security chains, the catch-all chain, buying, and "reachable". Its review rounds are recorded on its PR |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified

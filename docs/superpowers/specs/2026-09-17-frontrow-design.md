@@ -733,10 +733,14 @@ the README.
 
 Organisers are not scoped to their own events (*REST surface* below), so one
 compromised `ORGANISER` account can cancel every event with nothing sold,
-releasing its holds; close sales on any event not already cancelled, sold or
-not, by moving its sales window (`sales_close_at` earlier, say); and put any
-`DRAFT` event on sale (plan 4A decision 2). It cannot cancel an event with a
-confirmed order (§5 *Event cancellation*), so no order is lost.
+releasing its holds; move the sales window of any event not already cancelled,
+sold or not, to close sales (`sales_close_at` earlier), open them early
+(`sales_open_at` earlier), or reopen or extend them (`sales_close_at` later),
+even after the event's `starts_at`, because nothing compares the window with the
+clock or with `starts_at`, so buyers could hold and buy seats for a performance
+that is over; and put any `DRAFT` event on sale (plan 4A decision 2). It
+cannot cancel an event with a confirmed order (§5 *Event cancellation*), so no
+order is lost.
 
 **The handover:** the agent holds seats as user X and tells X the
 `hold_group_id` and expiry. X logs in, sees the hold under `GET /api/me/holds`
@@ -835,6 +839,9 @@ application's mapper, not the MCP server's, and its body includes a
 `stack_trace`. No tool is served yet; plan 5 must remove it and test that
 neither failure carries one.
 
+An unstructured string error is a review BLOCKER — it is one of the named weak
+signals.
+
 ### Request bounds
 
 - **Bodies: 16 KiB, on every path, ahead of every security chain.** A declared
@@ -855,9 +862,6 @@ neither failure carries one.
   200-unit idempotency-key check (§5 *Hold creation*).
 - **Instants:** an event `PATCH` bounds its sales window (§5 *Event
   cancellation*).
-
-An unstructured string error is a review BLOCKER — it is one of the named weak
-signals.
 
 ### REST surface
 
@@ -944,7 +948,10 @@ disjoint filter chains. `/api/**` uses HTTP Basic against in-memory users
 carrying `BUYER`, `ORGANISER` and `ADMIN` roles. `/mcp` uses static bearer
 tokens from configuration, each mapped to a user; only SHA-256 hashes of the
 tokens are stored in config, and demo tokens are generated at setup rather than
-committed. Passwords are stored only as bcrypt hashes too. The committed
+committed. Passwords are stored only as bcrypt hashes too, at any cost: the
+startup check accepts any two-digit cost, so a hand-written hash below the
+generator's cost 10 lets login timing reveal whether a username exists (a gap
+deferred as PR #29 thread 4342380931). The committed
 `application.yml` defines no user and no token, and startup fails with no user:
 a Basic chain with no users is a misconfiguration. `scripts/demo-credentials.sh`
 writes the hashes to a gitignored `config/application-demo.yml` and prints the
@@ -1069,4 +1076,4 @@ redundant and should not be merged.
 | 2.6.2 | 2026-10-05 | Post-implementation sync, with no design change. The header now gives the implementation status: plans 1 and 2 of 5 are merged, PRs #5 and #10. Idempotent replay is specified as **JSON-equal, not byte-verbatim**. PR #10 showed that `jsonb` normalises stored responses (`{"ok":true}` comes back as `{"ok": true}`), so "verbatim" was unachievable, and a byte-comparing test would fail. The persistence split this section implies is now recorded as ADR-005 |
 | 2.6.3 | 2026-10-16 | Status sync, and two decisions from plan 3A's reviews. **Status:** Phase 1 is six plans; plans 1, 2 and 3A are merged (PRs #5, #10 and #18), and the header lists what `main` doesn't yet match. **Clock:** §5 now says when a transaction reads `now`: once the locks before its first time-dependent decision are held, not on arrival (PR #18 review thread 4296540439). An arrival-time read let a hold that waited across `sales_close_at` succeed, made a lapsed hold look live, and shortened `expires_at` by the wait. **Drafts:** a `DRAFT` event answers `not_found` to every caller on every read and hold by id, and list reads leave it out, instead of `sales_not_open` with its `sales_open_at` (PR #16 review finding N5). Plan 3B brings hold creation in line with both |
 | 2.6.4 | 2026-10-19 | Post-implementation sync after plan 3B (PR #24), with no design change. **Status:** plans 1, 2, 3A and 3B are merged; the header's "Where `main` differs from this revision" block is removed, because plan 3B made hold creation read the clock after the event-row lock and answer a `DRAFT` event with `not_found`. **Clock:** an event `PATCH` reads no clock, because it makes no time-dependent decision and writes no clock-derived timestamp (plan 3B decision 3); 2.6.3 placed its read after the event lock. The §5 opener now says each transaction uses "at most one instant", not "one instant". No behaviour changes: in 2.6.3 a `PATCH` would have read an instant that nothing used, and the code reads none. **Replay:** a key purged between the step-1 claim and the read is claimed once more, and a second conflict replays the request that just committed (plan 3B decision 8, PR #18 thread 4296540462). **Sweeper:** it is registered by a `SchedulingConfigurer` as two fixed-delay tasks and switched by `frontrow.sweeper-enabled`, not an `@Scheduled` method (plan 3B decision 7) |
-| 2.6.5 | 2026-10-22 | Post-implementation sync after plan 4A (PR #29), with no design change: each addition states what plan 4A decided where 2.6.4 was silent, checked against the code on `main`. **Status:** Phase 1 is seven plans; plans 1, 2, 3A, 3B and 4A are merged, and "Not yet built" now names plan 4B's work (event creation, the read services and `GET` endpoints, springdoc) and plan 5's. **§3:** the owner is the Basic username for both credentials, with its username pattern (plan 4A decision 3); the chain table, with the catch-all chain (decision 10); the three cross-site layers and their stated gap for browsers that send no Fetch Metadata (decision 6); the bearer check covers every `Authorization` header, and `/mcp` reads only the first, left to plan 5 (PR #29 thread 4342413070); the spike is answered (ADR-004) and re-proved on the production chain. **§5:** the sweep, not the purge, is the idempotent `UPDATE`; every service entry point starts its own transaction, through `TransactionBoundary`, not `Propagation.NEVER` (decision 4); the `PATCH` bounds its instants (decision 8). **§6:** a shared owner widens what a compromised agent can do (decision 3); REST statuses and Problem Details members, and the failures that keep Spring's or Boot's own body (decision 7); snake_case on the wire, and the `/mcp` `stack_trace`, reachable only with a valid agent token, left to plan 5 (decision 9); a new *Request bounds* subsection (decision 8); any organiser may `PATCH` any event, so one compromised organiser account can cancel every event with nothing sold, close sales on any event through the window `PATCH`, and put any `DRAFT` event on sale, but cannot cancel an event with a confirmed order (decision 2); which REST rows are built, and owner scoping lives in the services. **§9:** passwords are bcrypt hashes, no usable credential is committed, and startup needs at least one user but no token (decision 5). **Carried over** from the 2026-10-19 journal entry: hold creation checks the request and the per-request seat cap before step 1, not after the event lock; test 6 and the §12 item no longer wait on the `ORGANISER` endpoints; and with `frontrow.sweeper-enabled=false` no key is purged, so the 24-hour key life holds only while the schedule runs (PR #26 thread 4329608305). **Correction to the 2.6.4 row:** 2.6.4 also made the header's "Not yet built" name the event-creation service, which its row leaves out (PR #26 thread 4329923790); the row is left as merged |
+| 2.6.5 | 2026-10-22 | Post-implementation sync after plan 4A (PR #29), with no design change: each addition states what plan 4A decided where 2.6.4 was silent, checked against the code on `main`. **Status:** Phase 1 is seven plans; plans 1, 2, 3A, 3B and 4A are merged, and "Not yet built" now names plan 4B's work (event creation, the read services and `GET` endpoints, springdoc) and plan 5's. **§3:** the owner is the Basic username for both credentials, with its username pattern (plan 4A decision 3); the chain table, with the catch-all chain (decision 10); the three cross-site layers and their stated gap for browsers that send no Fetch Metadata (decision 6); the bearer check covers every `Authorization` header, and `/mcp` reads only the first, left to plan 5 (PR #29 thread 4342413070); the spike is answered (ADR-004) and re-proved on the production chain. **§5:** the sweep, not the purge, is the idempotent `UPDATE`; every service entry point starts its own transaction, through `TransactionBoundary`, not `Propagation.NEVER` (decision 4); the `PATCH` bounds its instants (decision 8). **§6:** a shared owner widens what a compromised agent can do (decision 3); REST statuses and Problem Details members, and the failures that keep Spring's or Boot's own body (decision 7); snake_case on the wire, and the `/mcp` `stack_trace`, reachable only with a valid agent token, left to plan 5 (decision 9); a new *Request bounds* subsection (decision 8); any organiser may `PATCH` any event, so one compromised organiser account can cancel every event with nothing sold, close, open early, reopen or extend sales on any event not cancelled through the window `PATCH`, even after its `starts_at`, and put any `DRAFT` event on sale, but cannot cancel an event with a confirmed order (decision 2); which REST rows are built, and owner scoping lives in the services. **§9:** passwords are bcrypt hashes, no usable credential is committed, and startup needs at least one user but no token (decision 5); any bcrypt cost is accepted, so a hand-written low-cost hash lets login timing reveal a username (deferred, PR #29 thread 4342380931). **Carried over** from the 2026-10-19 journal entry: hold creation checks the request and the per-request seat cap before step 1, not after the event lock; test 6 and the §12 item no longer wait on the `ORGANISER` endpoints; and with `frontrow.sweeper-enabled=false` no key is purged, so the 24-hour key life holds only while the schedule runs (PR #26 thread 4329608305). **Correction to the 2.6.4 row:** 2.6.4 also made the header's "Not yet built" name the event-creation service, which its row leaves out (PR #26 thread 4329923790); the row is left as merged |
