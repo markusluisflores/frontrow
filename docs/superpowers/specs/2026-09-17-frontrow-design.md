@@ -1,18 +1,19 @@
 # FrontRow — Design Spec
 
-**Date:** 2026-09-17 · **Revised:** 2026-10-19 (revision 2.6.4 — see §14)
-**Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 is six plans, and plans 1, 2, 3A and 3B are merged.
+**Date:** 2026-09-17 · **Revised:** 2026-10-22 (revision 2.6.5 — see §14)
+**Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 is seven plans, and plans 1, 2, 3A, 3B and 4A are merged.
 - Plan 1 (PR #5) built the build, CI, the V1 schema and the MCP spike.
 - Plan 2 (PR #10) built the domain core, the error contract, the JPA persistence model and the locking gateway (ADR-005).
 - Plan 3A (PR #18) built hold creation with idempotent replay, and §5 concurrency tests 1, 3, 4, 5 and 7.
 - Plan 3B (PR #24) built confirmation, release, the event `PATCH` and cancellation, and the sweeper with the 24-hour key purge, each as a service, and §5 concurrency tests 2 and 6. It also brought hold creation in line with revision 2.6.3's two decisions.
+- Plan 4A (PR #29) built the security edge: the three security chains (§3), hashed demo credentials (§9), Problem Details errors and the request bounds (§6), and the transaction guard (§5). It also built four REST write endpoints: hold, release, confirm and the event `PATCH`.
 
-Not yet built: the event-creation service (a plan 4 input: plan 4 builds it or names the plan that does), REST and the security chains (plan 4), and the MCP tools and evidence artifacts (plan 5). No REST endpoint or MCP tool calls the services yet.
+Not yet built: the event-creation service, the read services and the six `GET` endpoints, and springdoc / Swagger UI (plan 4B); the MCP tools and evidence artifacts (plan 5); seed data, a datasource configuration and the `docker compose` setup. The `/mcp` chain authenticates agent tokens but serves no tool of its own yet. Without a datasource the app runs only in the test suite.
 
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
-**Revisions 2.1–2.6.1** (same day) apply the review rounds; **2.6.2** (2026-10-05) is a post-implementation sync; **2.6.3** (2026-10-16) syncs the status and settles two questions from plan 3A's reviews; **2.6.4** (2026-10-19) is a post-implementation sync after plan 3B — see §14.
+**Revisions 2.1–2.6.1** (same day) apply the review rounds; **2.6.2** (2026-10-05) is a post-implementation sync; **2.6.3** (2026-10-16) syncs the status and settles two questions from plan 3A's reviews; **2.6.4** (2026-10-19) is a post-implementation sync after plan 3B; **2.6.5** (2026-10-22) is a post-implementation sync after plan 4A — see §14.
 
 ---
 
@@ -152,28 +153,75 @@ model with two credential types:
 The two filter chains are disjoint: `/api/**` rejects bearer tokens, `/mcp`
 rejects Basic credentials. Spring's Basic filter silently ignores a `Bearer`
 header, so it doesn't do this rejection on its own. `/api/**` has an explicit
-filter that returns 401 for any request carrying `Authorization: Bearer`, on
-anonymous endpoints too. That separation is what makes the threat model in §6
+filter that returns 401 for any request carrying `Authorization: Bearer` in any
+of its `Authorization` headers, on anonymous endpoints too. The `/mcp` chain
+installs no Basic filter, so a Basic header authenticates nothing there. That separation is what makes the threat model in §6
 enforceable rather than aspirational — an agent token cannot reach the purchase
 endpoint at all. No tool parameter carries identity; the owner always comes from
 the authenticated principal.
 
+**The owner is the Basic username, for both credentials.** An agent token's
+principal name is the username of the user it was issued to, so a user and
+their own agent share one owner, one hold-group cap and one idempotency-key
+namespace. The handover in §6 depends on this. Every username must match
+`^[a-z0-9][a-z0-9._-]{0,63}$`, checked at startup, so no two principals can
+alias: there are no case or Unicode look-alikes and no U+0000.
+
 An MCP token carries **no role of its own**. Tokens are issued only to users
-who hold `BUYER`, and the MCP chain grants the token a single `AGENT` authority
+who hold `BUYER` (startup fails otherwise), and the MCP chain grants the token a single `AGENT` authority
 that is scoped to `/mcp`. An organiser's or admin's powers are never reachable
 through an agent token.
 
-Everything outside the two chains is closed by default, except for three
+Everything outside the two chains is closed by default, except for four
 anonymous paths: Swagger UI (`/swagger-ui/**`, `/v3/api-docs/**`), `/error`,
 and `/actuator/health`. No other actuator endpoint is exposed in Phase 1.
 
-**Scaffold spike — must pass before the plan depends on it.** Spring AI's
+**The chains** (`security/SecurityConfig`), tried in this order:
+
+| Order | Matcher | Takes | Notes |
+|---|---|---|---|
+| 1 | `/api/**` | HTTP Basic | The bearer-reject filter and the cross-site filter (below) run before Basic authentication. The whole §6 REST role table; any unlisted `/api/**` path is denied |
+| 2 | `/mcp`, `/mcp/**` | Agent bearer token | A known token's user, with `AGENT` only |
+| 3 | none, evaluated last | — | The four anonymous paths above; everything else denied (ADR-002). Without it, a path matching neither chain would be served with no security at all |
+
+Every chain is stateless, with no session, no request cache and no logout
+endpoint, and Spring's CSRF token is off on all three. Every 401 and 403 is a
+Problem Details body (§6). The configured users replace Spring Boot's generated
+user, which would otherwise authenticate on `/api/**` as a fallback.
+
+**Cross-site requests.** With no session and no cookie, the CSRF risk is Basic
+credentials a browser has cached. A hostile page could then make the browser send
+an unsafe request, and confirm needs no body: a cross-site form `POST`, a
+`fetch` with `mode: 'no-cors'` or a `navigator.sendBeacon` would carry the cached
+credentials. Three layers stand against it:
+- **no 401 carries a `WWW-Authenticate: Basic` challenge,** so a browser never
+  prompts for the credentials and never caches them. RFC 9110 expects a challenge
+  on a 401; omitting it is the trade. Swagger UI and `curl` send the header
+  explicitly;
+- **Fetch Metadata:** on `/api/**`, an unsafe method (anything but `GET`, `HEAD`,
+  `OPTIONS` and `TRACE`) whose `Sec-Fetch-Site` is `cross-site` or `same-site`,
+  in any case, gets 403. This catches the bodyless request. `same-origin`, `none`
+  and an absent header pass, because non-browser clients send none;
+- **form types:** on `/api/**`, an unsafe method with a content type a cross-site
+  form can send without a CORS preflight (`application/x-www-form-urlencoded`,
+  `multipart/form-data`, `text/plain`), or an unparseable one, gets 415. No CORS
+  is configured, so a preflight fails.
+
+**The stated gap:** a browser that sends no Fetch Metadata relies on the first
+layer alone against a request with no form type, such as a bodyless `no-cors`
+`fetch` or a `sendBeacon`. Browsers send Fetch Metadata only to potentially
+trustworthy origins (HTTPS, or `localhost`), so this includes any browser
+reaching the app over plain HTTP on another host. If such a browser has cached
+the credentials by some other route, that request gets through. Phase 1 runs on
+`localhost`, and Phase 2 is meant for HTTPS.
+
+**Scaffold spike — answered.** Spring AI's
 Streamable HTTP transport may run `@McpTool` methods on a thread where
-`SecurityContextHolder` is empty. The first task after the scaffold proves how
-the authenticated principal reaches a tool method: the security context, or
-Spring AI's MCP transport or request context. The test uses a real bearer
-token over real HTTP. Every owner-scoped guardrail depends on the answer, so the
-Phase 1 plan names the mechanism only after the spike, not before.
+`SecurityContextHolder` is empty. The first task after the scaffold proved how
+the authenticated principal reaches a tool method, with a real bearer
+token over real HTTP (ADR-004: tools get the caller from `McpTransportContext`). Every owner-scoped
+guardrail depends on the answer. Plan 4A re-proved it through the production
+`/mcp` chain.
 
 ---
 
@@ -304,6 +352,18 @@ see what other transactions committed during that wait:
 Under REPEATABLE READ, a concurrent idempotent retry would get `40001` rather
 than the stored response.
 
+**Every service entry point starts its own transaction.** Joined to a caller's
+transaction, it would neither apply nor check READ COMMITTED, and the caller's
+earlier locks would come before step 1 of the lock order below. Each entry point
+keeps `REQUIRED` propagation and calls `TransactionBoundary.requireOwnTransaction()`
+as its first statement, which throws `IllegalTransactionStateException` (a 500 at
+the adapter) if the transaction was joined rather than started. `Propagation.NEVER`
+is not the answer: it runs the method with no transaction at all. No adapter is
+`@Transactional`. A test scans `service/` for services and fails unless they match
+its list, and another fails on any public method of a listed service it doesn't
+call inside an outer transaction, so a new service fails the build until it is
+covered.
+
 Every transaction takes the locks it needs in one global order, and skips the
 ones it doesn't need:
 
@@ -396,7 +456,11 @@ multi-seat confirm racing a lazy expiry of the same group could deadlock.
 
 ### Hold creation
 
-One transaction, all-or-nothing:
+One transaction, all-or-nothing. Before step 1, without a lock or a key claim,
+the request itself is checked: a blank idempotency key, one over 200 UTF-16
+units, or one with U+0000 or an unpaired surrogate, and an empty seat list, are
+`invalid_request`; more seats than the per-request cap, counted on the list as
+sent, is `too_many_seats`. So an oversized request costs no sort and no lock.
 
 1. **Idempotency first.** `INSERT INTO hold_request (owner, idempotency_key,
    request_hash) … ON CONFLICT DO NOTHING`. If a concurrent call with the same
@@ -408,9 +472,10 @@ One transaction, all-or-nothing:
    - event missing, or `DRAFT` → `not_found`. A draft is not disclosed (§4)
    - before `sales_open_at` → `sales_not_open`
    - `CANCELLED` or at/after `sales_close_at` → `sales_closed`
-   - a seat id not offered by this event, or a duplicate seat id → `invalid_request` (naming the ids)
-   - per-request seat cap → `too_many_seats`
+   - a duplicate seat id, or a seat id not offered by this event → `invalid_request` (naming the ids)
    - per-owner active-group cap → `hold_limit_exceeded`
+
+   The per-request seat cap is checked before step 1 (above), not here.
 4. **Claim seat by seat, in ascending `event_seat_id` order.** For each seat:
    lock its `ACTIVE` hold if one exists; if `expires_at <= :now`, expire it
    with an immediate SQL `UPDATE` (lazy expiry); then insert the new
@@ -537,6 +602,13 @@ Every other event `PATCH` — moving `sales_close_at` earlier, for example —
 takes the same `FOR UPDATE` lock. That way no confirm can commit against a
 window that was just closed.
 
+A `PATCH` is the one write path that takes instants from the caller, so the
+service bounds them, whichever adapter calls: a sales window outside
+`0001-01-01T00:00:00Z` … `9999-12-31T23:59:59.999999Z`, which is what both
+`timestamptz` and a four-digit ISO 8601 year hold, is `invalid_request` with
+`parameter: sales_window`, and never reaches the `UPDATE`. Without the bound it
+would fail in Postgres as a 500.
+
 Without the event lock, a confirm could pass its `ON_SALE` check while the
 cancel was blocked on the confirm's seat rows. The event would end up cancelled
 with a sold order. And if either side locked seats before the event, the two
@@ -555,8 +627,14 @@ would deadlock.
    the predicate after locking, so a hold confirmed a moment earlier is never
    expired.
 
-Correctness never depends on the scheduler running. The sweeper only keeps the
-table tidy and keeps availability counts honest for read queries. Its `UPDATE`
+Correctness of holds, confirmation and release never depends on the scheduler
+running. The sweeper only keeps the
+table tidy and keeps availability counts honest for read queries. **The key
+purge is the exception:** it is the only thing that ends an idempotency key's
+24-hour life (§6), and it runs only on the schedule. With
+`frontrow.sweeper-enabled=false`, as in the test suite, no key is ever purged,
+so a key reused after 24 hours replays its old response instead of running as a
+new request. Its `UPDATE`
 is idempotent and skips locked rows, so a second instance running it would be
 redundant rather than wrong. Being able to explain *why both exist* is worth
 more than either mechanism alone.
@@ -586,7 +664,8 @@ more than either mechanism alone.
 5. **Concurrent idempotent retry.** Two calls with the same idempotency key and
    request run in parallel. Assert both return the same `hold_group_id` and
    exactly one group exists.
-6. **Cancel vs. confirm** (only if the `ORGANISER` endpoints are built, §9).
+6. **Cancel vs. confirm.** It runs against the services, so it does not depend
+   on the `ORGANISER` endpoints being built (§9).
    An organiser cancels while an owner confirms. Assert that either the confirm
    gets `sales_closed` and the event is `CANCELLED`, or the order exists and the
    cancel gets `invalid_request`. Never both, and no deadlock.
@@ -640,7 +719,11 @@ expire on their own; purchases are neither. Confirmation exists only as
 `POST /api/holds/{holdGroupId}/confirm`, which accepts HTTP Basic only. The
 agent's bearer token cannot authenticate against `/api/**`, so even a fully
 compromised agent — or a prompt-injected one — can at worst tie up seats until
-its holds expire, bounded by the caps below. This is the single most
+its holds expire, bounded by the caps below. Because an agent shares its
+human's owner (§3), it can also release that human's holds, fill their
+hold-group cap and replay their idempotency keys; it still cannot buy. Confirm
+is tied only to a hold id, so the human confirms whatever that hold contains.
+This is the single most
 interview-valuable decision in the project and should be stated prominently in
 the README.
 
@@ -660,7 +743,8 @@ All enforced per owner, which is possible because identity is trusted (§3):
   Both share `hold_request` and the same protocol (§5). A replay with the same key and the
   same request returns the original result; the same key with a different
   request returns `idempotency_key_reused`. Keys live in `hold_request` for 24
-  hours.
+  hours, while the sweeper's schedule runs (§5 *Hold expiry*). A user and their
+  own agent share one key namespace (§3), so either can replay the other's hold.
 - Sales-window enforcement (the half-open window in §4)
 - `release_hold` on another owner's hold returns `not_found` — it does not
   reveal that the hold exists
@@ -698,6 +782,64 @@ tool's structured error result.
 A tool call that fails MCP authentication never reaches a tool. It gets an
 HTTP 401 from the MCP filter chain.
 
+**REST statuses.** The mapping is exhaustive, so a new code without a status
+fails to compile:
+
+| Code | Status |
+|---|---|
+| `invalid_request`, `too_many_seats` | 400 |
+| `not_found` | 404 |
+| `seat_taken`, `hold_limit_exceeded`, `hold_expired`, `hold_not_active`, `sales_not_open`, `sales_closed` | 409 |
+| `idempotency_key_reused` | 422, the IETF Idempotency-Key draft's status for a key reused with a different request |
+| `contention_retry` | 503, with `Retry-After: 1` |
+
+**Problem Details members.** `code`, `hint` and every detail are extension
+members, in key order. `type` is left unset, which RFC 9457 reads as
+`about:blank`, and `instance` is the request URI. Errors that a filter answers
+before Spring MVC (401, 403, 413 and 415) are written in the same shape, with
+no `code`: §6's codes are domain codes. Compare bodies as parsed JSON, never as
+strings. Further rules:
+- the service names MCP's parameter, so REST renames `idempotency_key` to
+  `Idempotency-Key`, the header that carries it; a missing header is named the
+  same way;
+- a framework failure is `invalid_request` with a `parameter`: `body` for
+  unreadable JSON (a literal `null` body included), the first JSON property on
+  the failing path for a bad value, such as `status` for an unknown status, or
+  the snake_case name of a mistyped path variable (`hold_group_id`, `event_id`);
+- **anything else is a generic 500** with no detail, logged server-side. That
+  includes an `IllegalStateException`, which can carry internal ids, and a
+  `DataIntegrityViolationException`, which is never guessed into a conflict
+  code. Failures Spring MVC maps itself, such as 405 and 415, keep their status.
+
+**The wire is snake_case** (`spring.jackson.property-naming-strategy`), matching
+MCP's parameter names and the error details. The stored replay form
+(`hold_request.response_json`) uses its own mapper, so this setting never changes
+a replay. A transport error on `/mcp` (malformed JSON, or a chunked body over
+the bound below) is rendered by the application's mapper, not the MCP server's,
+and its body includes a `stack_trace`. No tool is served yet; plan 5 must remove
+it and test that neither failure carries one.
+
+### Request bounds
+
+- **Bodies: 16 KiB, on every path, ahead of every security chain.** A declared
+  `Content-Length` over the limit gets 413 before anything is read. A chunked body
+  is counted as it is read, through the stream or the reader, and the read that
+  crosses the limit fails; on `/api/**` the answer is 413.
+  The services copy what they receive, so the bound belongs at the edge.
+- **The bound holds only while the container-side parsers stay off.** Spring
+  Boot's `FormContentFilter` read a form body on `PUT`, `PATCH` and `DELETE`
+  before security ran, and its multipart resolver had Tomcat parse a multipart
+  body from Tomcat's own buffer, past the counting stream. Both are off
+  (`spring.mvc.formcontent.filter.enabled`, `spring.servlet.multipart.enabled`),
+  because no endpoint takes a form or multipart body. Tomcat still parses a
+  form-encoded `POST` for anything that reads the parameter map, which the MCP
+  transport's body read does, so `server.tomcat.max-http-form-post-size` caps that
+  at the same 16 KiB.
+- **Headers:** Tomcat's default 8 KiB header limit, then the service's
+  200-unit idempotency-key check (§5 *Hold creation*).
+- **Instants:** an event `PATCH` bounds its sales window (§5 *Event
+  cancellation*).
+
 An unstructured string error is a review BLOCKER — it is one of the named weak
 signals.
 
@@ -713,10 +855,17 @@ signals.
 | `GET /api/me/orders` | `BUYER` | Own orders |
 | `GET /api/orders/{id}` | `BUYER` (owner), `ADMIN` (any) | Another owner's order returns `not_found`, the same as `release_hold` |
 | `POST /api/events` | `ORGANISER` | Creates a `DRAFT` event on an existing venue with a price per section |
-| `PATCH /api/events/{id}` | `ORGANISER` | Sales window and status (`ON_SALE`, `CANCELLED` — see §5 *Event cancellation*) |
+| `PATCH /api/events/{id}` | `ORGANISER` | Sales window and status (`ON_SALE`, `CANCELLED` — see §5 *Event cancellation*). Any organiser, any event: the schema records no event owner, so per-event ownership waits for Phase 2 |
 
 The two `ORGANISER` endpoints are the first thing trimmed if Phase 1 runs long
 (§9) — seeded events cover the demo without them.
+
+Plan 4A built the hold, release, confirm and `PATCH` endpoints; the rest are
+plan 4B's. The `/api/**` chain already carries every row of this table, so an
+`/api/**` path not listed here is denied. Owner scoping is not a role rule:
+release and confirm answer `not_found` for another owner's hold in the service,
+and `GET /api/orders/{id}` must do the same for a `BUYER` (an `ADMIN` reads any
+order).
 
 ---
 
@@ -779,7 +928,12 @@ disjoint filter chains. `/api/**` uses HTTP Basic against in-memory users
 carrying `BUYER`, `ORGANISER` and `ADMIN` roles. `/mcp` uses static bearer
 tokens from configuration, each mapped to a user; only SHA-256 hashes of the
 tokens are stored in config, and demo tokens are generated at setup rather than
-committed. It exists to demonstrate that authorization boundaries were
+committed. Passwords are stored only as bcrypt hashes too. The committed
+`application.yml` defines no user and no token, and startup fails without them:
+a Basic chain with no users is a misconfiguration. `scripts/demo-credentials.sh`
+writes the hashes to a gitignored `config/application-demo.yml` and prints the
+raw values once; the app runs with the `demo` profile. Tests generate their own
+credentials on every run. It exists to demonstrate that authorization boundaries were
 considered and wired, not to be production authentication. The README must say
 so plainly — overstating it is worse than omitting it.
 
@@ -845,7 +999,7 @@ Self-service issuance belongs with OAuth2 in Phase 2.
 - [ ] `docker compose up` starts the service and Postgres; seeded demo data present
 - [ ] Swagger UI browsable; every endpoint in the §6 REST table exercised end to end (the `ORGANISER` endpoints only if not trimmed under §9)
 - [ ] All 5 MCP tools callable from Claude Code over Streamable HTTP with a bearer token
-- [ ] The concurrency tests in §5 pass against real Postgres (test 6 only if the `ORGANISER` endpoints are built); the hold-race test genuinely fails if `uq_claimed_seat` is removed
+- [ ] The concurrency tests in §5 pass against real Postgres (test 6 runs against the services, so it does not wait on the `ORGANISER` endpoints); the hold-race test genuinely fails if `uq_claimed_seat` is removed
 - [ ] Security tests prove the chains are disjoint in both directions — an MCP token cannot reach the confirm endpoint, and Basic credentials cannot reach `/mcp`
 - [ ] Every schema constraint in §5 has an integration test inserting a violating row
 - [ ] No raw token in the repository or committed config — only SHA-256 hashes
@@ -860,10 +1014,10 @@ Self-service issuance belongs with OAuth2 in Phase 2.
 
 ## 13. Next steps
 
-*Status 2026-10-19: Steps 1 and 2 are done; step 3 is under way. This spec was
-reviewed and merged in PR #1, and ADRs 001-005 are in `docs/adr/`. Phase 1 was split into six plans.
-Plans 1, 2, 3A and 3B are written, executed and merged (`docs/superpowers/plans/`); plans
-4 and 5 are not written yet.*
+*Status 2026-10-22: Steps 1 and 2 are done; step 3 is under way. This spec was
+reviewed and merged in PR #1, and ADRs 001-005 are in `docs/adr/`. Phase 1 was split into seven plans.
+Plans 1, 2, 3A, 3B and 4A are written, executed and merged (`docs/superpowers/plans/`); plans
+4B and 5 are not written yet.*
 
 1. This revision is reviewed by the user and merged.
 2. Record ADRs in `docs/adr/` for: the schema-level claim invariant (§5), the
@@ -899,3 +1053,4 @@ redundant and should not be merged.
 | 2.6.2 | 2026-10-05 | Post-implementation sync, with no design change. The header now gives the implementation status: plans 1 and 2 of 5 are merged, PRs #5 and #10. Idempotent replay is specified as **JSON-equal, not byte-verbatim**. PR #10 showed that `jsonb` normalises stored responses (`{"ok":true}` comes back as `{"ok": true}`), so "verbatim" was unachievable, and a byte-comparing test would fail. The persistence split this section implies is now recorded as ADR-005 |
 | 2.6.3 | 2026-10-16 | Status sync, and two decisions from plan 3A's reviews. **Status:** Phase 1 is six plans; plans 1, 2 and 3A are merged (PRs #5, #10 and #18), and the header lists what `main` doesn't yet match. **Clock:** §5 now says when a transaction reads `now`: once the locks before its first time-dependent decision are held, not on arrival (PR #18 review thread 4296540439). An arrival-time read let a hold that waited across `sales_close_at` succeed, made a lapsed hold look live, and shortened `expires_at` by the wait. **Drafts:** a `DRAFT` event answers `not_found` to every caller on every read and hold by id, and list reads leave it out, instead of `sales_not_open` with its `sales_open_at` (PR #16 review finding N5). Plan 3B brings hold creation in line with both |
 | 2.6.4 | 2026-10-19 | Post-implementation sync after plan 3B (PR #24), with no design change. **Status:** plans 1, 2, 3A and 3B are merged; the header's "Where `main` differs from this revision" block is removed, because plan 3B made hold creation read the clock after the event-row lock and answer a `DRAFT` event with `not_found`. **Clock:** an event `PATCH` reads no clock, because it makes no time-dependent decision and writes no clock-derived timestamp (plan 3B decision 3); 2.6.3 placed its read after the event lock. The §5 opener now says each transaction uses "at most one instant", not "one instant". No behaviour changes: in 2.6.3 a `PATCH` would have read an instant that nothing used, and the code reads none. **Replay:** a key purged between the step-1 claim and the read is claimed once more, and a second conflict replays the request that just committed (plan 3B decision 8, PR #18 thread 4296540462). **Sweeper:** it is registered by a `SchedulingConfigurer` as two fixed-delay tasks and switched by `frontrow.sweeper-enabled`, not an `@Scheduled` method (plan 3B decision 7) |
+| 2.6.5 | 2026-10-22 | Post-implementation sync after plan 4A (PR #29), with no design change: each addition states what plan 4A decided where 2.6.4 was silent, checked against the code on `main`. **Status:** Phase 1 is seven plans; plans 1, 2, 3A, 3B and 4A are merged, and "Not yet built" now names plan 4B's work (event creation, the read services and `GET` endpoints, springdoc) and plan 5's. **§3:** the owner is the Basic username for both credentials, with its username pattern (plan 4A decision 3); the chain table, with the catch-all chain (decision 10); the three cross-site layers and their stated gap for browsers that send no Fetch Metadata (decision 6); the bearer check covers every `Authorization` header; the spike is answered (ADR-004) and re-proved on the production chain. **§5:** every service entry point starts its own transaction, through `TransactionBoundary`, not `Propagation.NEVER` (decision 4); the `PATCH` bounds its instants (decision 8). **§6:** a shared owner widens what a compromised agent can do (decision 3); REST statuses and Problem Details members (decision 7); snake_case on the wire, and the `/mcp` `stack_trace` left to plan 5 (decision 9); a new *Request bounds* subsection (decision 8); any organiser may `PATCH` any event (decision 2); which REST rows are built, and owner scoping lives in the services. **§9:** passwords are bcrypt hashes and no usable credential is committed (decision 5). **Carried over** from the 2026-10-19 journal entry: hold creation checks the request and the per-request seat cap before step 1, not after the event lock; test 6 and the §12 item no longer wait on the `ORGANISER` endpoints; and with `frontrow.sweeper-enabled=false` no key is purged, so the 24-hour key life holds only while the schedule runs (PR #26 thread 4329608305). **Correction to the 2.6.4 row:** 2.6.4 also made the header's "Not yet built" name the event-creation service, which its row leaves out (PR #26 thread 4329923790); the row is left as merged |
