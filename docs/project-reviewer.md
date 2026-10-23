@@ -1,13 +1,17 @@
 # FrontRow — Project Reviewer & Interview Guide
 
 > **Living document.** Updated as new concepts are added or lessons are learned.
-> Last updated: 2026-10-19
+> Last updated: 2026-10-22
 
-> ⚠️ **Phase 1 plans 1, 2, 3A and 3B of 6 have landed. Every write path on holds, orders and an existing event's
-> status and window exists as a service, including the only purchase path; creating an event does not yet. There is
-> no API, so nobody can buy a seat yet.** Plans 3A (hold creation, PR #18) and 3B
-> (confirm, release, cancellation and the sweeper, PR #24) are Java services exercised by integration tests
-> against real Postgres; no REST endpoint or MCP tool calls them yet.
+> ⚠️ **Phase 1 plans 1, 2, 3A, 3B and 4A of 7 have landed. Every write path on holds, orders and an existing event's
+> status and window exists as a service, and four of them have REST endpoints behind the security chains: hold,
+> release, confirm (the only purchase path) and the event `PATCH`. Creating an event, reading anything, and every
+> MCP tool do not exist yet. No datasource configuration, compose file or seed data is committed, so the app starts
+> only against a Postgres supplied through the environment (`CLAUDE.md`), and with nothing to hold the golden path
+> has run only in the test suite.**
+> Plans 3A (hold creation, PR #18) and 3B (confirm, release, cancellation and the sweeper, PR #24) are Java
+> services; plan 4A (PR #29) put them behind HTTP. All of it is exercised by tests against real Postgres: the REST
+> golden path through the full filter chain with MockMvc, and the request bounds over a real socket.
 >
 > **Built**, and proven by `./mvnw verify`:
 > - the Maven build and CI (build, CodeQL, dependency review, Dependabot);
@@ -25,12 +29,14 @@
 >   sweeper and the 24-hour idempotency-key purge (plan 3B, PR #24), plus spec 2.6.3's two
 >   code changes (hold creation reads the clock after the event lock; a `DRAFT` event answers
 >   `not_found`);
-> - all seven of spec §5's concurrency tests (1, 3, 4, 5 and 7 in plan 3A; 2 and 6 in plan 3B).
+> - all seven of spec §5's concurrency tests (1, 3, 4, 5 and 7 in plan 3A; 2 and 6 in plan 3B);
+> - the security edge (plan 4A, PR #29): three disjoint security chains, hashed demo credentials, Problem Details
+>   errors, a 16 KiB request-body bound, a guard that every service starts its own transaction, and the four REST
+>   write endpoints.
 >
-> **Not built:** the security chains, REST endpoints, MCP tools, seed data, and a
-> Dockerfile or compose file (plans 4 and 5), and event creation (spec §6's `POST /api/events`
-> has no service behind it). Nothing is deployed, and no adapter
-> can call any service. Entries below that describe
+> **Not built:** event creation, the read services and the six `GET` endpoints, and Swagger UI (plan 4B); the MCP
+> tools and the evidence artifacts (plan 5); seed data, a datasource configuration, and a Dockerfile or compose
+> file. Nothing is deployed, and no MCP tool exists, so "an agent can hold" is still design. Entries below that describe
 > unbuilt work are still *design decisions* supported by
 > `docs/superpowers/specs/2026-09-17-frontrow-design.md` — do not claim those
 > as shipped work in an interview; the honest framing is "here's a design I
@@ -100,11 +106,26 @@
 - Spec §5 concurrency tests 2 and 6, a release-versus-confirm race, and a test that
   ends one real hold among 70,001 ids in one statement.
 
-There are **197 test runs** in total. Still missing: event creation (no service),
-every read path (none of spec §6's GETs has a service or query behind it), and any
-API in front of the services, so nothing outside the test suite can call them.
+**Plan 4A, the security edge and the REST write endpoints** (PR #29, merged 2026-10-21):
+- Three Spring Security chains in `security/SecurityConfig`: `/api/**` takes HTTP Basic only and refuses a bearer
+  token in any `Authorization` header; `/mcp` takes an agent bearer token only and grants a single `AGENT`
+  authority; a last chain with no matcher opens four anonymous paths and denies everything else.
+- Hashed demo credentials: bcrypt passwords and SHA-256 tokens, checked at startup. Nothing usable is committed;
+  a script generates the demo's, and the tests generate their own on every run.
+- RFC 9457 Problem Details for every error the application answers on `/api/**`, with an exhaustive code-to-status
+  mapping and a generic 500 for anything else (not for a direct `POST /error`, Tomcat's HTML 400 for an oversized
+  header, or `/mcp` transport errors); a 16 KiB request-body bound ahead of every chain; a cross-site write filter
+  for the CSRF risk of cached Basic credentials.
+- `TransactionBoundary`: every service entry point fails loudly if it joins a caller's transaction.
+- Four REST endpoints: hold, release, confirm and the event `PATCH`. The owner always comes from the principal.
 
-The *designed* system, whose two adapters are not built: an event ticketing and
+There are **264 test runs** in total. Still missing: event creation (no service),
+every read path (none of spec §6's GETs has a service or query behind it), every
+MCP tool, and a committed datasource configuration, compose file and seed data. The app starts only against a
+Postgres supplied through the environment (`CLAUDE.md`), and with no seed data and no way to create an event there
+is nothing to hold, so the golden path has run only in the test suite.
+
+The *designed* system, whose REST adapter is partly built and whose MCP adapter is not: an event ticketing and
 seat-reservation service in Spring Boot, exposed through two inbound adapters
 over one domain core — a REST API for humans and an MCP server for agents.
 
@@ -238,10 +259,12 @@ endpoint lives on REST — so an agent token cannot reach the purchase path at a
 idempotent replay (`idempotency_key_reused` on a mismatch), the sales gate, and the
 active-group cap, raced in test 4. *(Updated 2026-10-19.)* Plan 3B (PR #24) built
 confirmation as `ConfirmService`, the only code that writes an order, which the
-pre-PR security review checked. The MCP tools, credential chains and logging are
-not built, so "an agent can't buy" is still design: no adapter exists yet to keep
-away from `ConfirmService`. A structural check that no MCP adapter depends on it is
-an input to plan 5.
+pre-PR security review checked. *(Updated 2026-10-22.)* Plan 4A (PR #29) built the
+two credential chains and the confirm endpoint behind Basic, and its tests show an
+agent token refused on `/api/**`, the confirm endpoint included, and a token for a
+user who is also an organiser carrying no organiser power. The MCP tools and their
+logging are not built, so the agent side is still design. A structural check that
+no MCP adapter depends on `ConfirmService` is an input to plan 5.
 
 **Interview talking point:** "I drew the line at reversibility rather than at
 read-versus-write. The agent can hold seats, which does mutate state — but a hold
@@ -479,13 +502,16 @@ The cuttable parts were the organiser endpoints and the breadth of seed data."
 
 **Be ready for the timeline question, because the honest answer is better than a
 dodge.** The spec estimated "a full focused week" for Phase 1. *(Updated
-2026-10-19.)* Thirty-two days in (2026-09-17 to 2026-10-19), the foundation, the
+2026-10-22.)* Thirty-five days in (2026-09-17 to 2026-10-22), the foundation, the
 domain foundations and every write path on holds, orders and an existing event's status and window (plans 3A and
-3B) are built as services; creating an event is not.
-Nobody can buy a seat yet, because there is no API in front of them. The reason
+3B) are built as services, and plan 4A put four of them behind REST and the security chains; creating an event is
+not built, nor is any read endpoint or MCP tool. A human can hold and buy seats through the REST endpoints in the
+test suite (with MockMvc, not over a socket). No datasource configuration, compose file or seed data is committed
+yet: the app starts only against a Postgres supplied through the environment, and with no event to hold it has not
+been run that way. The reason
 is not drift: Phase 1 was re-planned from 3 documents into 5 when Plan 2 proved
-too large to review, and into 6 when Plan 3 did too (split into 3A and 3B on
-2026-10-14), and
+too large to review, into 6 when Plan 3 did too (split into 3A and 3B on
+2026-10-14), and into 7 when Plan 4 was split into 4A and 4B (2026-10-20), and
 every plan has gone through multi-round review before any code was written —
 which caught five defects in plan 2 alone that would each have failed at runtime
 or build time. That is a deliberate trade of calendar time against defect cost,
@@ -527,7 +553,8 @@ These were design findings. Plan 2 (PR #10) built the lock-order primitives and
 lazy expiry as an immediate guarded `UPDATE`, both with tests. *(Updated
 2026-10-19.)* Plan 3B (PR #24) built the cancel, confirm and release paths that use
 them, with §5 tests 2 and 6 racing confirm against expiry and against cancellation.
-None of them is reachable through an API yet.
+*(Updated 2026-10-22.)* Plan 4A (PR #29) made all three reachable over REST: confirm,
+release, and cancellation through the event `PATCH`.
 
 ### Seven Review Rounds, and a Claim We Got Wrong
 
@@ -559,9 +586,13 @@ version we'll pin, before it goes into a spec."
 
 ## Bugs Worth Remembering
 
-*No runtime defect is reachable on `main`.* That covers plans 1, 2, 3A and 3B: the
-scaffold, CI, the V1 schema, the spike, the domain foundations, the locking
-gateway, hold creation, confirm, release, cancellation and the sweeper. (Seven review findings on hold creation were parked
+*No runtime defect is known to be reachable on `main`, beyond the gaps plan 4A states and defers.* That covers plans
+1, 2, 3A, 3B and 4A: the scaffold, CI, the V1 schema, the spike, the domain foundations, the locking
+gateway, hold creation, confirm, release, cancellation, the sweeper, the security chains and the four REST write
+endpoints. *(Added 2026-10-22.)* The deferred gaps: with a valid agent token, malformed JSON or an oversized chunked
+body sent to `/mcp` gets an error body that includes a `stack_trace`, which plan 5 must remove; a direct anonymous `POST /error`
+gets Spring Boot's own 500 body, not Problem Details, which leaks nothing; and a browser that sends no Fetch
+Metadata relies on one CSRF layer alone (plan 4A decision 6, a stated trade). (Seven review findings on hold creation were parked
 with rulings rather than fixed, one of them a request that waits across
 `sales_close_at` and can still get a hold. The clock is read once, at arrival, which was plan decision 5's design,
 when the spec did not yet fix the sampling point. The same cause has two more effects: a hold that lapsed during the
@@ -573,8 +604,8 @@ clock after the event lock, confirm and release read it after their row locks, t
 their start, and cancellation and the event PATCH read no clock at all (plan 3B decision 3). `ClockReadPointTest`
 covers hold creation, release and confirm only. Hold creation's seat-row waits still come after its read, so a
 smaller residual of the same three effects stays by design. Spec revision 2.6.4 removed the header block that
-listed both gaps. No adapter can reach any service yet, nothing can be bought through an API, and
-confirm re-checks the sales window. See *Building the First Write Path*.)
+listed both gaps. Confirm re-checks the sales window, so a hold granted after `sales_close_at` still cannot be
+bought. See *Building the First Write Path*.)
 Two things did reach `main`, and they should be named
 rather than hidden:
 - **A test gap, now closed:** after plan 2, nothing proved the seat_hold row locks
@@ -644,8 +675,8 @@ idempotent in-process sweeper). What an interviewer could still press on:
 ## Review as the Deliverable (2026-10-02)
 
 *Written when plans 2-5 were still documents. As of 2026-10-05, plan 2 is built
-(PR #10), and the plan-2 items below carry "now built" notes. As of 2026-10-19,
-plans 2, 3A and 3B are built (PR #10, PR #18, PR #24); 4 and 5 are
+(PR #10), and the plan-2 items below carry "now built" notes. As of 2026-10-22,
+plans 2, 3A, 3B and 4A are built (PR #10, PR #18, PR #24, PR #29); 4B and 5 are
 unwritten.* The review of those documents is where most defects
 were caught before code existed. Unless an item says "now built", treat it as a
 **review or design outcome, not shipped code**, and say so if asked.
@@ -697,7 +728,7 @@ instead of inferring it from a timeout.
 `HoldRequestId`, and the virtual-thread executor with the `pg_stat_activity`
 wait check. The build and the lock tests pass on CI.
 
-**A security finding, now in ADR-002 (design; not built).** Declaring any
+**A security finding, now in ADR-002 (now built, PR #29).** Declaring any
 `SecurityFilterChain` bean removes Spring Boot's default chain, and
 `FilterChainProxy` passes a request matching **no** chain straight through with no
 security applied — it does not deny it. So two `securityMatcher`-scoped chains
@@ -709,7 +740,11 @@ fail-open and the failure is invisible. The required fix is a catch-all chain
 evaluated last with `anyRequest().denyAll()`, plus a test that hits an unmatched
 path and expects 401 or 403.
 
-*Follow-up:* "Is it built?" No — plan 4 owns it.
+*Follow-up:* "Is it built?" *(Updated 2026-10-22.)* Yes, by plan 4A (PR #29). The
+catch-all chain has no matcher, sits at `LOWEST_PRECEDENCE` and denies everything but
+four anonymous paths. `SecurityChainsTest#theCatchAllOpensOnlyItsAnonymousPaths`
+covers it, and `anUnlistedApiPathIsDeniedEvenToAnAuthenticatedUser` covers the same
+fail-closed rule inside `/api/**`.
 
 **The persistence split (built in PR #10; recorded as ADR-005).** JPA for ordinary reads and
 writes, explicit `JdbcClient` SQL for locking reads and lazy expiry. Hibernate
@@ -959,10 +994,11 @@ measuring answers the second."
 - Test 6 is still skewed: cancellation won 77 of 80 repetitions in round 1's four runs, with no confirm win at all in
   one run, and 59 of 60 in the session's three runs. Its re-check is still guarded: round 1's reviewer moved
   cancellation's "anything sold?" check before the event lock as a mutation, and test 6 failed in 3 of 3 runs.
-- Nothing here is reachable from outside the test suite, because no API exists. Deferred to plan 4: its error handler
-  must never echo `IllegalStateException` messages, which carry internal ids, and must answer driver errors such as
-  the old parameter-cap failure with a generic 500, never a conflict code. Deferred to plan 5: a structural check that
-  no MCP adapter depends on `ConfirmService` or `EventPatchService`.
+- At 3B's merge nothing here was reachable from outside the test suite, because no API existed. Deferred to plan 4,
+  and built by plan 4A (PR #29): the error handler never echoes `IllegalStateException` messages, which carry
+  internal ids, and answers driver errors such as the old parameter-cap failure with a generic 500, never a conflict
+  code. Deferred to plan 5: a structural check that no MCP adapter depends on `ConfirmService` or
+  `EventPatchService`.
 - A task first committed seven comment lines with `—` and `§` double-encoded by a cp1252 read; its task review
   caught it, and it was restored before merge. No multi-model review ran: this repo has no cross-model reviewer
   workflow.
@@ -988,6 +1024,7 @@ measuring answers the second."
 | 2026-10-18 (plan 3B written) | Plan 3B is written and merged as a plan (PR #22, `af5b1a4`), not executed. *Bugs Worth Remembering* no longer calls it unwritten. No other entry was stale: the banner already lists 3B's work as not built, and *Review as the Deliverable* already counts 3B among the documents. | Staleness pass over every mention of plan 3B. Checked by PR #23's fresh round 1 (review 5565781561): 0 BLOCKER, 3 SUGGESTION, 3 NIT, all fixed |
 | 2026-10-19 (plan 3B executed) | Plan 3B executed and merged (PR #24, `61f0a65`). Banner, *What We Built* (197 runs, a plan 3B block), concepts 2, 3 and 7 (sweeper, confirm and the lock order built; "an agent can't buy" still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (both gaps between `main` and the spec closed; the spec header's "Where `main` differs" block now stale), and the *Review as the Deliverable* header and concurrency-test follow-up all moved from "not built" to built as services, without adapters. Added *Executing Plan 3B*. | Staleness pass over every mention of plan 3B, "not built", buying, the sweeper, tests 2 and 6, confirm, release and cancel, the clock's sampling point and `DRAFT`. Checked by PR #25's fresh round 1 (review 5576525428): 2 BLOCKER, 4 SUGGESTION, 1 NIT, all fixed. PR #25's fresh round 2 (review 5576660010): 1 BLOCKER, 2 SUGGESTION, 4 NIT, all fixed. PR #25's fresh round 3 (review 5579432416): 0 BLOCKER, 1 SUGGESTION, 2 NIT, all fixed. PR #25's fresh round 4 (review 5579460532): 0 BLOCKER, 1 SUGGESTION, fixed |
 | 2026-10-19 (spec 2.6.4) | Spec revision 2.6.4, the post-3B sync. *Bugs Worth Remembering* and *Executing Plan 3B* no longer call the spec header's "Where `main` differs" block owed. | Staleness pass over every mention of that block and of a spec sync being owed. Its review rounds are recorded on its PR |
+| 2026-10-22 (plan 4A executed; spec 2.6.5) | Plan 4A written (PR #28) and executed (PR #29, `290b60b`), and spec revision 2.6.5. A sync only, with no new section: the banner (seven plans; four REST write endpoints behind the security chains; no read endpoint or MCP tool; no committed datasource, compose file or seed data, so a standalone run needs a Postgres supplied through the environment), *What We Built* (264 runs, a plan 4A block), concept 3 (the chains and the confirm endpoint built; the agent side still design), the timeline answer, the review-history note on cancel, confirm and release, *Bugs Worth Remembering* (the gaps plan 4A defers), and in *Review as the Deliverable* its header and the catch-all finding (now built). The banner and the timeline answer say the REST golden path runs with MockMvc, not over a socket, and *What We Built* scopes Problem Details to errors the application answers on `/api/**`. The *Executing Plan 3B* note on the error handler now says plan 4A built it. | Staleness pass over every mention of "no API", "not built", plan 4, the security chains, the catch-all chain, buying, and "reachable". Its review rounds are recorded on its PR |
 | 2026-09-18 (wrap-up) | Added concept 7 (global lock order) and the seven-round review entry; synced to rev 2.6.1. Still design-stage. | **DRIFT FOUND** — 5 minor: a Hibernate wording mismatch with the spec (spec corrected in the same PR), round 6–7 counts backed only by the journal (added to the PR #1 log), two talking points that overclaimed, and this missing row. All fixed |
 
 **2026-09-17 drift-check result.** The fresh-context check independently verified
