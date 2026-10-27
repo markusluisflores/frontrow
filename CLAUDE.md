@@ -6,6 +6,14 @@ the user-level CLAUDE.md and apply here.
 
 ## Current state
 
+**Scope (ADR-006, spec revision 2.7, 2026-10-27): FrontRow is a finished, local-only portfolio project.**
+Phase 1 is the whole project; the former Phases 2–4 are "Possible next steps" in the README, not commitments.
+Plans 4B and 5 are written against the spec §7 demo story. `GET /api/orders/{id}` and the `ADMIN` role are
+cut, and plan 4B removes their rule and tests from `main`; `POST /api/events` stays. From here on, findings follow the
+**portfolio quality bar** (spec §9): fix only what is part of the core guarantee, visible in the demo, or an
+obvious flaw to someone reading the code. Other accepted trade-offs go into the README's "Known limitations",
+not into GitHub issues.
+
 **Phase 1 plans 1 (foundation), 2 (domain foundations), 3A (hold creation), 3B (confirm, release,
 cancellation, the sweeper) and 4A (the security edge and the REST write endpoints) are complete.
 Together they provide: a Maven build, CI, the V1 schema
@@ -23,13 +31,13 @@ confirm and the event PATCH. No read endpoint, no event creation and no MCP tool
 `uq_claimed_seat`. Plans 4B (the read services and GET endpoints, event creation, OpenAPI) and 5 (MCP)
 remain.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
-`docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.6.5; 2.6
+`docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.7, the portfolio-scope change; 2.6
 reviewed and merged 2026-09-18, 2.6.1 a wording fix, 2.6.2 a post-implementation
 sync, 2.6.3 a status sync plus two decisions — when `now` is read, and `DRAFT` as
 `not_found` — which plan 3B implements; 2.6.4 and 2.6.5 post-implementation syncs after plans 3B and 4A).
-Plan 3A's text carries dated errata at its top. Five ADRs are in `docs/adr/`: the three from spec §13; ADR-004, recorded
-by plan 1's spike; and ADR-005, the JPA-plus-JDBC persistence split behind the
-lock rule below. Plan 1 was executed on `feat/phase-1-foundation`:
+Plan 3A's text carries dated errata at its top. Six ADRs are in `docs/adr/`: the three from spec §13; ADR-004, recorded
+by plan 1's spike; ADR-005, the JPA-plus-JDBC persistence split behind the
+lock rule below; and ADR-006, the portfolio scope. Plan 1 was executed on `feat/phase-1-foundation`:
 `docs/superpowers/plans/2026-09-18-phase-1-plan-1-foundation.md`. Plan 2 was
 executed on `feat/phase-1-domain-foundations` and merged as PR #10 (`e432c3c`,
 2026-10-05): `docs/superpowers/plans/2026-10-02-phase-1-plan-2-domain-foundations.md`.
@@ -80,8 +88,8 @@ bootstrap. The scaffold task must land all of them, not just the build:
   authority), and a last catch-all chain that denies everything but four anonymous paths. An `/api/**`
   path the table doesn't list is denied, so a new endpoint needs its rule there. Owner scoping is not a role rule: the services enforce
   it (release and confirm answer `not_found` for another owner's hold via
-  `LockingGateway#lockGroupRows(group, owner)`), so a read scoped by owner, such as 4B's `GET /api/orders/{id}` (`BUYER` sees only their own, `ADMIN` any),
-  is not covered by its table row alone. The 16 KiB body bound
+  `LockingGateway#lockGroupRows(group, owner)`), so a read scoped by owner, such as 4B's `GET /api/me/holds` and `GET /api/me/orders`, must filter by
+  the caller in the service: its table row alone doesn't do it. The 16 KiB body bound
   is not in a chain: `rest/RestConfig` registers `RequestBodyLimitFilter` ahead of all of them, and it
   holds only while Boot's FormContentFilter and multipart resolver stay off and Tomcat's form-post cap stays at 16 KB
   (`application.yml`).
