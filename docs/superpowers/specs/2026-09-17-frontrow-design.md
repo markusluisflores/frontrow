@@ -9,7 +9,7 @@
 - Plan 3B (PR #24) built confirmation, release, the event `PATCH` and cancellation, and the sweeper with the 24-hour key purge, each as a service, and §5 concurrency tests 2 and 6. It also brought hold creation in line with revision 2.6.3's two decisions.
 - Plan 4A (PR #29) built the security edge: the three security chains (§3), hashed demo credentials (§9), Problem Details errors and the request bounds (§6), and the transaction guard (§5). It also built four REST write endpoints: hold, release, confirm and the event `PATCH`.
 
-Not yet built: the event-creation service, the read services and the five `GET` endpoints, and springdoc / Swagger UI (plan 4B, which also removes the `/api/orders/*` rule and the `ADMIN` role that revision 2.7 cut); the MCP tools and evidence artifacts (plan 5); seed data, a datasource configuration and the `docker compose` setup. The `/mcp` chain authenticates agent tokens but serves no tool of its own yet. No datasource configuration, compose file or seed data is committed, so a standalone run needs an external Postgres supplied through the `SPRING_DATASOURCE_*` environment variables (`CLAUDE.md`); with no seed data and no event creation, the golden path has run only in the test suite.
+Not yet built: the event-creation service, the read services and the five `GET` endpoints, and springdoc / Swagger UI (plan 4B, which also removes what revision 2.7 cut: the `/api/orders/*` rule, the `ADMIN` role and the `adam` user in `DemoCredentials.java` and `TestCredentials.java`, see §6; and binds the app to loopback, see §3 *The stated gap*); the MCP tools and evidence artifacts (plan 5); seed data, a datasource configuration and the `docker compose` setup. The `/mcp` chain authenticates agent tokens but serves no tool of its own yet. No datasource configuration, compose file or seed data is committed, so a standalone run needs an external Postgres supplied through the `SPRING_DATASOURCE_*` environment variables (`CLAUDE.md`); with no seed data and no event creation, the golden path has run only in the test suite.
 
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
@@ -72,12 +72,14 @@ directly to SDET experience while reading as current AI work.
    business invariants.
 2. Double-booking made **structurally impossible**, proven by a concurrency
    test against real Postgres.
-3. An MCP server exposing the same domain, meeting the published credibility
-   bar including a logged failure case.
+3. An MCP server exposing the same domain, meeting most of the published
+   credibility bar (§1): typed schemas checked in, a logged failure case, thin
+   tools, structured errors, and an architecture diagram with a threat model.
+   The measured tool success rate and p95 latency are a possible next step (§9).
 4. Something complete and presentable as a portfolio piece: judged by reading
    the repo and README and watching a recorded demo (§7), not by real use.
    *(Until revision 2.7 this read "within roughly one focused week"; Phase 1 has
-   taken over five weeks, see §14.)*
+   taken over five weeks, see ADR-006.)*
 
 ### Non-goals
 
@@ -181,8 +183,8 @@ alias: there are no case or Unicode look-alikes and no U+0000.
 
 An MCP token carries **no role of its own**. Tokens are issued only to users
 who hold `BUYER` (startup fails otherwise), and the MCP chain grants the token a single `AGENT` authority
-that is scoped to `/mcp`. An organiser's or admin's powers are never reachable
-through an agent token.
+that is scoped to `/mcp`. An organiser's powers are never reachable through an
+agent token.
 
 Everything outside the two chains is closed by default, except for four
 anonymous paths: Swagger UI (`/swagger-ui/**`, `/v3/api-docs/**`), `/error`,
@@ -224,8 +226,11 @@ layer alone against a request with no form type, such as a bodyless `no-cors`
 `fetch` or a `sendBeacon`. Browsers send Fetch Metadata only to potentially
 trustworthy origins (HTTPS, or `localhost`), so this includes any browser
 reaching the app over plain HTTP on another host. If such a browser has cached
-the credentials by some other route, that request gets through. FrontRow runs
-only on `localhost` (§2), so this is a known limitation (§9), not a planned fix.
+the credentials by some other route, that request gets through. FrontRow is
+local only (§2), and plan 4B makes that true by construction: the compose file
+publishes the port on `127.0.0.1` only, and the demo profile sets
+`server.address: 127.0.0.1`. Until then the app binds every interface, so the
+gap is a known limitation (§9) that applies only if someone exposes the port.
 
 **Scaffold spike — answered.** Spring AI's
 Streamable HTTP transport may run `@McpTool` methods on a thread where
@@ -894,8 +899,21 @@ it completes the organiser story (create a draft, open it, sell it, cancel it).
 
 Plan 4A built the hold, release, confirm and `PATCH` endpoints; the rest are
 plan 4B's. The `/api/**` chain carries every row of this table, so an `/api/**`
-path not listed here is denied. `main` still carries a rule for
-`GET /api/orders/*`, the `ADMIN` role and their tests; plan 4B removes them.
+path not listed here is denied. `main` still carries what revision 2.7 cut.
+Plan 4B removes:
+
+- the `GET /api/orders/*` rule in `SecurityConfig.java`;
+- the `ADMIN` role in `Role.java`;
+- the `adam` user, from the demo users (`DemoCredentials.java`) and the test
+  users (`TestCredentials.java`);
+- the `/api/orders/x` test assertions.
+
+Tests that use `adam` but are not about `ADMIN` are repointed at another user,
+not deleted. That includes
+`SecurityChainsTest#anUnlistedApiPathIsDeniedEvenToAnAuthenticatedUser`, which
+proves the chain's deny-by-default. Plan 4B also binds the app to loopback (§3
+*The stated gap*).
+
 Owner scoping is not a role rule: release and confirm answer `not_found` for
 another owner's hold in the service, and the `GET /api/me/*` reads return only
 the caller's own rows, also in the service.
@@ -913,7 +931,7 @@ These are deliverables, not documentation afterthoughts. They are what converts
 | **Logged failure** | `logs/example_run.txt` | A real recorded error-and-recovery run |
 | Architecture + threat model | `README.md` section | One Mermaid host/client/server diagram, trust boundaries, why no `confirm_order` |
 | README metrics | `README.md` | Concrete numbers, not adjectives (list below) |
-| **Demo recording** | `docs/demo/` (GIF or short video, linked from the README) | The demo story below, end to end |
+| **Demo recording** | `docs/demo/` (GIF or short video, linked from the README) | The buyer and agent story below, end to end |
 | Known limitations, possible next steps | `README.md` sections | The portfolio quality bar's trade-offs and the former Phases 2–4 (§9) |
 
 **The demo story** (revision 2.7) is what the remaining work must support: an
@@ -921,6 +939,11 @@ agent finds an event, checks seats and holds them over MCP; a human sees that
 hold under `GET /api/me/holds`, confirms it over REST, and sees the order under
 `GET /api/me/orders`. Plus the guarantee behind it: two buyers can never get the
 same seat.
+
+**The organiser arc** is part of the demo story too: an organiser creates a
+`DRAFT` event with `POST /api/events` and puts it on sale with
+`PATCH /api/events/{id}`. The recording covers the buyer and agent story, and
+may show the organiser arc.
 
 **The logged failure run must be real, not fabricated.** The scenario: an agent
 calls `check_availability`, then — before its `hold_seats` call — a second actor
@@ -976,19 +999,29 @@ as deliberate). These were Phases 2–4 until revision 2.7:
 - a thin UI;
 - per-event organiser ownership; best-adjacent-seat allocation.
 
-**The portfolio quality bar.** From revision 2.7 on, a finding is fixed and
-tested only if it is one of these:
+**The portfolio quality bar.** From revision 2.7 on, every finding is one of
+two kinds, and the kind decides what happens to it.
 
-1. part of the core guarantee: no double-booking (§5), no purchase over MCP, and
-   the disjoint credential chains (§3);
+**(a) A defect is always fixed, or the behaviour is removed.** A defect is
+shipped behaviour (code on `main`) that contradicts a claim in this spec, an ADR
+or the README. That includes every §6 role-table row and every owner-scoping
+rule. The three criteria below do not apply to a defect, and a defect is never
+listed as a limitation.
+
+**(b) The three criteria gate only hardening.** A hardening finding is one where
+the behaviour matches every documented claim but could be stronger. It is fixed
+and tested only if it is one of these:
+
+1. part of the core guarantee: no double-booking (§5), no purchase over MCP, the
+   disjoint credential chains (§3), the §6 role table, and owner scoping (no
+   buyer acts on another buyer's hold or order);
 2. visible in the demo story (§7);
 3. an obvious flaw to someone reading the code, such as a stack trace in an
    error response, or an MCP error that is not `{"code", "hint"}`.
 
-Anything else that is an accepted demo-grade trade-off goes into the README's
-"Known limitations", with a line on why, instead of being fixed. A real defect
-in shipped behaviour is never listed as a limitation; it is fixed or the
-behaviour is removed. Limitations are not filed as GitHub issues.
+Hardening that meets none of the three goes into the README's "Known
+limitations", with a line on why, instead of being fixed. Limitations are not
+filed as GitHub issues.
 
 **"Demo-grade security" is defined, not left vague:** Spring Security with two
 disjoint filter chains. `/api/**` uses HTTP Basic against in-memory users
@@ -1072,7 +1105,7 @@ Self-service issuance would come with OAuth2, a possible next step (§9).
 - [ ] `docker compose up` starts the service and Postgres; seeded demo data present
 - [ ] Swagger UI browsable; every endpoint in the §6 REST table exercised end to end
 - [ ] All 5 MCP tools callable from Claude Code over Streamable HTTP with a bearer token
-- [ ] The concurrency tests in §5 pass against real Postgres (test 6 runs against the services, so it does not wait on the `ORGANISER` endpoints); the hold-race test genuinely fails if `uq_claimed_seat` is removed
+- [ ] The concurrency tests in §5 pass against real Postgres; the hold-race test genuinely fails if `uq_claimed_seat` is removed
 - [ ] Security tests prove the chains are disjoint in both directions — an MCP token cannot reach the confirm endpoint, and Basic credentials cannot reach `/mcp`
 - [ ] Every schema constraint in §5 has an integration test inserting a violating row
 - [ ] No raw token in the repository or committed config — only SHA-256 hashes
@@ -1129,4 +1162,4 @@ redundant and should not be merged.
 | 2.6.3 | 2026-10-16 | Status sync, and two decisions from plan 3A's reviews. **Status:** Phase 1 is six plans; plans 1, 2 and 3A are merged (PRs #5, #10 and #18), and the header lists what `main` doesn't yet match. **Clock:** §5 now says when a transaction reads `now`: once the locks before its first time-dependent decision are held, not on arrival (PR #18 review thread 4296540439). An arrival-time read let a hold that waited across `sales_close_at` succeed, made a lapsed hold look live, and shortened `expires_at` by the wait. **Drafts:** a `DRAFT` event answers `not_found` to every caller on every read and hold by id, and list reads leave it out, instead of `sales_not_open` with its `sales_open_at` (PR #16 review finding N5). Plan 3B brings hold creation in line with both |
 | 2.6.4 | 2026-10-19 | Post-implementation sync after plan 3B (PR #24), with no design change. **Status:** plans 1, 2, 3A and 3B are merged; the header's "Where `main` differs from this revision" block is removed, because plan 3B made hold creation read the clock after the event-row lock and answer a `DRAFT` event with `not_found`. **Clock:** an event `PATCH` reads no clock, because it makes no time-dependent decision and writes no clock-derived timestamp (plan 3B decision 3); 2.6.3 placed its read after the event lock. The §5 opener now says each transaction uses "at most one instant", not "one instant". No behaviour changes: in 2.6.3 a `PATCH` would have read an instant that nothing used, and the code reads none. **Replay:** a key purged between the step-1 claim and the read is claimed once more, and a second conflict replays the request that just committed (plan 3B decision 8, PR #18 thread 4296540462). **Sweeper:** it is registered by a `SchedulingConfigurer` as two fixed-delay tasks and switched by `frontrow.sweeper-enabled`, not an `@Scheduled` method (plan 3B decision 7) |
 | 2.6.5 | 2026-10-22 | Post-implementation sync after plan 4A (PR #29), with no design change: most additions state what plan 4A decided where 2.6.4 was silent; the rest correct 2.6.4 where the code already differed (the §5 sweep wording and *Carried over*, below). All are checked against the code on `main`. **Status:** Phase 1 is seven plans; plans 1, 2, 3A, 3B and 4A are merged, and "Not yet built" now names plan 4B's work (event creation, the read services and `GET` endpoints, springdoc) and plan 5's, plus seed data, a datasource configuration and the `docker compose` setup; the header also says the `/mcp` chain serves no tool yet, and that a standalone run needs an external Postgres supplied through the environment while the golden path has run only in the test suite. **§3:** the owner is the Basic username for both credentials, with its username pattern (plan 4A decision 3); the chain table, with the catch-all chain (decision 10); the three cross-site layers and their stated gap for browsers that send no Fetch Metadata (decision 6); the bearer check covers every `Authorization` header, and `/mcp` reads only the first, left to plan 5 (PR #29 thread 4342413070); the spike is answered (ADR-004) and re-proved on the production chain. **§5:** the sweep, not the purge, is the idempotent `UPDATE`; every service entry point starts its own transaction, through `TransactionBoundary`, not `Propagation.NEVER` (decision 4); the `PATCH` bounds its instants (decision 8). **§6:** a shared owner widens what a compromised agent can do (decision 3); REST statuses and Problem Details members, and the failures that keep Spring's or Boot's own body (decision 7); snake_case on the wire, and the `/mcp` `stack_trace`, reachable only with a valid agent token, left to plan 5 (decision 9); a new *Request bounds* subsection (decision 8), whose Tomcat form-post cap no committed test proves yet, left to plan 5 (PR #29 thread 4342460506); any organiser may `PATCH` any event, so one compromised organiser account can cancel every event with nothing sold, close, open early, reopen or extend sales on any event not cancelled through the window `PATCH`, even after its `starts_at`, and put any `DRAFT` event on sale, but cannot cancel an event with a confirmed order (decision 2); which REST rows are built, and owner scoping lives in the services. **§9:** passwords are bcrypt hashes, no usable credential is committed, and startup needs at least one user but no token (decision 5); any bcrypt cost is accepted, so a hand-written hash at any cost other than 10 lets login timing reveal a username (deferred, PR #29 thread 4342380931). **Carried over** from the 2026-10-19 journal entry: hold creation checks the request and the per-request seat cap before step 1, not after the event lock; test 6 and the §12 item no longer wait on the `ORGANISER` endpoints; and with `frontrow.sweeper-enabled=false` no key is purged, so the 24-hour key life holds only while the schedule runs (PR #26 thread 4329608305). **Correction to the 2.6.4 row:** 2.6.4 also made the header's "Not yet built" name the event-creation service, which its row leaves out (PR #26 thread 4329923790); the row is left as merged |
-| 2.7 | 2026-10-27 | **Scope change**, decided by Markus in a brainstorming session and recorded as ADR-006. FrontRow is a finished, local-only portfolio project, judged by its repo, README and a recorded demo. **§2:** goal 4 now names the portfolio walkthrough, not a one-week budget; no public deployment, frontend, Kafka, observability or OAuth2 at all; a new non-goal for hardening past the portfolio bar. **§6:** `GET /api/orders/{id}` and the `ADMIN` role are cut (`main` keeps them until plan 4B removes them); `POST /api/events` stays. **§7:** the architecture and threat model move into the README; metrics are cut to four; a demo recording and the "Known limitations" and "Possible next steps" README sections are added; the demo story is defined. **§9:** Phase 1 is the whole project; Phases 2–4 become possible next steps; the trim-order paragraph is replaced; the portfolio quality bar is defined. **§10–§13:** deploy, token issuance, the definition of done and the status follow |
+| 2.7 | 2026-10-27 | **Scope change**, decided by Markus in a brainstorming session and recorded as ADR-006, after Phase 1 had taken over five weeks against its one-week budget. FrontRow is a finished, local-only portfolio project, judged by its repo, README and a recorded demo. **§1:** observability is a possible next step, not Phase 2. **§2:** goal 3 names the parts of the MCP bar FrontRow meets, and leaves the measured success rate and p95 latency as a possible next step; goal 4 now names the portfolio walkthrough, not a one-week budget; no public deployment, frontend, Kafka, observability or OAuth2 at all; a new non-goal for hardening past the portfolio bar. **§3:** the agent-token sentence drops the cut admin role; the Fetch Metadata gap is a known limitation, and plan 4B binds the app to loopback (compose on `127.0.0.1`, `server.address: 127.0.0.1` in the demo profile). **§6:** `GET /api/orders/{id}` and the `ADMIN` role are cut; `main` keeps them until plan 4B removes the rule, the role, the `adam` demo and test user and the `/api/orders/x` assertions, and repoints the tests that use `adam` but are not about `ADMIN` at another user; `POST /api/events` stays. **§7:** the architecture and threat model move into the README; metrics are cut to four; a demo recording and the "Known limitations" and "Possible next steps" README sections are added; the demo story is defined, with an organiser arc the recording may show. **§9:** Phase 1 is the whole project; Phases 2–4 become possible next steps; the trim-order paragraph is replaced; the portfolio quality bar is defined: a defect (shipped behaviour on `main` that contradicts the spec, an ADR or the README) is always fixed or removed, and the three criteria gate only hardening. **§10–§13:** deploy, token issuance, the definition of done (the test 6 aside about the old trim order is dropped) and the status follow |

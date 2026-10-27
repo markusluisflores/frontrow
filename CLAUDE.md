@@ -9,10 +9,12 @@ the user-level CLAUDE.md and apply here.
 **Scope (ADR-006, spec revision 2.7, 2026-10-27): FrontRow is a finished, local-only portfolio project.**
 Phase 1 is the whole project; the former Phases 2–4 are "Possible next steps" in the README, not commitments.
 Plans 4B and 5 are written against the spec §7 demo story. `GET /api/orders/{id}` and the `ADMIN` role are
-cut, and plan 4B removes their rule and tests from `main`; `POST /api/events` stays. From here on, findings follow the
-**portfolio quality bar** (spec §9): fix only what is part of the core guarantee, visible in the demo, or an
-obvious flaw to someone reading the code. Other accepted trade-offs go into the README's "Known limitations",
-not into GitHub issues.
+cut. Plan 4B removes their rule, the role, the `adam` user and the `/api/orders/x` assertions from `main`, and
+repoints the tests that use `adam` but are not about `ADMIN` at another user (spec §6); it also binds the app to
+loopback (spec §3). `POST /api/events` stays. From here on, findings follow the **portfolio quality bar** (spec §9):
+a defect (code on `main` that contradicts the spec, an ADR or the README) is always fixed or removed; hardening is
+fixed only if it is part of the core guarantee, visible in the demo, or an obvious flaw to someone reading the
+code. Other hardening goes into the README's "Known limitations", not into GitHub issues.
 
 **Phase 1 plans 1 (foundation), 2 (domain foundations), 3A (hold creation), 3B (confirm, release,
 cancellation, the sweeper) and 4A (the security edge and the REST write endpoints) are complete.
