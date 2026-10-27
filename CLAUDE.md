@@ -9,11 +9,12 @@ the user-level CLAUDE.md and apply here.
 **Scope (ADR-006, spec revision 2.7, 2026-10-27): FrontRow is a finished, local-only portfolio project.**
 Phase 1 is the whole project; the former Phases 2–4 are "Possible next steps" in the README, not commitments.
 Plans 4B and 5 are written against the spec §7 demo story. `GET /api/orders/{id}` and the `ADMIN` role are
-cut. Plan 4B removes their rule, the role, the `adam` user and the `/api/orders/x` assertions from `main`, and
-repoints the tests that use `adam` but are not about `ADMIN` at another user (spec §6); it also binds the app to
-loopback (spec §3). `POST /api/events` stays. From here on, findings follow the **portfolio quality bar** (spec §9):
-a defect (code on `main` that contradicts the spec, an ADR or the README) is always fixed or removed; hardening is
-fixed only if it is part of the core guarantee, visible in the demo, or an obvious flaw to someone reading the
+cut. Plan 4B removes their rule, the role, the `adam` user and the `ADMIN` test assertions (`/api/orders/x`, and
+the admin-refused checks) from `main`, and repoints the tests that use `adam` but are not about `ADMIN` at another
+user (spec §6). It also publishes the port on loopback only (spec §3). `POST /api/events` stays. From here on,
+findings follow the **portfolio quality bar** (spec §9): a defect (behaviour on `main` or in the change under review
+that contradicts the spec, an ADR or the README, or any exploitable vulnerability) is always fixed or removed, before
+merge when it is in a change under review; hardening is fixed only if it is part of the core guarantee, visible in the demo, or an obvious flaw to someone reading the
 code. Other hardening goes into the README's "Known limitations", not into GitHub issues.
 
 **Phase 1 plans 1 (foundation), 2 (domain foundations), 3A (hold creation), 3B (confirm, release,

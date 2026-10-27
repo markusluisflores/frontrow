@@ -3,7 +3,7 @@
 **Date:** 2026-10-27
 **Status:** Accepted
 
-Decided by Markus on 2026-10-27 in a brainstorming session, choosing from the options below at each step. Recorded in spec revision 2.7 (§1, §2, §3, §6, §7, §9, §10, §11, §12 and §13; see its §14 row).
+Decided by Markus on 2026-10-27 in a brainstorming session, choosing from the options below at each step. Recorded in spec revision 2.7 (§1, §2, §3, §6, §7, §8, §9, §10, §11, §12 and §13; see its §14 row).
 
 ## Context and Problem Statement
 
@@ -61,8 +61,8 @@ Each choice serves the walkthrough audience and keeps the differentiators whole.
   - Most README metrics.
 - **Kept, against the earlier trim order:** `POST /api/events`. Without it, the event `PATCH` that is already built only ever acts on seeded events. With it, the organiser side is a complete story: create a draft, put it on sale, sell it, cancel it.
 - **The portfolio quality bar** (spec §9) sorts every finding into one of two kinds:
-  - **A defect is always fixed, or the behaviour is removed.** A defect is shipped behaviour (code on `main`) that contradicts a claim in the spec, an ADR or the README. That includes every spec §6 role-table row and owner-scoping rule. The criteria below don't apply, and a defect is never listed as a limitation.
-  - **The three criteria gate only hardening:** findings where the behaviour matches every documented claim but could be stronger. A hardening finding is fixed and tested only if it is:
+  - **A defect is always fixed, or the behaviour is removed.** A defect is behaviour, on `main` or in the change under review, that contradicts a claim in the spec, an ADR or the README. That includes every spec §6 role-table row and owner-scoping rule. Any exploitable vulnerability is also a defect, whether or not a document claims otherwise. A defect in a change under review is fixed before merge. The criteria below don't apply, and a defect is never listed as a limitation.
+  - **The three criteria gate only hardening:** findings where the behaviour matches every documented claim, is not exploitable, but could be stronger. A hardening finding is fixed and tested only if it is:
     - part of the core guarantee: no double-booking, no purchase over MCP, the disjoint chains, the §6 role table, and owner scoping (no buyer acts on another buyer's hold or order);
     - visible in the demo story;
     - an obvious flaw to someone reading the code.
@@ -80,8 +80,8 @@ Each choice serves the walkthrough audience and keeps the differentiators whole.
 ### Consequences
 
 * ✅ The project has a definite end: plans 4B and 5 against spec §12.
-* ✅ The differentiators are untouched. Nothing already on `main` is removed except, in plan 4B: the `/api/orders/*` rule, the `ADMIN` role, the `adam` user (`DemoCredentials.java` and `TestCredentials.java`) and the `/api/orders/x` test assertions. Tests that use `adam` but are not about `ADMIN`, such as `SecurityChainsTest#anUnlistedApiPathIsDeniedEvenToAnAuthenticatedUser`, are repointed at another user, not deleted.
-* ✅ "Local only" is made true by construction: plan 4B publishes the compose port on `127.0.0.1` only and sets `server.address: 127.0.0.1` in the demo profile (spec §3).
+* ✅ The differentiators are untouched. Nothing already on `main` is removed except, in plan 4B: the `/api/orders/*` rule, the `ADMIN` role, the `adam` user (`DemoCredentials.java` and `TestCredentials.java`) and the `ADMIN` test assertions in `SecurityChainsTest` (`/api/orders/x`, and the checks that an admin is refused on the buyer-only and organiser-only endpoints). Tests that use `adam` but are not about `ADMIN`, such as `SecurityChainsTest#anUnlistedApiPathIsDeniedEvenToAnAuthenticatedUser`, are repointed at another user, not deleted.
+* ✅ "Local only" is made true by construction: plan 4B publishes the port on loopback only (spec §3). Compose publishes on host `127.0.0.1` while the app in the container listens on all interfaces, and the README's non-container `spring-boot:run` command passes `--server.address=127.0.0.1`. The gitignored demo profile sets no `server.address`.
 * ✅ ADR-002's consequence "Real authentication (OAuth2 / OIDC) is Phase 2" becomes a possible next step; ADR-002 carries a dated note.
 * ✅ "Known limitations" turns accepted gaps into a talking point instead of a backlog.
 * ⚠️ No live demo. Reviewers have to run `docker compose` or watch the recording.
