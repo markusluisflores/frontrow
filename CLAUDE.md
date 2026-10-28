@@ -15,14 +15,16 @@ user (spec §6). It also fixes the app listening on every interface, a defect on
 the app's port on `127.0.0.1` only and leaves Postgres's unpublished, compose's Postgres password comes from a
 gitignored `.env`, and the README's and this file's run commands gain
 `-Dspring-boot.run.arguments=--server.address=127.0.0.1`. It also fixes the post-start reopen, a defect on `main`
-(spec §6): the event `PATCH` and `POST /api/events` reject a sales window that closes after `starts_at`, with
-`invalid_request`. `POST /api/events` stays. From here on, findings follow the **portfolio quality bar** (spec §9),
+(spec §5, §6): `POST /api/events`, and a `PATCH` that sets a window bound, reject a resulting window that closes
+after `starts_at` (`invalid_request`, `parameter: sales_window`); a status-only `PATCH` is not checked, and there is no
+schema `CHECK`, so seed data must comply. `POST /api/events` stays. From here on, findings follow the **portfolio quality bar** (spec §9),
 three kinds:
 - a defect (behaviour on `main` or in the change under review that contradicts the spec, an ADR or the README) is
   always fixed or removed, before merge when it is in a change under review;
 - a security finding is a defect unless it is on spec §9's approved known-limitations list. Only Markus adds to that
-  list; a reviewer or author never does. Behaviour the spec or an ADR records as an accepted part of the threat
-  model (the agent sharing its human's owner, confirm tied only to the hold id) is design, not a finding;
+  list; a reviewer or author never does. The approved design decisions are a closed set of two: the agent sharing
+  its human's owner, and confirm tied only to the hold id. Any new one needs Markus's approval and is named in spec §9;
+  a spec or ADR revision that records a new accepted security consequence makes it a list candidate, not design;
 - non-security hardening is fixed only if it is part of the core guarantee, visible in the demo, or an obvious flaw
   to someone reading the code. Other hardening goes into the README's "Known limitations", never GitHub issues.
 
