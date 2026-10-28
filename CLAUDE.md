@@ -12,13 +12,17 @@ Plans 4B and 5 are written against the spec §7 demo story. `GET /api/orders/{id
 cut. Plan 4B removes their rule, the role, the `adam` user and the `ADMIN` test assertions (`/api/orders/x`, and
 the admin-refused checks) from `main`, and repoints the tests that use `adam` but are not about `ADMIN` at another
 user (spec §6). It also fixes the app listening on every interface, a defect on `main` (spec §3): compose publishes
-the app's port on `127.0.0.1` only and leaves Postgres's unpublished, and the README's and this file's run commands
-gain `-Dspring-boot.run.arguments=--server.address=127.0.0.1`. `POST /api/events` stays. From here on, findings
-follow the **portfolio quality bar** (spec §9), three kinds:
+the app's port on `127.0.0.1` only and leaves Postgres's unpublished, compose's Postgres password comes from a
+gitignored `.env`, and the README's and this file's run commands gain
+`-Dspring-boot.run.arguments=--server.address=127.0.0.1`. It also fixes the post-start reopen, a defect on `main`
+(spec §6): the event `PATCH` and `POST /api/events` reject a sales window that closes after `starts_at`, with
+`invalid_request`. `POST /api/events` stays. From here on, findings follow the **portfolio quality bar** (spec §9),
+three kinds:
 - a defect (behaviour on `main` or in the change under review that contradicts the spec, an ADR or the README) is
   always fixed or removed, before merge when it is in a change under review;
 - a security finding is a defect unless it is on spec §9's approved known-limitations list. Only Markus adds to that
-  list; a reviewer or author never does;
+  list; a reviewer or author never does. Behaviour the spec or an ADR records as an accepted part of the threat
+  model (the agent sharing its human's owner, confirm tied only to the hold id) is design, not a finding;
 - non-security hardening is fixed only if it is part of the core guarantee, visible in the demo, or an obvious flaw
   to someone reading the code. Other hardening goes into the README's "Known limitations", never GitHub issues.
 

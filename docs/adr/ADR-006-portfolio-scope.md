@@ -3,7 +3,7 @@
 **Date:** 2026-10-27
 **Status:** Accepted
 
-Decided by Markus on 2026-10-27 in a brainstorming session, choosing from the options below at each step. Recorded in spec revision 2.7 (§1, §2, §3, §6, §7, §8, §9, §10, §11, §12 and §13; see its §14 row).
+Decided by Markus on 2026-10-27 in a brainstorming session, choosing from the options below at each step. Recorded in spec revision 2.7 (§1, §2, §3, §5, §6, §7, §8, §9, §10, §11, §12 and §13; see its §14 row).
 
 ## Context and Problem Statement
 
@@ -62,7 +62,7 @@ Each choice serves the walkthrough audience and keeps the differentiators whole.
 - **Kept, against the earlier trim order:** `POST /api/events`. Without it, the event `PATCH` that is already built only ever acts on seeded events. With it, the organiser side is a complete story: create a draft, put it on sale, sell it, cancel it.
 - **The portfolio quality bar** (spec §9) sorts every finding into one of three kinds. Markus revised it on 2026-10-28: an approved list replaces an undefined "exploitable" test, which two reviewers could apply in opposite ways.
   - **A defect is always fixed, or the behaviour is removed.** A defect is behaviour, on `main` or in the change under review, that contradicts a claim in the spec, an ADR or the README. That includes every spec §6 role-table row and owner-scoping rule. A defect in a change under review is fixed before merge. The criteria below don't apply, and a defect is never listed as a limitation.
-  - **A security finding is a defect by default.** The only exceptions are the approved known limitations in spec §9, each with a threat-model reason and each approved by Markus on 2026-10-28: the bcrypt-cost login timing, per-event organiser ownership, and the Fetch Metadata gap for a run that ignores the documented loopback-only commands. A new candidate is either fixed or brought to Markus to approve onto the list; a reviewer or an author never adds one alone. The README's "Known limitations" reproduces the list.
+  - **A security finding is a defect by default.** The only exceptions are the approved known limitations in spec §9, each with a threat-model reason and each approved by Markus on 2026-10-28: the bcrypt-cost login timing, per-event organiser ownership, and the Fetch Metadata gap for a run that ignores the documented loopback-only commands or a browser without Fetch Metadata support. A new candidate is either fixed or brought to Markus to approve onto the list; a reviewer or an author never adds one alone. The README's "Known limitations" reproduces the list. Behaviour the spec or an ADR records as an accepted part of the threat model, such as the agent sharing its human's owner (ADR-002) and confirm tied only to the hold id, is a design decision, not a finding; the list is for accepted gaps only (Markus, 2026-10-28). The items spec revision 2.6.5 left to plan 5 (the `/mcp` `stack_trace`, `/mcp` reading only the first `Authorization` header, the untested Tomcat form-post cap) are defects plan 5 fixes.
   - **The three criteria gate only hardening:** non-security improvements where the behaviour matches every documented claim but could be stronger. A hardening finding is fixed and tested only if it is:
     - part of the core guarantee: no double-booking, no purchase over MCP, the disjoint chains, the §6 role table, and owner scoping (no buyer acts on another buyer's hold or order);
     - visible in the demo story;
@@ -86,9 +86,11 @@ Each choice serves the walkthrough audience and keeps the differentiators whole.
 * ✅ "Local only" is made true by construction for compose; by the documented command otherwise. Until plan 4B, the app listening on every interface is a defect on `main` that plan 4B fixes (spec §3):
   - compose publishes the app's port on host `127.0.0.1` while the app in the container listens on all interfaces, and leaves Postgres's port unpublished (`127.0.0.1` only, if a host port is ever needed);
   - the README's and `CLAUDE.md`'s non-container commands become `./mvnw spring-boot:run -Dspring-boot.run.profiles=demo -Dspring-boot.run.arguments=--server.address=127.0.0.1`;
-  - the gitignored demo profile sets no `server.address`.
+  - the gitignored demo profile sets no `server.address`;
+  - compose's Postgres password comes from a gitignored `.env`, written by `scripts/demo-credentials.sh` or by hand from a committed `.env.example` with no real value.
+* ✅ Reopening sales after `starts_at` is a defect on `main` that plan 4B fixes (Markus, 2026-10-28): the event `PATCH` and `POST /api/events` reject a sales window that closes after `starts_at`, with `invalid_request` (spec §6).
 * ✅ ADR-002's consequence "Real authentication (OAuth2 / OIDC) is Phase 2" becomes a possible next step; ADR-002 carries a dated note.
 * ✅ "Known limitations" turns accepted gaps into a talking point instead of a backlog.
 * ⚠️ No live demo. Reviewers have to run `docker compose` or watch the recording.
 * ⚠️ No observability, Kafka or OAuth2 evidence from this project. Those signals would have to come from another project, or from reviving a next step.
-* ⚠️ The hardening part of the bar is a judgment call per finding. The three criteria keep it checkable, but "obvious to someone reading the code" still needs a reviewer to apply it honestly. Security findings carry no such judgment: they are defects unless already on the approved list.
+* ⚠️ The hardening part of the bar is a judgment call per finding. The three criteria keep it checkable, but "obvious to someone reading the code" still needs a reviewer to apply it honestly. Security findings carry no such judgment: they are defects unless already on the approved list or recorded as design.
