@@ -11,11 +11,16 @@ Phase 1 is the whole project; the former Phases 2–4 are "Possible next steps" 
 Plans 4B and 5 are written against the spec §7 demo story. `GET /api/orders/{id}` and the `ADMIN` role are
 cut. Plan 4B removes their rule, the role, the `adam` user and the `ADMIN` test assertions (`/api/orders/x`, and
 the admin-refused checks) from `main`, and repoints the tests that use `adam` but are not about `ADMIN` at another
-user (spec §6). It also publishes the port on loopback only (spec §3). `POST /api/events` stays. From here on,
-findings follow the **portfolio quality bar** (spec §9): a defect (behaviour on `main` or in the change under review
-that contradicts the spec, an ADR or the README, or any exploitable vulnerability) is always fixed or removed, before
-merge when it is in a change under review; hardening is fixed only if it is part of the core guarantee, visible in the demo, or an obvious flaw to someone reading the
-code. Other hardening goes into the README's "Known limitations", not into GitHub issues.
+user (spec §6). It also fixes the app listening on every interface, a defect on `main` (spec §3): compose publishes
+the app's port on `127.0.0.1` only and leaves Postgres's unpublished, and the README's and this file's run commands
+gain `-Dspring-boot.run.arguments=--server.address=127.0.0.1`. `POST /api/events` stays. From here on, findings
+follow the **portfolio quality bar** (spec §9), three kinds:
+- a defect (behaviour on `main` or in the change under review that contradicts the spec, an ADR or the README) is
+  always fixed or removed, before merge when it is in a change under review;
+- a security finding is a defect unless it is on spec §9's approved known-limitations list. Only Markus adds to that
+  list; a reviewer or author never does;
+- non-security hardening is fixed only if it is part of the core guarantee, visible in the demo, or an obvious flaw
+  to someone reading the code. Other hardening goes into the README's "Known limitations", never GitHub issues.
 
 **Phase 1 plans 1 (foundation), 2 (domain foundations), 3A (hold creation), 3B (confirm, release,
 cancellation, the sweeper) and 4A (the security edge and the REST write endpoints) are complete.
