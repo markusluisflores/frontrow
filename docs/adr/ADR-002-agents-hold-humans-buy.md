@@ -76,6 +76,9 @@ The rejected options:
   within the per-owner caps. It cannot spend money. Because an agent shares its
   human's owner (plan 4A decision 3), it can also release that human's holds and
   fill their hold-group cap; it still cannot buy.
+  *(Note, 2026-10-28: tokens never expire and nothing rate-limits `/mcp`, so
+  the caps bound how many seats an agent holds at a time, not for how long;
+  spec §6 states the worst case. This ADR's decision is unchanged.)*
 * ✅ The boundary is testable in both directions. Security tests must show a
   bearer token rejected on `/api/**`, on both an anonymous and an authenticated
   endpoint, and Basic rejected on `/mcp`.
@@ -88,6 +91,8 @@ The rejected options:
 * ⚠️ Phase 1 security is demo-grade: in-memory Basic users, and static bearer
   tokens stored only as SHA-256 hashes. The README must say so. Real
   authentication (OAuth2 / OIDC) is Phase 2.
+  *(Note, 2026-10-27: ADR-006 makes real authentication a possible next step,
+  not a phase. This ADR's decision is unchanged.)*
 * ⚠️ Declaring any `SecurityFilterChain` bean disables Spring Boot's default
   one — `@ConditionalOnDefaultWebSecurity` sits on the auto-configuration
   class that declares `defaultSecurityFilterChain`, not on the method

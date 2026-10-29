@@ -7,3 +7,4 @@
 | [ADR-003](ADR-003-streamable-http-only-transport.md) | Serve MCP over Streamable HTTP only | Accepted | 2026-09-18 |
 | [ADR-004](ADR-004-mcp-principal-propagation.md) | MCP tools get the caller from McpTransportContext | Accepted | 2026-09-22 |
 | [ADR-005](ADR-005-jpa-plus-jdbc-for-locks.md) | JPA for ordinary persistence, explicit JDBC for every lock | Accepted | 2026-10-02 |
+| [ADR-006](ADR-006-portfolio-scope.md) | FrontRow is a finished, local-only portfolio project | Accepted | 2026-10-27 |
