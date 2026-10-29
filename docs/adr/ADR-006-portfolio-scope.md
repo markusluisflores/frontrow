@@ -38,6 +38,9 @@ The later phases:
 The quality bar:
 * **Fix everything found**, a **portfolio bar** with a "Known limitations" list, or the **core guarantee only**.
 
+For security findings under the portfolio bar (added 2026-10-28, during PR #33's review):
+* **An approved, closed list** of exemptions, each approved by Markus, or **an "exploitable" test** that a reviewer applies per finding.
+
 The remaining REST surface:
 * **Keep it all**, **trim to the demo story**, or keep only the minimum the demo needs.
 
@@ -46,12 +49,12 @@ The remaining REST surface:
 **Chosen:**
 - **C**, the walkthrough, with the live demo as a possible next step;
 - **drop Phases 2–4** into "Possible next steps";
-- **the portfolio bar**;
+- **the portfolio bar**, with an approved closed list for security findings (2026-10-28);
 - **trim the REST surface to the demo story**, whose organiser arc keeps `POST /api/events` (spec §7).
 
 Each choice serves the walkthrough audience and keeps the differentiators whole.
 
-- **Scope.** Phase 1 is the whole project. Still to build:
+- **Scope.** Phase 1 is the whole project. Still to build (spec §12 is the checklist):
   - the read endpoints, event creation, Swagger UI, seed data and `docker compose` (plan 4B);
   - the five MCP tools and structured transport errors (plan 5);
   - the evidence: checked-in tool schemas with a CI drift test, a real logged failure-and-recovery run, a demo recording, and a README with an architecture diagram, a short threat model, four headline metrics, "Known limitations" and "Possible next steps".
@@ -60,20 +63,12 @@ Each choice serves the walkthrough audience and keeps the differentiators whole.
   - The separate `docs/mcp/architecture.md`, now a README section.
   - Most README metrics.
 - **Kept, against the earlier trim order:** `POST /api/events`. Without it, the event `PATCH` that is already built only ever acts on seeded events. With it, the organiser side is a complete story: create a draft, put it on sale, sell it, cancel it.
-- **The portfolio quality bar** (spec §9) sorts every finding into one of three kinds. Markus revised it on 2026-10-28: an approved list replaces an undefined "exploitable" test, which two reviewers could apply in opposite ways.
-  - **A defect is always fixed, or the behaviour is removed.** A defect is behaviour, on `main` or in the change under review, that contradicts a claim in the spec, an ADR or the README. That includes every spec §6 role-table row and owner-scoping rule. A defect in a change under review is fixed before merge. The criteria below don't apply, and a defect is never listed as a limitation.
-  - **A security finding is a defect by default.** The only exceptions are the approved known limitations in spec §9, each with a threat-model reason and each approved by Markus on 2026-10-28: the bcrypt-cost login timing, per-event organiser ownership, and the Fetch Metadata gap for a run that ignores the documented loopback-only commands or a browser without Fetch Metadata support (a widening fix pass 4 added without his approval; Markus approved it separately on 2026-10-28). A new candidate is either fixed or brought to Markus to approve onto the list; a reviewer or an author never adds one alone. The README's "Known limitations" reproduces the list. The approved design decisions are not findings, and the set is closed (Markus, 2026-10-28). As of revision 2.7 it holds only two: an agent shares its human's owner (ADR-002, spec §6), and confirm is tied only to the hold id. Any later design exemption needs Markus's approval and is named in spec §9, like the limitations list. A spec or ADR revision that records a new accepted security consequence makes it a list candidate, not design. The list is for accepted gaps only. Only Markus adds to, widens or rewords an entry in either list; a change to either list's text without his recorded approval is itself a defect in the change under review. The approved scope items are a closed set of four: static agent tokens that never expire, in-memory Basic users, plain HTTP on loopback, and no OAuth2. A finding about one of them is not a finding; the set is under the same gate as the two lists. A consequence of one of them that the spec doesn't state, such as no lockout or rate limit so passwords can be guessed online, is not covered and takes the security-by-default route. Neither spec §9's demo-grade definition nor the §2 non-goals is an exemption source (Markus, 2026-10-28). The items spec revision 2.6.5 left to plan 5 (the `/mcp` `stack_trace`, `/mcp` reading only the first `Authorization` header, the untested Tomcat form-post cap) are defects plan 5 fixes.
-  - **The three criteria gate only hardening:** non-security improvements where the behaviour matches every documented claim but could be stronger. A hardening finding is fixed and tested only if it is:
-    - part of the core guarantee: no double-booking, no purchase over MCP, the disjoint chains, the §6 role table, and owner scoping (no buyer acts on another buyer's hold or order);
-    - visible in the demo story;
-    - an obvious flaw to someone reading the code.
-
-  Hardening that meets none of the three goes into the README's "Known limitations", with a line on why. No limitation is filed as a GitHub issue, because open issues on a portfolio repo read as unfinished work.
+- **The portfolio quality bar** (spec §9). Every finding is a defect, a security finding or a hardening finding. Defects are always fixed; a security finding is a defect unless spec §9 lists it as an approved exemption, and those lists change only with Markus's approval; hardening is fixed only if it meets one of three criteria, otherwise it goes into the README's "Known limitations". No limitation is filed as a GitHub issue, because open issues on a portfolio repo read as unfinished work. Spec §9 is the only statement of the bar and its lists; this ADR does not copy them.
 
 - **Why not B.** It needs real authentication and a deploy before anything can be clicked. That is most of the old Phase 2, for an audience that mostly reads.
 - **Why not keep the phases.** A committed phase that will never start reads as an unfinished project. A "Possible next steps" list reads as a deliberate stopping point, and any item can still be revived.
 - **Why not fix everything.** In this project, review findings have turned into hardening work: framework-level edge cases an interviewer is unlikely to probe. A visible list of deliberate trade-offs shows the same judgment for a fraction of the cost.
-- **Why an approved list, not an "exploitable" test, for security findings.** "Exploitable" needs a definition, and the spec's own limitations sort either way under any short one. A closed list, each entry with its threat-model reason and Markus's approval, gives one reading: a security finding not on it is a defect.
+- **Why an approved list, not an "exploitable" test.** "Exploitable" needs a definition, and the spec's own limitations sorted either way under any short one, so two reviewers could apply it in opposite ways. A closed list, each entry with its reason and Markus's approval, gives one reading: a security finding not on it is a defect.
 - **Why not keep one small follow-on (MCP tool metrics).** One more talking point is not worth reopening the phase list. The measured success rate and p95 latency stay a possible next step, so spec goal 3 names the parts of the MCP bar FrontRow meets.
 - **Why not the core guarantee only.** Too narrow. Flaws a reviewer sees in the demo, or spots when reading the code, are what a reviewer judges the project by.
 - **Why not keep all of REST.** `GET /api/orders/{id}` adds review weight for nothing the demo needs: `GET /api/me/orders` already shows the purchase.
@@ -82,15 +77,11 @@ Each choice serves the walkthrough audience and keeps the differentiators whole.
 ### Consequences
 
 * ✅ The project has a definite end: plans 4B and 5 against spec §12.
-* ✅ The differentiators are untouched. Nothing already on `main` is removed except, in plan 4B: the `/api/orders/*` rule, the `ADMIN` role, the `adam` user (`DemoCredentials.java` and `TestCredentials.java`) and the `ADMIN` test assertions in `SecurityChainsTest` (`/api/orders/x`, and the checks that an admin is refused on the buyer-only and organiser-only endpoints). Tests that use `adam` but are not about `ADMIN`, such as `SecurityChainsTest#anUnlistedApiPathIsDeniedEvenToAnAuthenticatedUser`, are repointed at another user, not deleted.
-* ✅ "Local only" is made true by construction for compose; by the documented command otherwise. Until plan 4B, the app listening on every interface is a defect on `main` that plan 4B fixes (spec §3):
-  - compose publishes the app's port on host `127.0.0.1` while the app in the container listens on all interfaces, and leaves Postgres's port unpublished (`127.0.0.1` only, if a host port is ever needed);
-  - the README's and `CLAUDE.md`'s non-container commands become `./mvnw spring-boot:run -Dspring-boot.run.profiles=demo -Dspring-boot.run.arguments=--server.address=127.0.0.1`;
-  - the gitignored demo profile sets no `server.address`;
-  - compose's Postgres password comes from a gitignored `.env`, written by `scripts/demo-credentials.sh` or by hand from a committed `.env.example` with no real value.
-* ✅ Reopening sales after `starts_at` is a defect on `main` that plan 4B fixes (Markus, 2026-10-28): `POST /api/events`, and a `PATCH` that sets a window bound, reject a resulting window (after the merge onto the stored row) that closes after `starts_at`, with `invalid_request` and `parameter: sales_window`. A status-only `PATCH`, such as a cancel, is not checked, so an unsold event can still always be cancelled. There is no schema `CHECK` (Markus's decision), so the seed data must comply, and a plan 4B test asserts `sales_close_at <= starts_at` for every seeded event; `EventRow` and `LockingGateway#lockEventForUpdate` gain `starts_at` (spec §5, §6).
+* ✅ The differentiators are untouched. On `main`, plan 4B removes only what this decision cut: the `GET /api/orders/*` rule, the `ADMIN` role and the `adam` user, with their tests.
+* ✅ What plans 4B and 5 owe, including the defects on `main` that review of this decision surfaced, is one checklist: spec §12.
+* ✅ "Local only" holds by construction for compose, on Docker Engine 28.0 or later; by the documented command otherwise (spec §3).
 * ✅ ADR-002's consequence "Real authentication (OAuth2 / OIDC) is Phase 2" becomes a possible next step; ADR-002 carries a dated note.
 * ✅ "Known limitations" turns accepted gaps into a talking point instead of a backlog.
 * ⚠️ No live demo. Reviewers have to run `docker compose` or watch the recording.
 * ⚠️ No observability, Kafka or OAuth2 evidence from this project. Those signals would have to come from another project, or from reviving a next step.
-* ⚠️ The hardening part of the bar is a judgment call per finding. The three criteria keep it checkable, but "obvious to someone reading the code" still needs a reviewer to apply it honestly. Security findings carry no such judgment: they are defects unless already on the approved list or in the closed set of approved design decisions.
+* ⚠️ The hardening part of the bar is a judgment call per finding. The three criteria keep it checkable, but "obvious to someone reading the code" still needs a reviewer to apply it honestly. Security findings carry no such judgment: they are defects unless spec §9 lists them as approved.

@@ -8,30 +8,10 @@ the user-level CLAUDE.md and apply here.
 
 **Scope (ADR-006, spec revision 2.7, 2026-10-27): FrontRow is a finished, local-only portfolio project.**
 Phase 1 is the whole project; the former Phases 2–4 are "Possible next steps" in the README, not commitments.
-Plans 4B and 5 are written against the spec §7 demo story. `GET /api/orders/{id}` and the `ADMIN` role are
-cut. Plan 4B removes their rule, the role, the `adam` user and the `ADMIN` test assertions (`/api/orders/x`, and
-the admin-refused checks) from `main`, and repoints the tests that use `adam` but are not about `ADMIN` at another
-user (spec §6). It also fixes the app listening on every interface, a defect on `main` (spec §3): compose publishes
-the app's port on `127.0.0.1` only and leaves Postgres's unpublished, compose's Postgres password comes from a
-gitignored `.env`, and the README's and this file's run commands gain
-`-Dspring-boot.run.arguments=--server.address=127.0.0.1`. It also fixes the post-start reopen, a defect on `main`
-(spec §5, §6): `POST /api/events`, and a `PATCH` that sets a window bound, reject a resulting window that closes
-after `starts_at` (`invalid_request`, `parameter: sales_window`); a status-only `PATCH` is not checked, and there is no
-schema `CHECK`, so seed data must comply, and a plan 4B test asserts it for every seeded event. `POST /api/events` stays. From here on, findings follow the **portfolio quality bar** (spec §9),
-three kinds:
-- a defect (behaviour on `main` or in the change under review that contradicts the spec, an ADR or the README) is
-  always fixed or removed, before merge when it is in a change under review;
-- a security finding is a defect unless it is on spec §9's approved known-limitations list. Only Markus adds to that
-  list; a reviewer or author never does. The approved design decisions are a closed set of two: the agent sharing
-  its human's owner, and confirm tied only to the hold id. Any new one needs Markus's approval and is named in spec §9;
-  a spec or ADR revision that records a new accepted security consequence makes it a list candidate, not design.
-  Only Markus adds to, widens or rewords an entry in either list; an unapproved change to either list's text is a
-  defect in the change under review. The approved scope items are a closed set of four, under the same gate: static
-  agent tokens that never expire, in-memory Basic users, plain HTTP on loopback, no OAuth2. A finding about one is
-  not a finding; an unstated consequence of one (no lockout, so online guessing) is. Neither spec §9's demo-grade
-  definition nor the §2 non-goals is an exemption source;
-- non-security hardening is fixed only if it is part of the core guarantee, visible in the demo, or an obvious flaw
-  to someone reading the code. Other hardening goes into the README's "Known limitations", never GitHub issues.
+Plans 4B and 5 are written against the spec §7 demo story. `GET /api/orders/{id}` and the `ADMIN` role are cut;
+`POST /api/events` stays. Findings follow spec §9's portfolio quality bar: three kinds (defect, security, hardening),
+and its exemption lists change only with Markus's approval. Plans 4B and 5 owe spec §12's checklist, which includes
+every defect fix on `main`.
 
 **Phase 1 plans 1 (foundation), 2 (domain foundations), 3A (hold creation), 3B (confirm, release,
 cancellation, the sweeper) and 4A (the security edge and the REST write endpoints) are complete.
