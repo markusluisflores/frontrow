@@ -17,14 +17,17 @@ gitignored `.env`, and the README's and this file's run commands gain
 `-Dspring-boot.run.arguments=--server.address=127.0.0.1`. It also fixes the post-start reopen, a defect on `main`
 (spec §5, §6): `POST /api/events`, and a `PATCH` that sets a window bound, reject a resulting window that closes
 after `starts_at` (`invalid_request`, `parameter: sales_window`); a status-only `PATCH` is not checked, and there is no
-schema `CHECK`, so seed data must comply. `POST /api/events` stays. From here on, findings follow the **portfolio quality bar** (spec §9),
+schema `CHECK`, so seed data must comply, and a plan 4B test asserts it for every seeded event. `POST /api/events` stays. From here on, findings follow the **portfolio quality bar** (spec §9),
 three kinds:
 - a defect (behaviour on `main` or in the change under review that contradicts the spec, an ADR or the README) is
   always fixed or removed, before merge when it is in a change under review;
 - a security finding is a defect unless it is on spec §9's approved known-limitations list. Only Markus adds to that
   list; a reviewer or author never does. The approved design decisions are a closed set of two: the agent sharing
   its human's owner, and confirm tied only to the hold id. Any new one needs Markus's approval and is named in spec §9;
-  a spec or ADR revision that records a new accepted security consequence makes it a list candidate, not design;
+  a spec or ADR revision that records a new accepted security consequence makes it a list candidate, not design.
+  Only Markus adds to, widens or rewords an entry in either list; an unapproved change to either list's text is a
+  defect in the change under review. A finding that only restates spec §9's demo-grade security definition or a
+  §2 non-goal (static tokens, in-memory users, plain HTTP on loopback, no OAuth2) is not a finding;
 - non-security hardening is fixed only if it is part of the core guarantee, visible in the demo, or an obvious flaw
   to someone reading the code. Other hardening goes into the README's "Known limitations", never GitHub issues.
 
