@@ -21,7 +21,7 @@ FrontRow will never be used for real. It exists to demonstrate Java and Spring B
 
 * **The audience reads; it doesn't use.** A recruiter or interviewer judges the repo, the README and a recorded demo. Nobody runs a production workload.
 * **The differentiators are already built or scoped:** the schema-level no-double-booking guarantee and its concurrency tests (ADR-001), agents hold and humans buy (ADR-002), and the MCP evidence artifacts (spec §7).
-* **The research in spec §1:** a small complete thing beats a half-finished everything.
+* **The research cited in spec §2's non-goals:** a small complete thing beats a half-finished everything.
 * **A public deploy on demo-grade credentials would overstate the security story** (spec §2), so a live demo means real authentication first. That is weeks of work for something few reviewers would click.
 * **Finishing matters more than breadth.** Each extra phase or plan carries a fixed cost in plan, review and docs PRs.
 
@@ -62,7 +62,7 @@ Each choice serves the walkthrough audience and keeps the differentiators whole.
   - `GET /api/orders/{id}` and the `ADMIN` role, which nothing else used. `GET /api/me/orders` shows the purchase, and release and confirm already demonstrate owner scoping in the service.
   - The separate `docs/mcp/architecture.md`, now a README section.
   - Most README metrics.
-- **Kept, against the earlier trim order:** `POST /api/events`. Without it, the event `PATCH` that is already built only ever acts on seeded events. With it, the organiser side is a complete story: create a draft, put it on sale, sell it, cancel it.
+- **Kept, against the earlier trim order:** `POST /api/events`. Without it, the event `PATCH` that is already built only ever acts on seeded events. With it, the organiser side is a complete story: create a draft, put it on sale, sell seats, or cancel it while nothing is sold.
 - **The portfolio quality bar** (spec §9). Every finding is a defect, a security finding or a hardening finding. Defects are always fixed; a security finding is a defect unless spec §9 lists it as an approved exemption, and those lists change only with Markus's approval; hardening is fixed only if it meets one of three criteria, otherwise it goes into the README's "Known limitations". No limitation is filed as a GitHub issue, because open issues on a portfolio repo read as unfinished work. Spec §9 is the only statement of the bar and its lists; this ADR does not copy them.
 
 - **Why not B.** It needs real authentication and a deploy before anything can be clicked. That is most of the old Phase 2, for an audience that mostly reads.
@@ -79,7 +79,7 @@ Each choice serves the walkthrough audience and keeps the differentiators whole.
 * ✅ The project has a definite end: plans 4B and 5 against spec §12.
 * ✅ The differentiators are untouched. On `main`, plan 4B removes only what this decision cut: the `GET /api/orders/*` rule, the `ADMIN` role and the `adam` user, with their tests.
 * ✅ What plans 4B and 5 owe, including the defects on `main` that review of this decision surfaced, is one checklist: spec §12.
-* ✅ "Local only" holds by construction for compose, on Docker Engine 28.0 or later; by the documented command otherwise (spec §3).
+* ✅ "Local only" will hold by construction for compose once plan 4B's compose publishes on loopback only, on Docker Engine 28.0 or later; by the documented command otherwise (spec §3).
 * ✅ ADR-002's consequence "Real authentication (OAuth2 / OIDC) is Phase 2" becomes a possible next step; ADR-002 carries a dated note.
 * ✅ "Known limitations" turns accepted gaps into a talking point instead of a backlog.
 * ⚠️ No live demo. Reviewers have to run `docker compose` or watch the recording.

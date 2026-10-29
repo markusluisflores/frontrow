@@ -76,6 +76,9 @@ The rejected options:
   within the per-owner caps. It cannot spend money. Because an agent shares its
   human's owner (plan 4A decision 3), it can also release that human's holds and
   fill their hold-group cap; it still cannot buy.
+  *(Note, 2026-10-28: tokens never expire and nothing rate-limits `/mcp`, so
+  the caps bound how many seats an agent holds at a time, not for how long;
+  spec §6 states the worst case. This ADR's decision is unchanged.)*
 * ✅ The boundary is testable in both directions. Security tests must show a
   bearer token rejected on `/api/**`, on both an anonymous and an authenticated
   endpoint, and Basic rejected on `/mcp`.
