@@ -646,8 +646,9 @@ Both event write paths take instants from the caller: `POST /api/events` takes
 bounds them, whichever adapter calls: an instant outside
 `0001-01-01T00:00:00Z` … `9999-12-31T23:59:59.999999Z`, which is what both
 `timestamptz` and a four-digit ISO 8601 year hold, is `invalid_request`, and
-never reaches the database; for the sales window the parameter is
-`sales_window`. Without the bound it would fail in Postgres as a 500. On `main`
+never reaches the database. The parameter is `sales_window` for the sales
+window, and `starts_at` for an out-of-range `starts_at` on `POST /api/events`.
+Without the bound it would fail in Postgres as a 500. On `main`
 only the `PATCH` exists; plan 4B gives creation the same bound (§12).
 
 Plan 4B also checks that the window closes by `starts_at`
@@ -912,7 +913,8 @@ signals.
   at the same 16 KiB. No committed test proves the cap. In a throwaway check, a
   chunked form body over it on `/mcp`, with a valid token, got a 500 from the
   transport, not a 413. Plan 5 adds a test that an over-cap form `POST` to `/mcp`
-  gets 413 with a structured `{"code", "hint"}` body and no `stack_trace` (PR #29
+  gets 413 in the filter-error Problem Details shape written by `rest/Problems.write`
+  (*Problem Details members* above), with no `code` and no `stack_trace` (PR #29
   thread 4342460506; §12).
 - **Headers:** Tomcat's default 8 KiB header limit, then the service's
   200-unit idempotency-key check (§5 *Hold creation*).
@@ -1218,7 +1220,7 @@ sections explain their own rules and point here.
 - [ ] Compose publishes the app's port on `127.0.0.1` only and leaves Postgres's port unpublished (`127.0.0.1` only, if a host port is ever needed) (§3)
 - [ ] Compose's Postgres password comes from a gitignored `.env` that `scripts/demo-credentials.sh` generates with `SecureRandom`; the committed `.env.example` holds a placeholder that does not work; nothing is hand-written in the documented path
 - [ ] Every documented non-container run command is `./mvnw spring-boot:run -Dspring-boot.run.profiles=demo -Dspring-boot.run.arguments=--server.address=127.0.0.1`: the README's run instructions (plan 4B writes them; the README has none today), `CLAUDE.md`'s Conventions, and the header of `scripts/demo-credentials.sh` (§3)
-- [ ] Creation applies the `0001`–`9999` instant bound to `starts_at` and the sales window, as the `PATCH` does (§5)
+- [ ] Creation applies the `0001`–`9999` instant bound to `starts_at` and the sales window, as the `PATCH` does: an out-of-range `starts_at` is `invalid_request` with `parameter: starts_at`, the window `parameter: sales_window` (§5)
 - [ ] The window check: `sales_close_at <= starts_at` on creation and on a `PATCH` that sets a window bound, against the merged window; a status-only `PATCH` is not checked; a failure is `invalid_request` with `parameter: sales_window` (§5)
 - [ ] `EventRow` and `LockingGateway#lockEventForUpdate` carry `starts_at`
 - [ ] A test asserts `sales_close_at <= starts_at` for every seeded event
@@ -1228,7 +1230,7 @@ sections explain their own rules and point here.
 - [ ] The five MCP tools and the §7 evidence artifacts
 - [ ] `/mcp` answers 401 unless exactly one `Authorization` header is present and it carries a known bearer; tests cover Basic+Bearer in both orders, and Bearer+Bearer (§3)
 - [ ] No `/mcp` transport error carries a `stack_trace`; a test covers malformed JSON, a chunked body over the bound, and an over-cap form `POST` (§6 *Error contracts*)
-- [ ] An over-cap form `POST` to `/mcp` gets 413 with a structured `{"code", "hint"}` body (§6 *Request bounds*)
+- [ ] An over-cap form `POST` to `/mcp` gets 413 in the filter-error Problem Details shape written by `rest/Problems.write`, with no `code` and no `stack_trace` (§6 *Request bounds*, *Problem Details members*)
 
 **The whole project:**
 
