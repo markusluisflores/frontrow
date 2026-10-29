@@ -26,8 +26,10 @@ three kinds:
   its human's owner, and confirm tied only to the hold id. Any new one needs Markus's approval and is named in spec §9;
   a spec or ADR revision that records a new accepted security consequence makes it a list candidate, not design.
   Only Markus adds to, widens or rewords an entry in either list; an unapproved change to either list's text is a
-  defect in the change under review. A finding that only restates spec §9's demo-grade security definition or a
-  §2 non-goal (static tokens, in-memory users, plain HTTP on loopback, no OAuth2) is not a finding;
+  defect in the change under review. The approved scope items are a closed set of four, under the same gate: static
+  agent tokens that never expire, in-memory Basic users, plain HTTP on loopback, no OAuth2. A finding about one is
+  not a finding; an unstated consequence of one (no lockout, so online guessing) is. Neither spec §9's demo-grade
+  definition nor the §2 non-goals is an exemption source;
 - non-security hardening is fixed only if it is part of the core guarantee, visible in the demo, or an obvious flaw
   to someone reading the code. Other hardening goes into the README's "Known limitations", never GitHub issues.
 
