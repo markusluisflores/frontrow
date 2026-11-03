@@ -68,14 +68,15 @@ Decisions 1 and 2 are Markus's (brainstorm, 2026-11-02). The rest are this plan'
    | Endpoint | Service method | Returns |
    |---|---|---|
    | `GET /api/events?query&from_date&to_date&limit` | `EventReadService#search(EventQuery)` | `List<EventDetail>`, `ON_SALE` only, soonest `starts_at` first |
-   | `GET /api/events/{eventId}` | `EventReadService#event(long)` | `EventDetail`; a `DRAFT` or missing id is `not_found`, and a `CANCELLED` event shows its status |
+   | `GET /api/events/{eventId}` | `EventReadService#event(long)` | `EventDetail`; a missing, `DRAFT` or `CANCELLED` id is `not_found`: only `ON_SALE` events are readable, because `EventPatchService` allows `DRAFT` to `CANCELLED`, and a cancelled draft must not become readable |
    | `GET /api/events/{eventId}/availability?section` | `EventReadService#availability(long, String)` | `Availability`: `event_id`, `currency`, and per seat `event_seat_id`, `section`, `row_label`, `seat_number`, `price_cents`, `available` |
    | `GET /api/me/holds` | `OwnerReadService#holds(String)` | `List<HeldGroup>`: the caller's groups with at least one live row, soonest expiry first |
    | `GET /api/me/orders` | `OwnerReadService#orders(String)` | `List<OrderResult>`, the confirm response's own shape, newest first |
 
    - **Search:** `query` matches the event name case-insensitively and literally: `%`, `_` and `!` are escaped, and Postgres's `lower()` lowers both the name and the query, so one engine's case rules apply to both. `from_date` and `to_date` are ISO dates (UTC) and both inclusive. They filter on `starts_at`, clamped to the §5 storable range, so no date can reach SQL out of range. `limit` defaults to 10. Outside 1–50 it is `invalid_request` with `parameter: limit`, rather than silently clamped, because spec §6 says `invalid_request` names the parameter.
-   - **`available`** means no claim on the seat now: no `CONVERTED` row, and no `ACTIVE` row with `expires_at > now`. That is the claim index's predicate with liveness applied. It does not say the event is on sale; `GET /api/events/{id}` shows the status. An unknown `section` gives an empty seat list, not an error.
-   - **`me/holds` lists a group while it has at least one live row.** That is the same rule that makes a group count against the cap (§4), so a buyer refused with `hold_limit_exceeded` sees every group that counts. Each seat carries `live`, because an overlapping hold can expire part of a group (§5), and such a group can no longer be confirmed.
+   - **A hold or confirm on a cancelled event still answers `sales_closed`** (the services are unchanged). That reveals only that the id exists, which spec §4 already accepts for sequential ids.
+   - **`available`** means no claim on the seat now: no `CONVERTED` row, and no `ACTIVE` row with `expires_at > now`. That is the claim index's predicate with liveness applied. It reads only an `ON_SALE` event, so a seat listed is on an event that is on sale. An unknown `section` gives an empty seat list, not an error.
+   - **`me/holds` lists a group while it has at least one live row.** That is the same rule that makes a group count against the cap (§4), so a buyer refused with `hold_limit_exceeded` sees every group that counts. Every row of a group shares one `expires_at`, so the seats of a listed group are all live and the seat carries no flag.
    - **No pagination** on `me/*`. Holds are bounded by the cap (3 groups × 8 seats). Orders are not bounded, which is acceptable for a local demo; plan 5's README lists it under "Known limitations" as hardening that meets none of §9's three criteria.
 5. **Creation** (`POST /api/events`, `ORGANISER`; spec §6: "a `DRAFT` event on an existing venue with a price per section").
    - **The body:** `venue_id`, `name`, `starts_at`, `sales_open_at`, `sales_close_at`, `currency` and `prices`. `prices` maps each section name to cents; map keys are data, so the snake_case strategy does not touch them.
@@ -1218,7 +1219,6 @@ package io.github.markusluisflores.frontrow.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
-import io.github.markusluisflores.frontrow.domain.EventStatus;
 import io.github.markusluisflores.frontrow.error.DomainException;
 import io.github.markusluisflores.frontrow.error.ErrorCode;
 import io.github.markusluisflores.frontrow.support.HoldFixtures;
@@ -1320,11 +1320,13 @@ class EventReadServiceTest {
     }
 
     @Test
-    void aDraftIsNotFoundByIdAndACancelledEventShowsItsStatus() {
+    void onlyAnOnSaleEventIsReadableById() {
         assertThat(rejection(() -> reads.event(draft)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
         assertThat(rejection(() -> reads.availability(draft, null)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
         assertThat(rejection(() -> reads.event(draft + 1000)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
-        assertThat(reads.event(cancelled).status()).isEqualTo(EventStatus.CANCELLED);
+        assertThat(rejection(() -> reads.event(cancelled)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(rejection(() -> reads.availability(cancelled, null)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        assertThat(rejection(() -> reads.availability(draft + 1000, null)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
         assertThat(reads.event(owls).venueName()).isEqualTo("Fixture Hall");
     }
 
@@ -1519,7 +1521,7 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * The event reads (spec §6): search, one event, and its availability. The REST reads and plan 5's three read tools call
  * the same methods. Read-only transactions with no lock (ADR-005): nothing here writes, so no entity is ever flushed. A
- * DRAFT is not_found by id and left out of search (spec §4).
+ * Only ON_SALE events are readable, by id or in search (spec §4).
  */
 @Service
 public class EventReadService {
@@ -1579,10 +1581,14 @@ public class EventReadService {
         return new Availability(event.getId(), event.getCurrency(), seats);
     }
 
-    /** A DRAFT answers the same as a missing id (spec §4). */
+    /**
+     * An event that is not ON_SALE answers the same as a missing id. A DRAFT is hidden by spec §4. A CANCELLED event
+     * may have been cancelled straight from DRAFT (EventPatchService allows it), so it is hidden too, or a
+     * never-published draft's details would become readable by cancelling it.
+     */
     private Event visible(long eventId) {
         return events.findWithVenue(eventId)
-                .filter(event -> event.getStatus() != EventStatus.DRAFT)
+                .filter(event -> event.getStatus() == EventStatus.ON_SALE)
                 .orElseThrow(() -> DomainException.of(ErrorCode.NOT_FOUND));
     }
 
@@ -1707,6 +1713,7 @@ class ReadEndpointsTest {
     long venueId;
     long eventId;
     long draftId;
+    long cancelledId;
     List<Long> seats;
 
     @BeforeEach
@@ -1717,6 +1724,7 @@ class ReadEndpointsTest {
         venueId = fixtures.venue();
         eventId = fixtures.namedEvent(venueId, "Night Owls Live", "ON_SALE", Instant.parse("2026-11-10T19:00:00Z"));
         draftId = fixtures.namedEvent(venueId, "Secret Draft", "DRAFT", Instant.parse("2026-11-11T19:00:00Z"));
+        cancelledId = fixtures.namedEvent(venueId, "Cancelled Draft", "CANCELLED", Instant.parse("2026-11-12T19:00:00Z"));
         seats = fixtures.eventSeats(eventId, venueId, 2);
     }
 
@@ -1744,11 +1752,13 @@ class ReadEndpointsTest {
     }
 
     @Test
-    void aDraftIsNotFoundOverHttpToo() throws Exception {
-        for (String path : List.of("/api/events/" + draftId, "/api/events/" + draftId + "/availability")) {
-            MockHttpServletResponse response = perform(get(path));
-            assertThat(response.getStatus()).as(path).isEqualTo(404);
-            assertThat(body(response).get("code").asString()).isEqualTo("not_found");
+    void anEventThatIsNotOnSaleIsNotFoundOverHttp() throws Exception {
+        for (long id : List.of(draftId, cancelledId)) {
+            for (String path : List.of("/api/events/" + id, "/api/events/" + id + "/availability")) {
+                MockHttpServletResponse response = perform(get(path));
+                assertThat(response.getStatus()).as(path).isEqualTo(404);
+                assertThat(body(response).get("code").asString()).isEqualTo("not_found");
+            }
         }
         assertThat(body(perform(get("/api/events")))).hasSize(1);
     }
@@ -1905,7 +1915,7 @@ git commit -m "feat(rest): add the event search, detail and availability reads"
 **Interfaces:**
 - Consumes: `HoldService#hold`, `ConfirmService#confirm`, `HoldResult` and `OrderResult` (plans 3A and 3B).
 - Produces:
-  - `HeldGroup(UUID holdGroupId, long eventId, String eventName, List<GroupSeat> seats, long totalCents, String currency, Instant expiresAt)` with `HeldGroup.GroupSeat(long eventSeatId, String section, String rowLabel, int seatNumber, long priceCents, boolean live)`;
+  - `HeldGroup(UUID holdGroupId, long eventId, String eventName, List<GroupSeat> seats, long totalCents, String currency, Instant expiresAt)` with `HeldGroup.GroupSeat(long eventSeatId, String section, String rowLabel, int seatNumber, long priceCents)`;
   - `OwnerReadService#holds(String owner)` → `List<HeldGroup>`, and `#orders(String owner)` → `List<OrderResult>`;
   - package-private `static OrderResult of(TicketOrder, List<OrderLine>)` on `OrderResult`.
 
@@ -1974,20 +1984,14 @@ class OwnerReadServiceTest {
                 .holdGroupId();
         // Lapsed and never swept: no live row, so not listed.
         fixtures.holdInGroup(seats.get(3), UUID.randomUUID(), "alice", "ACTIVE", NOW.minusSeconds(1));
-        // Part-expired by an overlapping hold: one live row, so listed, with each seat's state.
-        UUID partial = UUID.randomUUID();
-        fixtures.holdInGroup(seats.get(4), partial, "alice", "ACTIVE", NOW.plusSeconds(60));
-        fixtures.holdInGroup(seats.get(5), partial, "alice", "EXPIRED", NOW.plusSeconds(60));
+        // A live group that expires sooner than the new hold's 10-minute TTL.
+        UUID sooner = UUID.randomUUID();
+        fixtures.holdInGroup(seats.get(4), sooner, "alice", "ACTIVE", NOW.plusSeconds(60));
 
         List<HeldGroup> alicesGroups = reads.holds("alice");
 
-        // Soonest expiry first: the partial group expires in 60 s, the new hold in the 10-minute TTL.
-        assertThat(alicesGroups).extracting(HeldGroup::holdGroupId).containsExactly(partial, alices);
-        assertThat(alicesGroups.get(0).seats())
-                .extracting(HeldGroup.GroupSeat::eventSeatId, HeldGroup.GroupSeat::live)
-                .containsExactly(
-                        org.assertj.core.groups.Tuple.tuple(seats.get(4), true),
-                        org.assertj.core.groups.Tuple.tuple(seats.get(5), false));
+        // Soonest expiry first: the first group expires in 60 s, the new hold in the 10-minute TTL.
+        assertThat(alicesGroups).extracting(HeldGroup::holdGroupId).containsExactly(sooner, alices);
         HeldGroup held = alicesGroups.get(1);
         assertThat(held.eventId()).isEqualTo(eventId);
         assertThat(held.eventName()).isEqualTo("Fixture event");
@@ -2090,10 +2094,9 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * One of the caller's hold groups (spec §6, GET /api/me/holds), listed while at least one of its seats is live: the
+ * One of the caller's hold groups (spec §6, GET /api/me/holds), listed while at least one of its rows is live: the
  * rule that makes it count against the hold-group cap (spec §4). A user and their agent are one owner, so this lists
- * the agent's holds too (spec §6, the handover). Each seat says whether it is still live: an overlapping hold can
- * expire part of a group, and such a group can no longer be confirmed (spec §5).
+ * the agent's holds too (spec §6, the handover).
  */
 public record HeldGroup(
         UUID holdGroupId,
@@ -2109,7 +2112,7 @@ public record HeldGroup(
     }
 
     public record GroupSeat(
-            long eventSeatId, String section, String rowLabel, int seatNumber, long priceCents, boolean live) {}
+            long eventSeatId, String section, String rowLabel, int seatNumber, long priceCents) {}
 }
 ```
 
@@ -2170,7 +2173,7 @@ public class OwnerReadService {
             groups.computeIfAbsent(row.getHoldGroupId(), group -> new ArrayList<>())
                     .add(row);
         }
-        return groups.values().stream().map(rows -> group(rows, now)).toList();
+        return groups.values().stream().map(OwnerReadService::group).toList();
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED, readOnly = true)
@@ -2181,20 +2184,18 @@ public class OwnerReadService {
                 .toList();
     }
 
-    /** The whole group as held; a row is live iff ACTIVE and expires_at > now (spec §4). */
-    private static HeldGroup group(List<SeatHold> rows, Instant now) {
+    /** The whole group as held. */
+    private static HeldGroup group(List<SeatHold> rows) {
         Event event = rows.getFirst().getEventSeat().getEvent();
         List<HeldGroup.GroupSeat> seats = rows.stream()
                 .map(row -> {
                     EventSeat seat = row.getEventSeat();
-                    boolean live = row.getStatus() == HoldStatus.ACTIVE && row.getExpiresAt().isAfter(now);
                     return new HeldGroup.GroupSeat(
                             seat.getId(),
                             seat.getSeat().getSection(),
                             seat.getSeat().getRowLabel(),
                             seat.getSeat().getSeatNumber(),
-                            seat.getPriceCents(),
-                            live);
+                            seat.getPriceCents());
                 })
                 .toList();
         long total = seats.stream().mapToLong(HeldGroup.GroupSeat::priceCents).sum();
@@ -2493,10 +2494,10 @@ class OpenApiDocsTest {
         assertThat(names(schemas.at("/Availability/properties"))).contains("event_id", "seats");
         // swagger-core names a schema by its class's simple name, so two seat records must not share one: the hold
         // response's seat and me/holds' seat each keep their own fields.
-        assertThat(names(schemas.at("/GroupSeat/properties"))).contains("event_seat_id", "section", "live");
+        assertThat(names(schemas.at("/GroupSeat/properties"))).contains("event_seat_id", "section");
         assertThat(names(schemas.at("/HeldSeat/properties")))
                 .contains("event_seat_id", "price_cents")
-                .doesNotContain("live");
+                .doesNotContain("section");
         // A 3.0-mode resolver under springdoc's default OpenAPI 3.1 document would drop the schema's type.
         assertThat(schemas.at("/EventCreateRequest/type").asString()).isEqualTo("object");
     }
@@ -2960,10 +2961,14 @@ ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 .idea
 .vscode
 .superpowers
+.claude
 target
 config
+**/config
 .env
 .env.*
+**/.env
+**/.env.*
 logs
 docs
 ```
@@ -3142,7 +3147,7 @@ Replace everything from `## Where things are` to the end of the file with:
 ````markdown
 ## Run it locally
 
-FrontRow runs only on your own machine, and both ways of running it listen on `127.0.0.1` only. Demo-grade security
+FrontRow runs only on your own machine, and both ways of running it are reachable only from `127.0.0.1`. Demo-grade security
 on a public URL would overstate the security story (spec §2, §3).
 
 1. Generate the demo secrets. The passwords and the agent token are printed once; only their hashes are stored. If a
