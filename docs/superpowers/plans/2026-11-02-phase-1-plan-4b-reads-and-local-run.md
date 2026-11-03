@@ -92,7 +92,8 @@ Decisions 1 and 2 are Markus's (brainstorm, 2026-11-02). The rest are this plan'
 6. **The window check** (§5, §12). `sales_close_at <= starts_at` is checked on creation, and on a `PATCH` whose body sets `sales_open_at` or `sales_close_at` (the field is present), against the merged window. A status-only `PATCH`, such as a cancel, is not checked, so an event with nothing sold can always be cancelled. Failure is `invalid_request` with `parameter: sales_window`. The rule lives in the domain as `SalesWindow#closesBy(Instant)`. It fixes the post-start reopen (§6): any window that closes by `starts_at` is already closed once the event has started.
 7. **One instant bound for both write paths.** `EventPatchService.EARLIEST` and `LATEST` move to a package-private `service/EventInstants`, with `storable(Instant)`, and `EventPatchServiceTest` follows them. Creation truncates to microseconds as the `PATCH` does, so a window is checked as it will be stored.
 8. **springdoc-openapi 3.1.1.** It is the newest release built on Boot 4.1.x (its parent is Boot 4.1.0), published 2026-09-06; 3.2.0 is built on Boot 4.1.2 and was nine days old when this plan was written.
-   - **Schemas use the wire's names.** springdoc renders schemas with swagger-core's own Jackson 2 mapper, which knows nothing of the application's Jackson 3 `SNAKE_CASE`. Without a fix, Swagger UI would show `eventSeatIds` and its "Try it out" would send a body the API refuses. A `ModelResolver` bean over a snake_case copy of swagger's mapper is the documented fix. `OpenApiDocsTest#schemasUseTheWireNames` guards it.
+   - **Schemas use the wire's names.** springdoc renders schemas with swagger-core's own Jackson 2 mapper, which knows nothing of the application's Jackson 3 `SNAKE_CASE`. Without a fix, Swagger UI would show `eventSeatIds` and its "Try it out" would send a body the API refuses. A `ModelResolver` bean over a snake_case copy of swagger's OpenAPI 3.1 mapper (`Json31`), with `openapi31(true)`, is the documented fix. It must be the 3.1 resolver: springdoc 3.1.1's default document is OpenAPI 3.1, the bean replaces swagger-core's own 3.1 resolver, and a 3.0-mode one would make every component schema lose `"type": "object"`. `OpenApiDocsTest#schemasUseTheWireNames` guards both the names and the type.
+   - **The server URL is pinned to `/`.** Without a `servers` entry, springdoc writes each request's `Host` into the shared cached document, so a DNS-rebinding page could point Swagger UI's "Try it out", and the Basic credentials it sends, at its own host. `OpenApiDocsTest#theServerUrlDoesNotComeFromTheHostHeader` guards it.
    - **`springdoc.paths-to-match: /api/**`:** `/mcp` is described by its own tool schemas (spec §7), not by OpenAPI.
    - **One HTTP Basic security scheme**, applied globally. Swagger UI's Authorize button sends the header itself; no 401 carries a challenge (§3).
    - **Swagger UI** is at `/swagger-ui/index.html`, inside the catch-all's `/swagger-ui/**`. springdoc's `/swagger-ui.html` redirect is not one of the four anonymous paths, so it gets 401, and the README names the full path.
@@ -120,6 +121,7 @@ Decisions 1 and 2 are Markus's (brainstorm, 2026-11-02). The rest are this plan'
 13. **During execution, record each implementer's model** (project memory `plan-5-implementer-model-note`). Record the task, the model as actually run, whether `model` was set or omitted, and that every step held complete code (decision 1). Fix passes count too. Observe only: dispatch exactly as usual. Write the records into `workflow-audits\frontrow\queue.md` item 10 before or at this plan's PR merge.
 14. **Not in this plan:**
     - the post-4B spec status sync and the journal entry: their own docs PRs, as after every plan;
+    - the Docker Engine floor in the spec and ADR-006: the post-4B spec sync must correct spec §3, the §12 README box and ADR-006's "28.0" to 28.3.3 (CVE-2025-54388). The §12 box is quoted wording, so the change is Markus's to approve;
     - everything in §12's "Plan 5" box list;
     - the whole-project boxes that need plan 5's tools.
 
@@ -255,7 +257,7 @@ In `TestCredentials`, replace `USERS`:
 
 Run: `./mvnw spotless:apply -q && ./mvnw verify`
 Expected: BUILD SUCCESS. Then confirm nothing else names the cut:
-`grep -rn "ADMIN\|adam\|api/orders" src/` prints only the new `/api/orders/1` assertion and its comment.
+`grep -rn "ADMIN\|adam\|api/orders" src/` prints only the new `/api/orders/1` assertion and its comment, and `Role.java`'s own javadoc line ("revision 2.7 cut ADMIN").
 
 - [ ] **Step 5: Commit**
 
@@ -1787,7 +1789,7 @@ class ReadEndpointsTest {
 ```
 
 Run: `./mvnw spotless:apply -q && ./mvnw -q test -Dtest=ReadEndpointsTest`
-Expected: FAIL: the `GET`s answer 404 with no handler, so `anonymousCallersSearchAndReadOnSaleEvents` gets 404, not 200.
+Expected: FAIL: `GET /api/events` and `GET /api/events/{eventId}` answer 405, since only `POST /api/events` and `PATCH /api/events/{eventId}` are mapped, so `anonymousCallersSearchAndReadOnSaleEvents` gets 405, not 200. The availability `GET` has no mapping on its path at all and answers 404.
 
 - [ ] **Step 9: Add the read endpoints**
 
@@ -2471,6 +2473,20 @@ class OpenApiDocsTest {
                 .contains("venue_id", "starts_at", "sales_open_at", "sales_close_at", "prices")
                 .doesNotContain("venueId", "startsAt");
         assertThat(names(schemas.at("/Availability/properties"))).contains("event_id", "seats");
+        // A 3.0-mode resolver under springdoc's default OpenAPI 3.1 document would drop the schema's type.
+        assertThat(schemas.at("/EventCreateRequest/type").asString()).isEqualTo("object");
+    }
+
+    @Test
+    void theServerUrlDoesNotComeFromTheHostHeader() throws Exception {
+        // springdoc otherwise writes the requesting Host into the shared cached document, and Swagger UI's "Try it
+        // out" would send Basic credentials there.
+        MockHttpServletResponse response = mvc.perform(get("/v3/api-docs").header("Host", "evil.example"))
+                .andReturn()
+                .getResponse();
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(JSON.readTree(response.getContentAsString()).at("/servers/0/url").asString())
+                .isEqualTo("/");
     }
 
     @Test
@@ -2517,12 +2533,14 @@ package io.github.markusluisflores.frontrow.rest;
 
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import io.swagger.v3.core.jackson.ModelResolver;
-import io.swagger.v3.core.util.Json;
+import io.swagger.v3.core.util.Json31;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
+import io.swagger.v3.oas.models.servers.Server;
+import java.util.List;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -2537,11 +2555,13 @@ public class OpenApiConfig {
 
     /**
      * HTTP Basic for the whole document; the three event reads need no credentials. Swagger UI's Authorize button sends
-     * the header itself, because no 401 carries a challenge (spec §3).
+     * the header itself, because no 401 carries a challenge (spec §3). The server URL is pinned to "/": it must not
+     * come from a request's Host header.
      */
     @Bean
     OpenAPI frontRowOpenApi() {
         return new OpenAPI()
+                .servers(List.of(new Server().url("/")))
                 .info(new Info()
                         .title("FrontRow")
                         .version("phase-1")
@@ -2558,7 +2578,8 @@ public class OpenApiConfig {
      */
     @Bean
     ModelResolver snakeCaseModelResolver() {
-        return new ModelResolver(Json.mapper().copy().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE));
+        return new ModelResolver(Json31.mapper().copy().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE))
+                .openapi31(true);
     }
 }
 ```
@@ -2574,7 +2595,7 @@ springdoc:
 - [ ] **Step 5: Run the suite**
 
 Run: `./mvnw spotless:apply -q && ./mvnw verify`
-Expected: BUILD SUCCESS. If springdoc pulls a Jackson 2 module that Boot 4 auto-configures, or `-Werror` flags a deprecation in `Json.mapper()`, apply decision 1's deviation rule. Keep the snake_case schemas and the anonymous paths.
+Expected: BUILD SUCCESS. If springdoc pulls a Jackson 2 module that Boot 4 auto-configures, or `-Werror` flags a deprecation in `Json31.mapper()`, apply decision 1's deviation rule. Keep the snake_case schemas and the anonymous paths.
 
 - [ ] **Step 6: Check the CI dependency scan locally**
 
@@ -2813,9 +2834,15 @@ class ComposeFileTest {
     void theAppIsPublishedOnLoopbackOnlyAndPostgresNotAtAll() throws IOException {
         Map<?, ?> services = (Map<?, ?>) compose().get("services");
 
-        assertThat(services.keySet()).containsExactlyInAnyOrder("app", "postgres");
+        assertThat(List.<Object>copyOf(services.keySet())).containsExactlyInAnyOrder("app", "postgres");
         assertThat(((Map<?, ?>) services.get("app")).get("ports")).isEqualTo(List.of("127.0.0.1:8080:8080"));
-        assertThat((Map<?, ?>) services.get("postgres")).doesNotContainKey("ports");
+        assertThat(((Map<?, ?>) services.get("postgres")).containsKey("ports")).isFalse();
+        // network_mode: host would put a service on every host interface without touching ports.
+        for (String name : List.of("app", "postgres")) {
+            assertThat(((Map<?, ?>) services.get(name)).containsKey("network_mode"))
+                    .as(name)
+                    .isFalse();
+        }
     }
 
     @Test
@@ -2920,7 +2947,8 @@ docs
 ```yaml
 # The local demo (spec §3, §12). Run scripts/demo-credentials.sh first: it writes .env and config/application-demo.yml.
 # The app is published on host loopback only, and Postgres is not published at all. "Local only" assumes Docker Engine
-# 28.0 or later on Linux: earlier engines let a host on the same network reach container ports directly.
+# 28.3.3 or later on Linux: earlier engines let a host on the same network reach container ports directly, and those
+# before 28.3.3 do so again after a firewalld reload (CVE-2025-54388).
 name: frontrow
 
 services:
@@ -3030,6 +3058,8 @@ Expected: BUILD SUCCESS. `git status --short` shows no `.env` and nothing under 
 
 This is the task's own verification. If it cannot be completed, the task is BLOCKED (global `CLAUDE.md`): a human runs it, or the controller gets it waived.
 
+If `config/application-demo.yml` exists from before Task 1 (plan 4A's script wrote it with `adam`/`ADMIN`, mode 600), delete it first: the script keeps an existing file, `ADMIN` no longer binds, and the container's user can't read a mode-600 file.
+
 ```bash
 bash scripts/demo-credentials.sh
 ```
@@ -3051,7 +3081,7 @@ Finish with:
 docker compose down
 ```
 
-The generated `.env` and `config/application-demo.yml` stay in the checkout, gitignored.
+The generated `.env` and `config/application-demo.yml` stay in the checkout, gitignored. When an agent runs this step, it then deletes `config/application-demo.yml`, so the passwords and token the script printed into its transcript stop working; Markus regenerates them with the script when he next runs the demo. `.env` is kept: its password is never printed.
 
 - [ ] **Step 8: Commit**
 
@@ -3089,7 +3119,8 @@ Replace everything from `## Where things are` to the end of the file with:
 FrontRow runs only on your own machine, and both ways of running it listen on `127.0.0.1` only. Demo-grade security
 on a public URL would overstate the security story (spec §2, §3).
 
-1. Generate the demo secrets. The passwords and the agent token are printed once; only their hashes are stored:
+1. Generate the demo secrets. The passwords and the agent token are printed once; only their hashes are stored. If a
+   `config/application-demo.yml` from before plan 4B exists, delete it first:
 
    ```bash
    bash scripts/demo-credentials.sh
@@ -3101,7 +3132,7 @@ on a public URL would overstate the security story (spec §2, §3).
    docker compose up --build
    ```
 
-   This needs Docker Engine 28.0 or later on Linux, so that the loopback-only port binding holds.
+   This needs Docker Engine 28.3.3 or later on Linux, so that the loopback-only port binding holds.
 
 3. Open Swagger UI at <http://127.0.0.1:8080/swagger-ui/index.html>. Choose **Authorize** and sign in as `alice` or
    `bob` (buyers) or `olivia` (organiser), with the password the script printed.
