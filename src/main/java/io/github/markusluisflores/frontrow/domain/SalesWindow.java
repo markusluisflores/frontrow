@@ -30,4 +30,12 @@ public record SalesWindow(Instant openAt, Instant closeAt) {
         }
         return now.isBefore(closeAt) ? WindowState.OPEN : WindowState.AFTER;
     }
+
+    /**
+     * Whether sales close by the event's start (spec §5, Event cancellation): nothing is sold for a performance that has
+     * begun, and a window that closes by the start is already closed once the event has started.
+     */
+    public boolean closesBy(Instant startsAt) {
+        return !closeAt.isAfter(startsAt);
+    }
 }

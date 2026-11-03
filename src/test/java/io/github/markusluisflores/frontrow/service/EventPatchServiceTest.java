@@ -13,6 +13,7 @@ import io.github.markusluisflores.frontrow.support.ServiceTestConfiguration;
 import io.github.markusluisflores.frontrow.support.TestClock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -203,8 +204,8 @@ class EventPatchServiceTest {
         for (EventPatch outOfRange : List.of(
                 new EventPatch(eventId, null, null, Instant.parse("+300000-01-01T00:00:00Z")),
                 new EventPatch(eventId, null, Instant.MIN, null),
-                new EventPatch(eventId, null, EventPatchService.EARLIEST.minusNanos(1000), null),
-                new EventPatch(eventId, null, EventPatchService.LATEST, EventPatchService.LATEST.plusNanos(1000)))) {
+                new EventPatch(eventId, null, EventInstants.EARLIEST.minusNanos(1000), null),
+                new EventPatch(eventId, null, EventInstants.LATEST, EventInstants.LATEST.plusNanos(1000)))) {
             DomainException rejected = rejection(() -> patches.patch(outOfRange));
             assertThat(rejected.errorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
             assertThat(rejected.details()).containsEntry("parameter", "sales_window");
@@ -213,18 +214,62 @@ class EventPatchServiceTest {
 
     @Test
     void theWidestAllowedWindowIsStoredExactly() {
-        EventPatchResult result =
-                patches.patch(new EventPatch(eventId, null, EventPatchService.EARLIEST, EventPatchService.LATEST));
+        fixtures.setStartsAt(eventId, EventInstants.LATEST);
 
-        assertThat(result.salesOpenAt()).isEqualTo(EventPatchService.EARLIEST);
-        assertThat(result.salesCloseAt()).isEqualTo(EventPatchService.LATEST);
+        EventPatchResult result =
+                patches.patch(new EventPatch(eventId, null, EventInstants.EARLIEST, EventInstants.LATEST));
+
+        assertThat(result.salesOpenAt()).isEqualTo(EventInstants.EARLIEST);
+        assertThat(result.salesCloseAt()).isEqualTo(EventInstants.LATEST);
         assertThat(jdbc.sql("SELECT sales_open_at, sales_close_at FROM event WHERE id = :id")
                         .param("id", eventId)
                         .query((rs, row) -> List.of(
                                 rs.getObject(1, OffsetDateTime.class).toInstant(),
                                 rs.getObject(2, OffsetDateTime.class).toInstant()))
                         .single())
-                .containsExactly(EventPatchService.EARLIEST, EventPatchService.LATEST);
+                .containsExactly(EventInstants.EARLIEST, EventInstants.LATEST);
+    }
+
+    @Test
+    void aWindowMayCloseAtTheStartButNotAfterIt() {
+        // HoldFixtures events start at NOW + 30 days.
+        Instant startsAt = NOW.plus(30, ChronoUnit.DAYS);
+
+        DomainException rejected =
+                rejection(() -> patches.patch(new EventPatch(eventId, null, null, startsAt.plusNanos(1000))));
+        assertThat(rejected.errorCode()).isEqualTo(ErrorCode.INVALID_REQUEST);
+        assertThat(rejected.details()).containsEntry("parameter", "sales_window");
+
+        assertThat(patches.patch(new EventPatch(eventId, null, null, startsAt)).salesCloseAt())
+                .isEqualTo(startsAt);
+    }
+
+    @Test
+    void noPatchCanReopenSalesForAnEventThatHasStarted() {
+        // Spec §6: on main an organiser could reopen sales after starts_at. Every reopening sets sales_close_at past
+        // the start, so the check refuses it whatever the clock says.
+        Instant startsAt = NOW.plus(30, ChronoUnit.DAYS);
+        clock.set(startsAt.plus(1, ChronoUnit.DAYS));
+
+        DomainException rejected =
+                rejection(() -> patches.patch(new EventPatch(eventId, null, null, startsAt.plus(7, ChronoUnit.DAYS))));
+
+        assertThat(rejected.details()).containsEntry("parameter", "sales_window");
+    }
+
+    @Test
+    void theCheckUsesTheMergedWindowAndSkipsAStatusOnlyPatch() {
+        // A row whose stored window already closes after the start, as one written before the check would.
+        fixtures.setSalesCloseAt(eventId, NOW.plus(31, ChronoUnit.DAYS));
+
+        DomainException rejected =
+                rejection(() -> patches.patch(new EventPatch(eventId, null, NOW.minusSeconds(60), null)));
+        assertThat(rejected.details()).containsEntry("parameter", "sales_window");
+
+        // A cancel sets no bound, so it is not checked: an event with nothing sold can always be cancelled.
+        assertThat(patches.patch(new EventPatch(eventId, EventStatus.CANCELLED, null, null))
+                        .status())
+                .isEqualTo(EventStatus.CANCELLED);
     }
 
     private static DomainException rejection(ThrowingCallable call) {

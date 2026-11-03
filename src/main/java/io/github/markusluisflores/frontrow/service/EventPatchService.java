@@ -2,6 +2,7 @@ package io.github.markusluisflores.frontrow.service;
 
 import io.github.markusluisflores.frontrow.domain.EventStatus;
 import io.github.markusluisflores.frontrow.domain.HoldStatus;
+import io.github.markusluisflores.frontrow.domain.SalesWindow;
 import io.github.markusluisflores.frontrow.error.DomainException;
 import io.github.markusluisflores.frontrow.error.ErrorCode;
 import io.github.markusluisflores.frontrow.persistence.EventRow;
@@ -22,19 +23,11 @@ import org.springframework.transaction.annotation.Transactional;
  * waits for every hold creation and confirmation in flight on the event and blocks new ones until it commits. So no
  * confirm can commit against a window it has just closed, or an event it has just cancelled. A lock timeout bounds
  * every wait, and a timeout asks the organiser to retry (spec §5, Liveness). The REST adapter lets any ORGANISER call
- * it, for any event: Phase 1 has no per-event ownership (plan 4A decision 2).
+ * it, for any event: Phase 1 has no per-event ownership (plan 4A decision 2). A PATCH that sets a window bound must
+ * leave the window closing by the event's start (spec §5), so no request can reopen a started event's sales.
  */
 @Service
 public class EventPatchService {
-
-    /**
-     * The widest sales window a PATCH may set: what both timestamptz and a four-digit ISO 8601 year can hold. An
-     * instant outside it would otherwise reach Postgres and fail there as a 500 (PR #22 thread 4305094277). This is the
-     * one write path that takes caller-supplied instants, so the bound lives here, whichever adapter calls.
-     */
-    static final Instant EARLIEST = Instant.parse("0001-01-01T00:00:00Z");
-
-    static final Instant LATEST = Instant.parse("9999-12-31T23:59:59.999999Z");
 
     private final LockingGateway gateway;
     private final TicketOrderRepository orders;
@@ -60,7 +53,8 @@ public class EventPatchService {
             Instant closeAt = patch.salesCloseAt() == null
                     ? event.salesCloseAt()
                     : patch.salesCloseAt().truncatedTo(ChronoUnit.MICROS);
-            requireAllowed(event, status, openAt, closeAt);
+            boolean windowSet = patch.salesOpenAt() != null || patch.salesCloseAt() != null;
+            requireAllowed(event, status, openAt, closeAt, windowSet);
 
             int released = status == EventStatus.CANCELLED && event.status() != EventStatus.CANCELLED
                     ? releaseForCancellation(event.id())
@@ -72,7 +66,8 @@ public class EventPatchService {
         }
     }
 
-    private static void requireAllowed(EventRow event, EventStatus status, Instant openAt, Instant closeAt) {
+    private static void requireAllowed(
+            EventRow event, EventStatus status, Instant openAt, Instant closeAt, boolean windowSet) {
         boolean statusAllowed =
                 switch (event.status()) {
                     case DRAFT -> true;
@@ -83,11 +78,16 @@ public class EventPatchService {
         if (!statusAllowed) {
             throw invalid("status");
         }
-        if (openAt.isBefore(EARLIEST) || closeAt.isAfter(LATEST)) {
+        if (!EventInstants.storable(openAt) || !EventInstants.storable(closeAt)) {
             throw invalid("sales_window");
         }
         boolean windowChanged = !openAt.equals(event.salesOpenAt()) || !closeAt.equals(event.salesCloseAt());
         if ((event.status() == EventStatus.CANCELLED && windowChanged) || !openAt.isBefore(closeAt)) {
+            throw invalid("sales_window");
+        }
+        // Only a PATCH that sets a bound is checked, against the merged window, so a status-only PATCH such as a
+        // cancel always passes: an event with nothing sold can always be cancelled (spec §5).
+        if (windowSet && !SalesWindow.of(openAt, closeAt).closesBy(event.startsAt())) {
             throw invalid("sales_window");
         }
     }

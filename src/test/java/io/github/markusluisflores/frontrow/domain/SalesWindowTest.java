@@ -36,4 +36,11 @@ class SalesWindowTest {
     void rejectsAWindowThatClosesBeforeItOpens() {
         assertThatIllegalArgumentException().isThrownBy(() -> SalesWindow.of(CLOSE, OPEN));
     }
+
+    @Test
+    void aWindowClosesByAStartAtOrAfterItsClose() {
+        assertThat(WINDOW.closesBy(CLOSE)).isTrue();
+        assertThat(WINDOW.closesBy(CLOSE.plusMillis(1))).isTrue();
+        assertThat(WINDOW.closesBy(CLOSE.minusMillis(1))).isFalse();
+    }
 }

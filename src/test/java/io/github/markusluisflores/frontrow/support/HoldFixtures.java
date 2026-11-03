@@ -169,6 +169,21 @@ public final class HoldFixtures {
                 .update();
     }
 
+    public void setStartsAt(long eventId, Instant startsAt) {
+        jdbc.sql("UPDATE event SET starts_at = :starts WHERE id = :id")
+                .param("starts", utc(startsAt))
+                .param("id", eventId)
+                .update();
+    }
+
+    /** Writes a window bound past the checks, as a row stored before them would be. */
+    public void setSalesCloseAt(long eventId, Instant salesCloseAt) {
+        jdbc.sql("UPDATE event SET sales_close_at = :close WHERE id = :id")
+                .param("close", utc(salesCloseAt))
+                .param("id", eventId)
+                .update();
+    }
+
     /** A stored key whose row no request has completed with a real result: for purge tests only. */
     public void holdRequest(String owner, String idempotencyKey, Instant createdAt) {
         jdbc.sql("""

@@ -221,6 +221,15 @@ class WriteEndpointsTest {
     }
 
     @Test
+    void aPatchThatClosesSalesAfterTheStartIsInvalid() throws Exception {
+        // The fixture event starts at 2026-10-31T12:00:00Z.
+        assertInvalid(patchEvent("olivia", "{\"sales_close_at\": \"2026-10-31T12:00:00.000001Z\"}"), "sales_window");
+        assertThat(perform(patchEvent("olivia", "{\"sales_close_at\": \"2026-10-31T12:00:00Z\"}"))
+                        .getStatus())
+                .isEqualTo(200);
+    }
+
+    @Test
     void anUnknownStatusNamesTheField() throws Exception {
         assertInvalid(
                 patch("/api/events/" + eventId)
