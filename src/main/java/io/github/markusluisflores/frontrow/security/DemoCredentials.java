@@ -15,9 +15,8 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
  */
 public final class DemoCredentials {
 
-    /** The demo cast: two buyers (alice holds the agent token), an organiser and an admin. */
-    static final Map<String, Role> USERS =
-            Map.of("alice", Role.BUYER, "bob", Role.BUYER, "olivia", Role.ORGANISER, "adam", Role.ADMIN);
+    /** The demo cast: two buyers (alice holds the agent token) and an organiser. */
+    static final Map<String, Role> USERS = Map.of("alice", Role.BUYER, "bob", Role.BUYER, "olivia", Role.ORGANISER);
 
     static final String TOKEN_HOLDER = "alice";
 
