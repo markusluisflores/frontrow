@@ -28,4 +28,17 @@ public interface SeatHoldRepository extends JpaRepository<SeatHold, Long> {
             WHERE h.eventSeat.event.id = :eventId
             AND (h.status = :sold OR (h.status = :active AND h.expiresAt > :now))""")
     List<Long> findClaimedSeatIds(long eventId, Instant now, HoldStatus sold, HoldStatus active);
+
+    /**
+     * GET /api/me/holds (spec §6): every row of the owner's groups that still have a live row, the same rule as an
+     * active group for the cap (spec §4). Groups come out contiguous, soonest expiry first: a group's rows share one
+     * expires_at. Loaded only in read-only transactions, which never flush (ADR-005).
+     */
+    @Query("""
+            SELECT h FROM SeatHold h JOIN FETCH h.eventSeat s JOIN FETCH s.seat JOIN FETCH s.event
+            WHERE h.owner = :owner AND h.holdGroupId IN (
+                SELECT l.holdGroupId FROM SeatHold l
+                WHERE l.owner = :owner AND l.status = :active AND l.expiresAt > :now)
+            ORDER BY h.expiresAt, h.holdGroupId, s.id""")
+    List<SeatHold> findGroupsWithALiveRow(String owner, Instant now, HoldStatus active);
 }

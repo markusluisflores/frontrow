@@ -30,7 +30,8 @@ class TransactionIsolationTest {
             EventPatchService.class,
             ExpirySweepService.class,
             EventCreateService.class,
-            EventReadService.class);
+            EventReadService.class,
+            OwnerReadService.class);
 
     @Test
     void theListIsEveryServiceInThePackage() {
