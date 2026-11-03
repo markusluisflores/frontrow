@@ -32,12 +32,17 @@ public class Event {
     @Column(name = "name", nullable = false)
     private String name;
 
+    // The three instants bind as offset date-times: the default Timestamp binding shifts years before 1582 by two days
+    // (Julian calendar), and event creation stores the widest window (EventInstants).
+    @JdbcTypeCode(SqlTypes.TIMESTAMP_WITH_TIMEZONE)
     @Column(name = "starts_at", nullable = false)
     private Instant startsAt;
 
+    @JdbcTypeCode(SqlTypes.TIMESTAMP_WITH_TIMEZONE)
     @Column(name = "sales_open_at", nullable = false)
     private Instant salesOpenAt;
 
+    @JdbcTypeCode(SqlTypes.TIMESTAMP_WITH_TIMEZONE)
     @Column(name = "sales_close_at", nullable = false)
     private Instant salesCloseAt;
 

@@ -46,6 +46,9 @@ class ServiceTransactionBoundaryTest {
     @Autowired
     ExpirySweepService sweeper;
 
+    @Autowired
+    EventCreateService creations;
+
     private Map<String, Runnable> calls() {
         Map<String, Runnable> calls = new LinkedHashMap<>();
         calls.put("HoldService#hold", () -> holds.hold(new HoldCommand("alice", 1, List.of(1L), "k1")));
@@ -54,6 +57,9 @@ class ServiceTransactionBoundaryTest {
         calls.put("EventPatchService#patch", () -> patches.patch(new EventPatch(1, null, null, null)));
         calls.put("ExpirySweepService#expireLapsedHolds", sweeper::expireLapsedHolds);
         calls.put("ExpirySweepService#purgeHoldRequests", sweeper::purgeHoldRequests);
+        calls.put(
+                "EventCreateService#create",
+                () -> creations.create(new EventDraft(1L, "x", null, null, null, "CAD", Map.of())));
         return calls;
     }
 

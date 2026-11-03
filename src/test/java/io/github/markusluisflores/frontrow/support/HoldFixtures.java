@@ -80,6 +80,22 @@ public final class HoldFixtures {
         return ids;
     }
 
+    /** Fresh seats in one section of a venue, offered by no event yet, in ascending id order. */
+    public List<Long> seats(long venueId, String section, int count) {
+        List<Long> ids = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            ids.add(jdbc.sql("""
+                            INSERT INTO seat (venue_id, section, row_label, seat_number)
+                            VALUES (:venue, :section, 'A', :number) RETURNING id""")
+                    .param("venue", venueId)
+                    .param("section", section)
+                    .param("number", seatNumbers.incrementAndGet())
+                    .query(Long.class)
+                    .single());
+        }
+        return ids;
+    }
+
     public void hold(long eventSeatId, String owner, String status, Instant expiresAt) {
         holdInGroup(eventSeatId, UUID.randomUUID(), owner, status, expiresAt);
     }

@@ -273,4 +273,51 @@ class WriteEndpointsTest {
     private static JsonNode body(MockHttpServletResponse response) throws Exception {
         return JSON.readTree(response.getContentAsString());
     }
+
+    @Test
+    void anOrganiserCreatesADraftAndPutsItOnSale() throws Exception {
+        long newVenue = fixtures.venue();
+        fixtures.seats(newVenue, "Stalls", 2);
+        String json = JSON.writeValueAsString(Map.of(
+                "venue_id", newVenue,
+                "name", "Quiet Strings Quartet",
+                "starts_at", "2026-11-20T18:30:00Z",
+                "sales_open_at", "2026-09-01T00:00:00Z",
+                "sales_close_at", "2026-11-20T16:30:00Z",
+                "currency", "CAD",
+                "prices", Map.of("Stalls", 3800)));
+
+        MockHttpServletResponse created = perform(post("/api/events")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json)
+                .with(as("olivia")));
+
+        assertThat(created.getStatus()).isEqualTo(201);
+        JsonNode event = body(created);
+        assertThat(event.get("status").asString()).isEqualTo("DRAFT");
+        assertThat(event.get("venue_name").asString()).isEqualTo("Fixture Hall");
+        long newEvent = event.get("event_id").asLong();
+        assertThat(perform(patch("/api/events/" + newEvent)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"status\": \"ON_SALE\"}")
+                                .with(as("olivia")))
+                        .getStatus())
+                .isEqualTo(200);
+    }
+
+    @Test
+    void aMalformedCreationNamesItsParameter() throws Exception {
+        assertInvalid(
+                post("/api/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"prices\": {\"Floor\": null}}")
+                        .with(as("olivia")),
+                "prices");
+        assertInvalid(
+                post("/api/events")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Gig\", \"currency\": \"CAD\", \"starts_at\": \"2030-01-01T00:00:00Z\"}")
+                        .with(as("olivia")),
+                "sales_window");
+    }
 }
