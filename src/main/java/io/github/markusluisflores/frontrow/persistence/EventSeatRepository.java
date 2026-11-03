@@ -10,4 +10,11 @@ public interface EventSeatRepository extends JpaRepository<EventSeat, Long> {
     /** The requested seats this event actually offers. event_seat rows are never written, so a JPA read is safe. */
     @Query("SELECT s FROM EventSeat s WHERE s.event.id = :eventId AND s.id IN :ids")
     List<EventSeat> findOfferedSeats(long eventId, Collection<Long> ids);
+
+    /** Every seat the event offers, with its physical seat, in section, row and number order. */
+    @Query("""
+            SELECT s FROM EventSeat s JOIN FETCH s.seat p
+            WHERE s.event.id = :eventId
+            ORDER BY p.section, p.rowLabel, p.seatNumber, s.id""")
+    List<EventSeat> findByEventWithSeat(long eventId);
 }

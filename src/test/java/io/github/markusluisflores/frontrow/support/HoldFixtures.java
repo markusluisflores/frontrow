@@ -51,6 +51,20 @@ public final class HoldFixtures {
         return event(venueId, "ON_SALE", NOW.minus(1, ChronoUnit.DAYS), NOW.plus(29, ChronoUnit.DAYS));
     }
 
+    /** An event with its own name and start; its sales opened a day before NOW and close at its start. */
+    public long namedEvent(long venueId, String name, String status, Instant startsAt) {
+        return jdbc.sql("""
+                        INSERT INTO event (venue_id, name, starts_at, sales_open_at, sales_close_at, status, currency)
+                        VALUES (:venue, :name, :starts, :open, :starts, :status, 'CAD') RETURNING id""")
+                .param("venue", venueId)
+                .param("name", name)
+                .param("starts", utc(startsAt))
+                .param("open", utc(NOW.minus(1, ChronoUnit.DAYS)))
+                .param("status", status)
+                .query(Long.class)
+                .single();
+    }
+
     /** Fresh seats, each offered by the event at PRICE_CENTS, returned in ascending id order. */
     public List<Long> eventSeats(long eventId, long venueId, int count) {
         return eventSeats(eventId, venueId, count, PRICE_CENTS);

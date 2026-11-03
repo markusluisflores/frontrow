@@ -49,6 +49,9 @@ class ServiceTransactionBoundaryTest {
     @Autowired
     EventCreateService creations;
 
+    @Autowired
+    EventReadService eventReads;
+
     private Map<String, Runnable> calls() {
         Map<String, Runnable> calls = new LinkedHashMap<>();
         calls.put("HoldService#hold", () -> holds.hold(new HoldCommand("alice", 1, List.of(1L), "k1")));
@@ -60,6 +63,9 @@ class ServiceTransactionBoundaryTest {
         calls.put(
                 "EventCreateService#create",
                 () -> creations.create(new EventDraft(1L, "x", null, null, null, "CAD", Map.of())));
+        calls.put("EventReadService#search", () -> eventReads.search(new EventQuery(null, null, null, null)));
+        calls.put("EventReadService#event", () -> eventReads.event(1));
+        calls.put("EventReadService#availability", () -> eventReads.availability(1, null));
         return calls;
     }
 
