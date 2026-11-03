@@ -100,7 +100,7 @@ Decisions 1 and 2 are Markus's (brainstorm, 2026-11-02). The rest are this plan'
 9. **Compose** (§3, §12).
    - **Ports:** `app` publishes `127.0.0.1:8080:8080` only, and `postgres` publishes nothing.
    - **Passwords:** both take `${POSTGRES_PASSWORD:?…}`, so compose refuses to start without the generated `.env`.
-   - **The image** is multi-stage: the build stage skips tests, Spotless and SpotBugs, because CI runs them and a Windows checkout's CRLF files would fail Spotless inside Linux. The runtime image runs as a non-root `frontrow` user.
+   - **The image** is multi-stage: the build stage skips tests, Spotless and SpotBugs, because CI runs them and a Windows checkout's CRLF files would fail Spotless inside Linux. The runtime image runs as a non-root `frontrow` user. The build stage installs `unzip` for the Maven wrapper, which otherwise fetches the tar.gz and fails the zip's checksum; the wrapper's `distributionSha256Sum` stays.
    - **`config/` is mounted read-only** at `/app/config`, where Boot finds `config/application-demo.yml`.
    - **`scripts/demo-credentials.sh` writes each file only if it is missing:**
      - `.env`, from `DemoCredentials env`: a `SecureRandom` password, mode `0600`. Postgres keeps its first password in its volume, so regenerating `.env` alone would lock the app out; the header says to run `docker compose down -v` too;
@@ -2759,7 +2759,7 @@ spring:
 Run: `./mvnw spotless:apply -q && ./mvnw verify`
 Expected: BUILD SUCCESS.
 
-If a generated `config/application-demo.yml` exists in your checkout, `SeedDataTest` loads its users too, because the demo profile reads `./config/application-demo.yml`. That is harmless: the test authenticates nobody. CI has no such file.
+If a generated `config/application-demo.yml` exists in your checkout, `SeedDataTest` loads its users, because the demo profile reads `./config/application-demo.yml`, and its user list replaces the test's. A file generated after Task 1 is harmless: the test authenticates nobody. A plan-4A file is not: it gives `adam` the role `ADMIN`, which no longer binds, so this context fails to start. Delete a plan-4A file first. CI has no such file.
 
 - [ ] **Step 6: Commit**
 
@@ -2916,6 +2916,8 @@ WORKDIR /src
 COPY .mvn .mvn
 COPY mvnw pom.xml ./
 COPY src src
+# The wrapper needs unzip: without it, it fetches the tar.gz and fails the zip's distributionSha256Sum.
+RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/*
 RUN ./mvnw -B -q -DskipTests -Dspotless.check.skip=true -Dspotbugs.skip=true package
 
 FROM eclipse-temurin:25-jre
@@ -2961,7 +2963,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U frontrow -d frontrow"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U frontrow -d frontrow"]
       interval: 2s
       timeout: 5s
       retries: 30
