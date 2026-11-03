@@ -14,7 +14,7 @@ and its exemption lists change only with Markus's approval. Plans 4B and 5 owe s
 every defect fix on `main`.
 
 **Phase 1 plans 1 (foundation), 2 (domain foundations), 3A (hold creation), 3B (confirm, release,
-cancellation, the sweeper) and 4A (the security edge and the REST write endpoints) are complete.
+cancellation, the sweeper), 4A (the security edge and the REST write endpoints) and 4B (the reads, event creation and the local run) are complete.
 Together they provide: a Maven build, CI, the V1 schema
 migration, a principal-propagation spike, a pure `domain` package (money, statuses, sales window, hold
 rules, the request fingerprint), the shared error contract (`error`), JPA entities and repositories over
@@ -25,10 +25,11 @@ release (`ReleaseService`), the event PATCH and cancellation (`EventPatchService
 and 24-hour key purge (`ExpirySweepService`, scheduled by `config/SweepSchedule`). Plan 4A adds the
 three security chains (`security/SecurityConfig`), hashed demo credentials, Problem Details errors and a
 16 KiB request-body bound (`rest/`), and four REST endpoints over those services: hold, release,
-confirm and the event PATCH. No read endpoint, no event creation and no MCP tool exists yet.**
-264 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
-`uq_claimed_seat`. Plans 4B (the read services and GET endpoints, event creation, OpenAPI) and 5 (MCP)
-remain.
+confirm and the event PATCH. Plan 4B adds `POST /api/events`, the five `GET` endpoints over two read services (`EventReadService`, which plan 5's
+read tools reuse, and `OwnerReadService`), the post-start window check, springdoc / Swagger UI, the demo seed and
+`docker compose` on loopback; it removed the cut `ADMIN` role. No MCP tool exists yet.**
+301 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
+`uq_claimed_seat`. Plan 5 (MCP tools and the evidence) remains.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
 `docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.7, the portfolio-scope change; 2.6
 reviewed and merged 2026-09-18, 2.6.1 a wording fix, 2.6.2 a post-implementation
@@ -44,7 +45,7 @@ PR #10's description carries the plan deviations and the list Plan 3 must addres
 Plan 3A was merged as PR #16 (`ed1566a`) and executed on `feat/phase-1-hold-creation`, merged as PR #18 (`4de410e`, 2026-10-16):
 `docs/superpowers/plans/2026-10-14-phase-1-plan-3a-hold-creation.md`. Plan 3B:
 `docs/superpowers/plans/2026-10-17-phase-1-plan-3b-confirm-release-cancel.md`. Plan 4A:
-`docs/superpowers/plans/2026-10-20-phase-1-plan-4a-security-edge.md`.
+`docs/superpowers/plans/2026-10-20-phase-1-plan-4a-security-edge.md`. Plan 4B: `docs/superpowers/plans/2026-11-02-phase-1-plan-4b-reads-and-local-run.md`.
 
 ## Deferred bootstrap items — owed by the Phase 1 scaffold task
 
@@ -113,12 +114,15 @@ bootstrap. The scaffold task must land all of them, not just the build:
   claim shipped work.
 - Tests: JUnit Jupiter 6 (Boot 4.1.1-managed; same API as the "JUnit 5" named in
   the spec) + AssertJ + Testcontainers. Run everything with `./mvnw verify`.
-- No usable credential is committed. `scripts/demo-credentials.sh` writes bcrypt and SHA-256 hashes
-  to the gitignored `config/application-demo.yml` and prints the raw values once; run the app with
-  `./mvnw spring-boot:run -Dspring-boot.run.profiles=demo`. The app also needs a Postgres datasource:
-  `application.yml` sets none, so supply `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and
-  `SPRING_DATASOURCE_PASSWORD` in the environment. Without a datasource startup fails at DataSource
-  auto-configuration, and without the demo profile it fails because there are no users. Tests generate their own credentials per run (`support/TestCredentials`).
+- No usable credential is committed. `scripts/demo-credentials.sh` writes bcrypt and SHA-256 hashes to the gitignored
+  `config/application-demo.yml` and compose's Postgres password to the gitignored `.env`, each only if missing, and
+  prints the raw credentials once. Run the demo with `docker compose up --build` (the app on `127.0.0.1:8080` only,
+  Postgres unpublished, seeded), or without a container, against a Postgres supplied through `SPRING_DATASOURCE_URL`,
+  `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`:
+  `./mvnw spring-boot:run -Dspring-boot.run.profiles=demo -Dspring-boot.run.arguments=--server.address=127.0.0.1`.
+  The demo profile also applies the seed (`db/seed`). Without a datasource startup fails at DataSource
+  auto-configuration, and without the demo profile it fails because there are no users. Tests generate their own
+  credentials per run (`support/TestCredentials`).
 
 ## CI Runbook
 
