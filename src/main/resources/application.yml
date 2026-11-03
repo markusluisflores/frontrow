@@ -59,3 +59,12 @@ frontrow:
   sweeper-enabled: true
   # frontrow.security (users and agent tokens) is deliberately absent: nothing usable is committed, and startup fails
   # without it. scripts/demo-credentials.sh writes it to config/application-demo.yml; start with the demo profile.
+---
+# The demo profile adds the seed data (plan 4B decision 2): docker compose and the documented non-container run both
+# use it. The test suite never does, so every test database starts empty.
+spring:
+  config:
+    activate:
+      on-profile: demo
+  flyway:
+    locations: classpath:db/migration,classpath:db/seed
