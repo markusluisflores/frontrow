@@ -1520,7 +1520,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * The event reads (spec §6): search, one event, and its availability. The REST reads and plan 5's three read tools call
- * the same methods. Read-only transactions with no lock (ADR-005): nothing here writes, so no entity is ever flushed. A
+ * the same methods. Read-only transactions with no lock (ADR-005): nothing here writes, so no entity is ever flushed.
  * Only ON_SALE events are readable, by id or in search (spec §4).
  */
 @Service
@@ -2964,7 +2964,6 @@ ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 .claude
 target
 config
-**/config
 .env
 .env.*
 **/.env
