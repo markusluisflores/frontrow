@@ -1,0 +1,39 @@
+# The local demo (spec §3, §12). Run scripts/demo-credentials.sh first: it writes .env and config/application-demo.yml.
+# The app is published on host loopback only, and Postgres is not published at all. "Local only" assumes Docker Engine
+# 28.3.3 or later on Linux: earlier engines let a host on the same network reach container ports directly, and those
+# before 28.3.3 do so again after a firewalld reload (CVE-2025-54388).
+name: frontrow
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: frontrow
+      POSTGRES_USER: frontrow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/demo-credentials.sh first}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U frontrow -d frontrow"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: demo
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/frontrow
+      SPRING_DATASOURCE_USERNAME: frontrow
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/demo-credentials.sh first}
+    volumes:
+      # Boot reads ./config/application-demo.yml from its working directory, /app.
+      - ./config:/app/config:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  pgdata:
