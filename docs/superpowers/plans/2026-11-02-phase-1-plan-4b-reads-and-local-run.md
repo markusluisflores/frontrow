@@ -73,7 +73,7 @@ Decisions 1 and 2 are Markus's (brainstorm, 2026-11-02). The rest are this plan'
    | `GET /api/me/holds` | `OwnerReadService#holds(String)` | `List<HeldGroup>`: the caller's groups with at least one live row, soonest expiry first |
    | `GET /api/me/orders` | `OwnerReadService#orders(String)` | `List<OrderResult>`, the confirm response's own shape, newest first |
 
-   - **Search:** `query` matches the event name case-insensitively and literally: `%`, `_` and `!` are escaped. `from_date` and `to_date` are ISO dates (UTC) and both inclusive. They filter on `starts_at`, clamped to the §5 storable range, so no date can reach SQL out of range. `limit` defaults to 10. Outside 1–50 it is `invalid_request` with `parameter: limit`, rather than silently clamped, because spec §6 says `invalid_request` names the parameter.
+   - **Search:** `query` matches the event name case-insensitively and literally: `%`, `_` and `!` are escaped, and Postgres's `lower()` lowers both the name and the query, so one engine's case rules apply to both. `from_date` and `to_date` are ISO dates (UTC) and both inclusive. They filter on `starts_at`, clamped to the §5 storable range, so no date can reach SQL out of range. `limit` defaults to 10. Outside 1–50 it is `invalid_request` with `parameter: limit`, rather than silently clamped, because spec §6 says `invalid_request` names the parameter.
    - **`available`** means no claim on the seat now: no `CONVERTED` row, and no `ACTIVE` row with `expires_at > now`. That is the claim index's predicate with liveness applied. It does not say the event is on sale; `GET /api/events/{id}` shows the status. An unknown `section` gives an empty seat list, not an error.
    - **`me/holds` lists a group while it has at least one live row.** That is the same rule that makes a group count against the cap (§4), so a buyer refused with `hold_limit_exceeded` sees every group that counts. Each seat carries `live`, because an overlapping hold can expire part of a group (§5), and such a group can no longer be confirmed.
    - **No pagination** on `me/*`. Holds are bounded by the cap (3 groups × 8 seats). Orders are not bounded, which is acceptable for a local demo; plan 5's README lists it under "Known limitations" as hardening that meets none of §9's three criteria.
@@ -944,9 +944,9 @@ public class EventCreateService {
             Venue venue = venues.findById(draft.venueId()).orElseThrow(() -> invalid("venue_id"));
             List<Seat> venueSeats = seats.findByVenueIdOrderByIdAsc(venue.getId());
             Map<String, Long> prices = requirePrices(draft.prices(), venueSeats);
-            Event event = events.save(
+            Event event = events.saveAndFlush(
                     new Event(venue, draft.name(), startsAt, openAt, closeAt, EventStatus.DRAFT, draft.currency()));
-            eventSeats.saveAll(venueSeats.stream()
+            eventSeats.saveAllAndFlush(venueSeats.stream()
                     .map(seat -> new EventSeat(event, seat, venue.getId(), prices.get(seat.getSection())))
                     .toList());
             return EventDetail.of(event);
@@ -1281,9 +1281,20 @@ class EventReadServiceTest {
     void searchMatchesTheNameCaseInsensitivelyAndLiterally() {
         assertThat(names(new EventQuery("OWLS", null, null, null)))
                 .containsExactly("Night Owls Live", "Night owls 100% Unplugged");
-        // % and _ are characters to match, not wildcards.
+        // %, _ and the escape character ! are characters to match, not wildcards. Each empty result below would match
+        // a name if that character went to LIKE unescaped.
         assertThat(names(new EventQuery("100%", null, null, null))).containsExactly("Night owls 100% Unplugged");
+        assertThat(names(new EventQuery("owls%live", null, null, null))).isEmpty();
         assertThat(names(new EventQuery("_", null, null, null))).isEmpty();
+        assertThat(names(new EventQuery("owl!s", null, null, null))).isEmpty();
+    }
+
+    @Test
+    void searchLowerCasesTheQueryAndTheNameWithOneEngine() {
+        // Java lower-cases a word-final Σ to ς; Postgres's lower() gives σ. If the two sides were lowered by different
+        // engines, the exact name would not find itself.
+        fixtures.namedEvent(venueId, "ΟΔΟΣ", "ON_SALE", Instant.parse("2027-02-01T19:00:00Z"));
+        assertThat(names(new EventQuery("ΟΔΟΣ", null, null, null))).containsExactly("ΟΔΟΣ");
     }
 
     @Test
@@ -1397,13 +1408,15 @@ public interface EventRepository extends JpaRepository<Event, Long> {
     String findStatusTextById(Long id);
 
     /**
-     * search_events and GET /api/events (spec §6): one status, a lower-cased LIKE pattern escaped with '!', and
-     * starts_at in [from, to), soonest first. Every parameter is non-null, so no typed-null binding reaches Postgres.
+     * search_events and GET /api/events (spec §6): one status, a LIKE pattern escaped with '!', and starts_at in
+     * [from, to], soonest first. Postgres's lower() lowers both the name and the pattern, so one engine's case rules
+     * apply to both sides; it leaves '!', '%' and '_' alone. Every parameter is non-null, so no typed-null binding
+     * reaches Postgres.
      */
     @Query("""
             SELECT e FROM Event e JOIN FETCH e.venue
-            WHERE e.status = :status AND lower(e.name) LIKE :pattern ESCAPE '!'
-            AND e.startsAt >= :from AND e.startsAt < :to
+            WHERE e.status = :status AND lower(e.name) LIKE lower(:pattern) ESCAPE '!'
+            AND e.startsAt >= :from AND e.startsAt <= :to
             ORDER BY e.startsAt, e.id""")
     List<Event> search(EventStatus status, String pattern, Instant from, Instant to, Limit limit);
 
@@ -1496,7 +1509,6 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.data.domain.Limit;
@@ -1584,13 +1596,16 @@ public class EventReadService {
                 !claimed.contains(seat.getId()));
     }
 
-    /** A literal, case-insensitive substring match: '!', '%' and '_' in the query are escaped with '!'. */
+    /**
+     * A literal substring match: '!', '%' and '_' in the query are escaped with '!'. The case is left alone:
+     * EventRepository#search lowers both sides in Postgres, because Java's lower-casing differs from Postgres's on a
+     * word-final Σ and on İ.
+     */
     private static String pattern(String query) {
         if (query == null) {
             return "%";
         }
-        String escaped = query.toLowerCase(Locale.ROOT)
-                .replace("!", "!!")
+        String escaped = query.replace("!", "!!")
                 .replace("%", "!%")
                 .replace("_", "!_");
         return "%" + escaped + "%";
@@ -1600,12 +1615,15 @@ public class EventReadService {
         return fromDate == null ? EventInstants.EARLIEST : clamp(fromDate.atStartOfDay(ZoneOffset.UTC).toInstant());
     }
 
-    /** The day after to_date, so to_date is inclusive; a year past 9999 needs no bound past the storable range. */
+    /**
+     * The last storable instant of to_date (the next day's start less a microsecond), an inclusive bound, so an event
+     * starting exactly at LATEST is found. No to_date, or a year past 9999, is LATEST itself.
+     */
     private static Instant endOf(LocalDate toDate) {
         if (toDate == null || toDate.getYear() > 9999) {
             return EventInstants.LATEST;
         }
-        return clamp(toDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant());
+        return clamp(toDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().minus(1, ChronoUnit.MICROS));
     }
 
     /** Postgres never sees an instant outside the range timestamptz holds (spec §5). */
@@ -1887,7 +1905,7 @@ git commit -m "feat(rest): add the event search, detail and availability reads"
 **Interfaces:**
 - Consumes: `HoldService#hold`, `ConfirmService#confirm`, `HoldResult` and `OrderResult` (plans 3A and 3B).
 - Produces:
-  - `HeldGroup(UUID holdGroupId, long eventId, String eventName, List<HeldSeat> seats, long totalCents, String currency, Instant expiresAt)` with `HeldGroup.HeldSeat(long eventSeatId, String section, String rowLabel, int seatNumber, long priceCents, boolean live)`;
+  - `HeldGroup(UUID holdGroupId, long eventId, String eventName, List<GroupSeat> seats, long totalCents, String currency, Instant expiresAt)` with `HeldGroup.GroupSeat(long eventSeatId, String section, String rowLabel, int seatNumber, long priceCents, boolean live)`;
   - `OwnerReadService#holds(String owner)` → `List<HeldGroup>`, and `#orders(String owner)` → `List<OrderResult>`;
   - package-private `static OrderResult of(TicketOrder, List<OrderLine>)` on `OrderResult`.
 
@@ -1966,14 +1984,14 @@ class OwnerReadServiceTest {
         // Soonest expiry first: the partial group expires in 60 s, the new hold in the 10-minute TTL.
         assertThat(alicesGroups).extracting(HeldGroup::holdGroupId).containsExactly(partial, alices);
         assertThat(alicesGroups.get(0).seats())
-                .extracting(HeldGroup.HeldSeat::eventSeatId, HeldGroup.HeldSeat::live)
+                .extracting(HeldGroup.GroupSeat::eventSeatId, HeldGroup.GroupSeat::live)
                 .containsExactly(
                         org.assertj.core.groups.Tuple.tuple(seats.get(4), true),
                         org.assertj.core.groups.Tuple.tuple(seats.get(5), false));
         HeldGroup held = alicesGroups.get(1);
         assertThat(held.eventId()).isEqualTo(eventId);
         assertThat(held.eventName()).isEqualTo("Fixture event");
-        assertThat(held.seats()).extracting(HeldGroup.HeldSeat::eventSeatId).containsExactly(seats.get(0), seats.get(1));
+        assertThat(held.seats()).extracting(HeldGroup.GroupSeat::eventSeatId).containsExactly(seats.get(0), seats.get(1));
         assertThat(held.totalCents()).isEqualTo(2 * HoldFixtures.PRICE_CENTS);
         assertThat(held.expiresAt()).isEqualTo(NOW.plusSeconds(600));
 
@@ -2081,7 +2099,7 @@ public record HeldGroup(
         UUID holdGroupId,
         long eventId,
         String eventName,
-        List<HeldSeat> seats,
+        List<GroupSeat> seats,
         long totalCents,
         String currency,
         Instant expiresAt) {
@@ -2090,7 +2108,7 @@ public record HeldGroup(
         seats = List.copyOf(seats);
     }
 
-    public record HeldSeat(
+    public record GroupSeat(
             long eventSeatId, String section, String rowLabel, int seatNumber, long priceCents, boolean live) {}
 }
 ```
@@ -2166,11 +2184,11 @@ public class OwnerReadService {
     /** The whole group as held; a row is live iff ACTIVE and expires_at > now (spec §4). */
     private static HeldGroup group(List<SeatHold> rows, Instant now) {
         Event event = rows.getFirst().getEventSeat().getEvent();
-        List<HeldGroup.HeldSeat> seats = rows.stream()
+        List<HeldGroup.GroupSeat> seats = rows.stream()
                 .map(row -> {
                     EventSeat seat = row.getEventSeat();
                     boolean live = row.getStatus() == HoldStatus.ACTIVE && row.getExpiresAt().isAfter(now);
-                    return new HeldGroup.HeldSeat(
+                    return new HeldGroup.GroupSeat(
                             seat.getId(),
                             seat.getSeat().getSection(),
                             seat.getSeat().getRowLabel(),
@@ -2179,7 +2197,7 @@ public class OwnerReadService {
                             live);
                 })
                 .toList();
-        long total = seats.stream().mapToLong(HeldGroup.HeldSeat::priceCents).sum();
+        long total = seats.stream().mapToLong(HeldGroup.GroupSeat::priceCents).sum();
         return new HeldGroup(
                 rows.getFirst().getHoldGroupId(),
                 event.getId(),
@@ -2473,6 +2491,12 @@ class OpenApiDocsTest {
                 .contains("venue_id", "starts_at", "sales_open_at", "sales_close_at", "prices")
                 .doesNotContain("venueId", "startsAt");
         assertThat(names(schemas.at("/Availability/properties"))).contains("event_id", "seats");
+        // swagger-core names a schema by its class's simple name, so two seat records must not share one: the hold
+        // response's seat and me/holds' seat each keep their own fields.
+        assertThat(names(schemas.at("/GroupSeat/properties"))).contains("event_seat_id", "section", "live");
+        assertThat(names(schemas.at("/HeldSeat/properties")))
+                .contains("event_seat_id", "price_cents")
+                .doesNotContain("live");
         // A 3.0-mode resolver under springdoc's default OpenAPI 3.1 document would drop the schema's type.
         assertThat(schemas.at("/EventCreateRequest/type").asString()).isEqualTo("object");
     }
@@ -3242,6 +3266,6 @@ The whole-project boxes this plan moves forward without ticking: `docker compose
 - **The unconfirmed API assumptions**, which decision 1's deviation rule covers:
   - `JsonNode#properties()` on Jackson 3.1.5;
   - Spring Data JPA's `Limit` parameter on a `@Query` method;
-  - JPQL `ESCAPE '!'` under Hibernate 7.4.5.
+  - JPQL `lower(:pattern)` and `ESCAPE '!'` under Hibernate 7.4.5.
 - **No in-repo precedent exists** for a `Dockerfile`, `compose.yaml` or a Flyway seed location. Global `CLAUDE.md`'s trigger T4 names that case. A framing consult was not dispatched, because this plan was authored on the stronger model tier that would have answered it. That is recorded here for Markus to overrule.
 - **Every commit message** above was run through `.githooks/commit-msg`.
