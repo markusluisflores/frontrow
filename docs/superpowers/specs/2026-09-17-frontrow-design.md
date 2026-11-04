@@ -1,24 +1,24 @@
 # FrontRow — Design Spec
 
-**Date:** 2026-09-17 · **Revised:** 2026-10-27 (revision 2.7 — see §14)
+**Date:** 2026-09-17 · **Revised:** 2026-11-04 (revision 2.7.1 — see §14)
 **Scope (revision 2.7):** FrontRow is a finished, local-only portfolio project. It is judged by reading the repo and README and watching a recorded demo, not by real use. Phase 1 is the whole project; the former Phases 2–4 are possible next steps, not commitments (§9). Work from here meets the portfolio quality bar (§9).
-**Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 is seven plans, and plans 1, 2, 3A, 3B and 4A are merged.
+**Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 is seven plans, and plans 1, 2, 3A, 3B, 4A and 4B are merged.
 - Plan 1 (PR #5) built the build, CI, the V1 schema and the MCP spike.
 - Plan 2 (PR #10) built the domain core, the error contract, the JPA persistence model and the locking gateway (ADR-005).
 - Plan 3A (PR #18) built hold creation with idempotent replay, and §5 concurrency tests 1, 3, 4, 5 and 7.
 - Plan 3B (PR #24) built confirmation, release, the event `PATCH` and cancellation, and the sweeper with the 24-hour key purge, each as a service, and §5 concurrency tests 2 and 6. It also brought hold creation in line with revision 2.6.3's two decisions.
 - Plan 4A (PR #29) built the security edge: the three security chains (§3), hashed demo credentials (§9), Problem Details errors and the request bounds (§6), and the transaction guard (§5). It also built four REST write endpoints: hold, release, confirm and the event `PATCH`.
+- Plan 4B (PR #36) built event creation (`POST /api/events`), the five `GET` endpoints over two read services (`EventReadService`, `OwnerReadService`), springdoc / Swagger UI, the demo seed on the `demo` profile, and `docker compose` on loopback with a generated Postgres password. It also applied revision 2.7's cut (`GET /api/orders/{id}` and `ADMIN`) and the post-start window check.
 
-Not yet built (spec §12 is the checklist for both plans):
-- **Plan 4B:** event creation, the read services and the five `GET` endpoints, springdoc / Swagger UI, seed data, a datasource configuration and the `docker compose` setup, plus the defect fixes revision 2.7 assigns it.
+Not yet built (spec §12 is the checklist):
 - **Plan 5:** the MCP tools, the evidence artifacts, and its defect fixes.
 
-The `/mcp` chain authenticates agent tokens but serves no tool of its own yet. Until plan 4B, a standalone run needs an external Postgres supplied through the `SPRING_DATASOURCE_*` environment variables (`CLAUDE.md`), and the golden path has run only in the test suite.
+The `/mcp` chain authenticates agent tokens but serves no tool of its own yet. A run outside a container still needs a Postgres supplied through the `SPRING_DATASOURCE_*` environment variables (`CLAUDE.md`); `docker compose` supplies one.
 
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
-**Revisions 2.1–2.6.1** (same day) apply the review rounds; **2.6.2** (2026-10-05) is a post-implementation sync; **2.6.3** (2026-10-16) syncs the status and settles two questions from plan 3A's reviews; **2.6.4** (2026-10-19) is a post-implementation sync after plan 3B; **2.6.5** (2026-10-22) is a post-implementation sync after plan 4A; **2.7** (2026-10-27) narrows the scope to a portfolio project — see §14.
+**Revisions 2.1–2.6.1** (same day) apply the review rounds; **2.6.2** (2026-10-05) is a post-implementation sync; **2.6.3** (2026-10-16) syncs the status and settles two questions from plan 3A's reviews; **2.6.4** (2026-10-19) is a post-implementation sync after plan 3B; **2.6.5** (2026-10-22) is a post-implementation sync after plan 4A; **2.7** (2026-10-27) narrows the scope to a portfolio project; **2.7.1** (2026-11-04) is a post-implementation sync after plan 4B — see §14.
 
 ---
 
@@ -238,9 +238,10 @@ running it (§12 lists the detail):
 - **`docker compose`** publishes the app's port on host loopback only
   (`127.0.0.1:<port>:<port>`) and leaves Postgres's port unpublished. The app
   inside the container listens on all interfaces, as normal, so the published
-  port still reaches it. This assumes Docker Engine 28.0 or later on Linux:
+  port still reaches it. This assumes Docker Engine 28.3.3 or later on Linux:
   earlier engines let a host on the same network route to container ports
-  directly, published on loopback or not published at all.
+  directly, published on loopback or not published at all, and engines before
+  28.3.3 reroute published ports again after a firewalld reload (CVE-2025-54388).
 - **The non-container run** passes
   `-Dspring-boot.run.arguments=--server.address=127.0.0.1`. A bare
   `--server.address` on the `mvnw` line goes to Maven, not the app. The demo
@@ -1230,19 +1231,19 @@ sections explain their own rules and point here.
 
 **Plan 4B:**
 
-- [ ] Event creation (`POST /api/events`), the read services and the five `GET` endpoints, and springdoc / Swagger UI
-- [ ] Seed data, a datasource configuration and the `docker compose` setup
-- [ ] Revision 2.7's cut removed: the `GET /api/orders/*` rule (`SecurityConfig.java`), the `ADMIN` role (`Role.java`), the `adam` user (`DemoCredentials.java`, `TestCredentials.java`), and the `ADMIN` test assertions in `SecurityChainsTest` (the `/api/orders/x` assertions, and the checks that an admin is refused on the buyer-only and organiser-only endpoints)
-- [ ] Tests that use `adam` but are not about `ADMIN` repointed at another user, not deleted: `anUnlistedApiPathIsDeniedEvenToAnAuthenticatedUser` and `theCatchAllOpensOnlyItsAnonymousPaths`
-- [ ] Compose publishes the app's port on `127.0.0.1` only and leaves Postgres's port unpublished (`127.0.0.1` only, if a host port is ever needed) (§3)
-- [ ] Compose's Postgres password comes from a gitignored `.env` that `scripts/demo-credentials.sh` generates with `SecureRandom`; the committed `.env.example` holds a placeholder that does not work; nothing is hand-written in the documented path
-- [ ] Every documented non-container run command is `./mvnw spring-boot:run -Dspring-boot.run.profiles=demo -Dspring-boot.run.arguments=--server.address=127.0.0.1`: the README's run instructions (plan 4B writes them; the README has none today), `CLAUDE.md`'s Conventions, and the header of `scripts/demo-credentials.sh` (§3)
-- [ ] Creation applies the `0001`–`9999` instant bound to `starts_at` and the sales window, as the `PATCH` does: an out-of-range `starts_at` is `invalid_request` with `parameter: starts_at`, the window `parameter: sales_window` (§5)
-- [ ] The window check: `sales_close_at <= starts_at` on creation and on a `PATCH` that sets a window bound, against the merged window; a status-only `PATCH` is not checked; a failure is `invalid_request` with `parameter: sales_window` (§5)
-- [ ] `EventRow` and `LockingGateway#lockEventForUpdate` carry `starts_at`
-- [ ] A test asserts `sales_close_at <= starts_at` for every seeded event
-- [ ] A test shows the availability read (the service and `GET /api/events/{id}/availability`) returns no hold or owner field: no `hold_group_id`, owner or `expires_at` (§6)
-- [ ] A test shows `GET /api/me/holds` and `GET /api/me/orders` return only the caller's rows, never another buyer's (§6 *REST surface*)
+- [x] Event creation (`POST /api/events`), the read services and the five `GET` endpoints, and springdoc / Swagger UI
+- [x] Seed data, a datasource configuration and the `docker compose` setup
+- [x] Revision 2.7's cut removed: the `GET /api/orders/*` rule (`SecurityConfig.java`), the `ADMIN` role (`Role.java`), the `adam` user (`DemoCredentials.java`, `TestCredentials.java`), and the `ADMIN` test assertions in `SecurityChainsTest` (the `/api/orders/x` assertions, and the checks that an admin is refused on the buyer-only and organiser-only endpoints)
+- [x] Tests that use `adam` but are not about `ADMIN` repointed at another user, not deleted: `anUnlistedApiPathIsDeniedEvenToAnAuthenticatedUser` and `theCatchAllOpensOnlyItsAnonymousPaths`
+- [x] Compose publishes the app's port on `127.0.0.1` only and leaves Postgres's port unpublished (`127.0.0.1` only, if a host port is ever needed) (§3)
+- [x] Compose's Postgres password comes from a gitignored `.env` that `scripts/demo-credentials.sh` generates with `SecureRandom`; the committed `.env.example` holds a placeholder that does not work; nothing is hand-written in the documented path
+- [x] Every documented non-container run command is `./mvnw spring-boot:run -Dspring-boot.run.profiles=demo -Dspring-boot.run.arguments=--server.address=127.0.0.1`: the README's run instructions (plan 4B writes them; the README has none today), `CLAUDE.md`'s Conventions, and the header of `scripts/demo-credentials.sh` (§3)
+- [x] Creation applies the `0001`–`9999` instant bound to `starts_at` and the sales window, as the `PATCH` does: an out-of-range `starts_at` is `invalid_request` with `parameter: starts_at`, the window `parameter: sales_window` (§5)
+- [x] The window check: `sales_close_at <= starts_at` on creation and on a `PATCH` that sets a window bound, against the merged window; a status-only `PATCH` is not checked; a failure is `invalid_request` with `parameter: sales_window` (§5)
+- [x] `EventRow` and `LockingGateway#lockEventForUpdate` carry `starts_at`
+- [x] A test asserts `sales_close_at <= starts_at` for every seeded event
+- [x] A test shows the availability read (the service and `GET /api/events/{id}/availability`) returns no hold or owner field: no `hold_group_id`, owner or `expires_at` (§6)
+- [x] A test shows `GET /api/me/holds` and `GET /api/me/orders` return only the caller's rows, never another buyer's (§6 *REST surface*)
 
 **Plan 5:**
 
@@ -1269,18 +1270,18 @@ sections explain their own rules and point here.
 - [x] The §13 ADRs are recorded in `docs/adr/` (done: ADR-001 to ADR-003)
 - [ ] README states the no-`confirm_order` decision, the demo-grade security caveat, the §7 headline metrics, "Known limitations" (reproducing §9's approved list) and "Possible next steps"
 - [ ] README's threat model states what the two approved design decisions cost, as §6 states them: an agent can release its human's holds, fill their cap and replay their keys, and a prompt-injected agent can steer which hold the human confirms (§9 *Approved design decisions*)
-- [ ] README's threat model states the Docker Engine 28.0 or later (Linux) assumption behind "local only", and mentions DNS rebinding (§3, §9 limitation 4)
+- [ ] README's threat model states the Docker Engine 28.3.3 or later (Linux) assumption behind "local only", and mentions DNS rebinding (§3, §9 limitation 4)
 - [ ] CI green on a clean checkout
 
 ---
 
 ## 13. Next steps
 
-*Status 2026-10-27: Steps 1 and 2 are done; step 3 is under way. This spec was
+*Status 2026-11-04: Steps 1 and 2 are done; step 3 is under way. This spec was
 reviewed and merged in PR #1, and ADRs 001-006 are in `docs/adr/` (ADR-006 records
 revision 2.7's portfolio scope). Phase 1 was split into seven plans.
-Plans 1, 2, 3A, 3B and 4A are written, executed and merged (`docs/superpowers/plans/`); plans
-4B and 5 are not written yet, and are written against revision 2.7's scope.*
+Plans 1, 2, 3A, 3B, 4A and 4B are written, executed and merged (`docs/superpowers/plans/`); plan
+5 is not written yet, and is written against revision 2.7's scope.*
 
 1. This revision is reviewed by the user and merged.
 2. Record ADRs in `docs/adr/` for: the schema-level claim invariant (§5), the
@@ -1318,3 +1319,4 @@ redundant and should not be merged.
 | 2.6.4 | 2026-10-19 | Post-implementation sync after plan 3B (PR #24), with no design change. **Status:** plans 1, 2, 3A and 3B are merged; the header's "Where `main` differs from this revision" block is removed, because plan 3B made hold creation read the clock after the event-row lock and answer a `DRAFT` event with `not_found`. **Clock:** an event `PATCH` reads no clock, because it makes no time-dependent decision and writes no clock-derived timestamp (plan 3B decision 3); 2.6.3 placed its read after the event lock. The §5 opener now says each transaction uses "at most one instant", not "one instant". No behaviour changes: in 2.6.3 a `PATCH` would have read an instant that nothing used, and the code reads none. **Replay:** a key purged between the step-1 claim and the read is claimed once more, and a second conflict replays the request that just committed (plan 3B decision 8, PR #18 thread 4296540462). **Sweeper:** it is registered by a `SchedulingConfigurer` as two fixed-delay tasks and switched by `frontrow.sweeper-enabled`, not an `@Scheduled` method (plan 3B decision 7) |
 | 2.6.5 | 2026-10-22 | Post-implementation sync after plan 4A (PR #29), with no design change: most additions state what plan 4A decided where 2.6.4 was silent; the rest correct 2.6.4 where the code already differed (the §5 sweep wording and *Carried over*, below). All are checked against the code on `main`. **Status:** Phase 1 is seven plans; plans 1, 2, 3A, 3B and 4A are merged, and "Not yet built" now names plan 4B's work (event creation, the read services and `GET` endpoints, springdoc) and plan 5's, plus seed data, a datasource configuration and the `docker compose` setup; the header also says the `/mcp` chain serves no tool yet, and that a standalone run needs an external Postgres supplied through the environment while the golden path has run only in the test suite. **§3:** the owner is the Basic username for both credentials, with its username pattern (plan 4A decision 3); the chain table, with the catch-all chain (decision 10); the three cross-site layers and their stated gap for browsers that send no Fetch Metadata (decision 6); the bearer check covers every `Authorization` header, and `/mcp` reads only the first, left to plan 5 (PR #29 thread 4342413070); the spike is answered (ADR-004) and re-proved on the production chain. **§5:** the sweep, not the purge, is the idempotent `UPDATE`; every service entry point starts its own transaction, through `TransactionBoundary`, not `Propagation.NEVER` (decision 4); the `PATCH` bounds its instants (decision 8). **§6:** a shared owner widens what a compromised agent can do (decision 3); REST statuses and Problem Details members, and the failures that keep Spring's or Boot's own body (decision 7); snake_case on the wire, and the `/mcp` `stack_trace`, reachable only with a valid agent token, left to plan 5 (decision 9); a new *Request bounds* subsection (decision 8), whose Tomcat form-post cap no committed test proves yet, left to plan 5 (PR #29 thread 4342460506); any organiser may `PATCH` any event, so one compromised organiser account can cancel every event with nothing sold, close, open early, reopen or extend sales on any event not cancelled through the window `PATCH`, even after its `starts_at`, and put any `DRAFT` event on sale, but cannot cancel an event with a confirmed order (decision 2); which REST rows are built, and owner scoping lives in the services. **§9:** passwords are bcrypt hashes, no usable credential is committed, and startup needs at least one user but no token (decision 5); any bcrypt cost is accepted, so a hand-written hash at any cost other than 10 lets login timing reveal a username (deferred, PR #29 thread 4342380931). **Carried over** from the 2026-10-19 journal entry: hold creation checks the request and the per-request seat cap before step 1, not after the event lock; test 6 and the §12 item no longer wait on the `ORGANISER` endpoints; and with `frontrow.sweeper-enabled=false` no key is purged, so the 24-hour key life holds only while the schedule runs (PR #26 thread 4329608305). **Correction to the 2.6.4 row:** 2.6.4 also made the header's "Not yet built" name the event-creation service, which its row leaves out (PR #26 thread 4329923790); the row is left as merged |
 | 2.7 | 2026-10-27 | **Scope change**, decided by Markus and recorded as ADR-006, after Phase 1 had taken over five weeks against its one-week budget. FrontRow is a finished, local-only portfolio project, judged by its repo, README and a recorded demo. **Changed:** §1 and §2 (goals 3 and 4, the non-goals); §3 (the Fetch Metadata gap, and the all-interfaces defect plan 4B fixes); §5 and §6 (creation's instant bound and the post-start window check; `GET /api/orders/{id}` and `ADMIN` cut, `POST /api/events` kept); §7 (the evidence slimmed, the demo story and the recording); §8; §9 (Phase 1 is the whole project, Phases 2–4 become possible next steps, and the portfolio quality bar with its approved lists: see §9 itself); §10, §11 and §13; §12 (the single checklist of what plans 4B and 5 owe). Markus made the bar's further decisions on 2026-10-28 during PR #33's review; the journal records each. Fix pass 10 (fresh round 3): §7's credential rule for the run log and the recording, an organiser story §5 allows, the agent's worst case, read-tool exposure, and §12 boxes for each |
+| 2.7.1 | 2026-11-04 | Post-implementation sync after plan 4B (PR #36), with no design change. **Status:** the header and the §13 note are brought up to date (plans 1, 2, 3A, 3B, 4A and 4B merged; only plan 5 not built). **§12:** the thirteen Plan 4B boxes are ticked, per plan 4B's coverage table. **Docker Engine floor:** corrected from 28.0 to 28.3.3 in §3, the §12 README box and ADR-006, because engines before 28.3.3 reroute published ports again after a firewalld reload (CVE-2025-54388); approved by Markus 2026-11-04. |
