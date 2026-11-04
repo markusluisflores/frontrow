@@ -28,7 +28,7 @@ three security chains (`security/SecurityConfig`), hashed demo credentials, Prob
 confirm and the event PATCH. Plan 4B adds `POST /api/events`, the five `GET` endpoints over two read services (`EventReadService`, which plan 5's
 read tools will reuse, and `OwnerReadService`), the post-start window check, springdoc / Swagger UI, the demo seed and
 `docker compose` on loopback; it removed the cut `ADMIN` role. No MCP tool exists yet.**
-301 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
+303 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
 `uq_claimed_seat`. Plan 5 (MCP tools and the evidence) remains.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
 `docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.7, the portfolio-scope change; 2.6

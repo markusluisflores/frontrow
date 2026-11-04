@@ -124,6 +124,27 @@ class EventCreateServiceTest {
     }
 
     @Test
+    void aPriceIsCappedSoAHoldTotalCannotOverflow() {
+        EventDetail created = creations.create(
+                draft(STARTS, OPENS, CLOSES, Map.of("Floor", EventCreateService.MAX_PRICE_CENTS, "Balcony", 4500L)));
+        assertThat(jdbc.sql("SELECT max(price_cents) FROM event_seat WHERE event_id = :id")
+                        .param("id", created.eventId())
+                        .query(Long.class)
+                        .single())
+                .isEqualTo(EventCreateService.MAX_PRICE_CENTS);
+
+        long before = eventCount();
+        assertInvalid(
+                () -> creations.create(draft(
+                        STARTS,
+                        OPENS,
+                        CLOSES,
+                        Map.of("Floor", EventCreateService.MAX_PRICE_CENTS + 1, "Balcony", 4500L))),
+                "prices");
+        assertThat(eventCount()).isEqualTo(before);
+    }
+
+    @Test
     void eachMissingOrMalformedFieldIsNamed() {
         assertInvalid(
                 () -> creations.create(new EventDraft(venueId, " ", STARTS, OPENS, CLOSES, "CAD", PRICES)), "name");

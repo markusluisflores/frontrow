@@ -82,12 +82,18 @@ public class EventCreateService {
         }
     }
 
-    /** Exactly the venue's sections, each at zero cents or more. */
+    /**
+     * Ceiling on one seat's price: a hold is capped at 8 seats, so a hold's total (and a confirmed order's) can never
+     * overflow a long.
+     */
+    static final long MAX_PRICE_CENTS = 1_000_000_000_000L;
+
+    /** Exactly the venue's sections, each between zero and {@link #MAX_PRICE_CENTS} cents. */
     private static Map<String, Long> requirePrices(Map<String, Long> prices, List<Seat> venueSeats) {
         Set<String> sections = venueSeats.stream().map(Seat::getSection).collect(Collectors.toSet());
         if (prices == null
                 || !prices.keySet().equals(sections)
-                || prices.values().stream().anyMatch(price -> price < 0)) {
+                || prices.values().stream().anyMatch(price -> price == null || price < 0 || price > MAX_PRICE_CENTS)) {
             throw invalid("prices");
         }
         return prices;
