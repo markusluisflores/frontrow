@@ -124,6 +124,7 @@ class ReadEndpointsTest {
         for (Map.Entry<String, String> bad : List.of(
                 Map.entry("limit", "abc"),
                 Map.entry("limit", "51"),
+                Map.entry("query", "a\u0000b"),
                 Map.entry("from_date", "2026-13-01"),
                 Map.entry("to_date", "yesterday"))) {
             MockHttpServletResponse response = perform(get("/api/events").param(bad.getKey(), bad.getValue()));

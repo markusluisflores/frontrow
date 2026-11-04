@@ -26,7 +26,7 @@ and 24-hour key purge (`ExpirySweepService`, scheduled by `config/SweepSchedule`
 three security chains (`security/SecurityConfig`), hashed demo credentials, Problem Details errors and a
 16 KiB request-body bound (`rest/`), and four REST endpoints over those services: hold, release,
 confirm and the event PATCH. Plan 4B adds `POST /api/events`, the five `GET` endpoints over two read services (`EventReadService`, which plan 5's
-read tools reuse, and `OwnerReadService`), the post-start window check, springdoc / Swagger UI, the demo seed and
+read tools will reuse, and `OwnerReadService`), the post-start window check, springdoc / Swagger UI, the demo seed and
 `docker compose` on loopback; it removed the cut `ADMIN` role. No MCP tool exists yet.**
 301 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
 `uq_claimed_seat`. Plan 5 (MCP tools and the evidence) remains.

@@ -51,7 +51,8 @@ public class EventCreateService {
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public EventDetail create(EventDraft draft) {
         TransactionBoundary.requireOwnTransaction();
-        if (draft.name() == null || draft.name().isBlank()) {
+        // Postgres text cannot hold U+0000: it would fail at bind time as a 500, not invalid_request.
+        if (draft.name() == null || draft.name().isBlank() || draft.name().indexOf('\u0000') >= 0) {
             throw invalid("name");
         }
         if (draft.currency() == null || !CURRENCY.matcher(draft.currency()).matches()) {

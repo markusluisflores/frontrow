@@ -143,6 +143,9 @@ class EventCreateServiceTest {
         assertInvalid(
                 () -> creations.create(new EventDraft(venueId + 1000, "Gig", STARTS, OPENS, CLOSES, "CAD", PRICES)),
                 "venue_id");
+        assertInvalid(
+                () -> creations.create(new EventDraft(venueId, "Ga\u0000me", STARTS, OPENS, CLOSES, "CAD", PRICES)),
+                "name");
         assertThat(eventCount()).isZero();
     }
 

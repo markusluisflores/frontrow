@@ -53,6 +53,10 @@ public class EventReadService {
         if (limit < 1 || limit > MAX_LIMIT) {
             throw new DomainException(ErrorCode.INVALID_REQUEST, Map.of("parameter", "limit"));
         }
+        // Postgres text cannot hold U+0000: bound into the LIKE pattern it would fail as a 500, not invalid_request.
+        if (query.query() != null && query.query().indexOf('\u0000') >= 0) {
+            throw new DomainException(ErrorCode.INVALID_REQUEST, Map.of("parameter", "query"));
+        }
         return events
                 .search(
                         EventStatus.ON_SALE,

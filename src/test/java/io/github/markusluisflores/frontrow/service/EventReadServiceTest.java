@@ -105,6 +105,11 @@ class EventReadServiceTest {
     }
 
     @Test
+    void aNulInTheSearchQueryIsInvalidNotAServerError() {
+        assertInvalid(() -> reads.search(new EventQuery("a\u0000b", null, null, null)), "query");
+    }
+
+    @Test
     void onlyAnOnSaleEventIsReadableById() {
         assertThat(rejection(() -> reads.event(draft)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
         assertThat(rejection(() -> reads.availability(draft, null)).errorCode()).isEqualTo(ErrorCode.NOT_FOUND);
