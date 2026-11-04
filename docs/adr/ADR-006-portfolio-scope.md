@@ -79,7 +79,7 @@ Each choice serves the walkthrough audience and keeps the differentiators whole.
 * ✅ The project has a definite end: plans 4B and 5 against spec §12.
 * ✅ The differentiators are untouched. On `main`, plan 4B removes only what this decision cut: the `GET /api/orders/*` rule, the `ADMIN` role and the `adam` user, with their tests.
 * ✅ What plans 4B and 5 owe, including the defects on `main` that review of this decision surfaced, is one checklist: spec §12.
-* ✅ "Local only" will hold by construction for compose once plan 4B's compose publishes on loopback only, on Docker Engine 28.0 or later; by the documented command otherwise (spec §3).
+* ✅ "Local only" will hold by construction for compose once plan 4B's compose publishes on loopback only, on Docker Engine 28.3.3 or later; by the documented command otherwise (spec §3).
 * ✅ ADR-002's consequence "Real authentication (OAuth2 / OIDC) is Phase 2" becomes a possible next step; ADR-002 carries a dated note.
 * ✅ "Known limitations" turns accepted gaps into a talking point instead of a backlog.
 * ⚠️ No live demo. Reviewers have to run `docker compose` or watch the recording.
