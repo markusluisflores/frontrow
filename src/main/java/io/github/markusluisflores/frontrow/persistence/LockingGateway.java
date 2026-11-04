@@ -31,7 +31,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional(propagation = Propagation.MANDATORY)
 public class LockingGateway {
 
-    private static final String EVENT_COLUMNS = "id, venue_id, status, sales_open_at, sales_close_at, currency";
+    private static final String EVENT_COLUMNS =
+            "id, venue_id, status, starts_at, sales_open_at, sales_close_at, currency";
     private static final String HOLD_COLUMNS = "id, event_seat_id, hold_group_id, owner, status, expires_at";
 
     private final JdbcClient jdbc;
@@ -81,6 +82,7 @@ public class LockingGateway {
                         rs.getLong("id"),
                         rs.getLong("venue_id"),
                         EventStatus.valueOf(rs.getString("status")),
+                        instantAt(rs, "starts_at"),
                         instantAt(rs, "sales_open_at"),
                         instantAt(rs, "sales_close_at"),
                         rs.getString("currency")))

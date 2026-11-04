@@ -1,0 +1,13 @@
+.git
+.idea
+.vscode
+.superpowers
+.claude
+target
+config
+.env
+.env.*
+**/.env
+**/.env.*
+logs
+docs

@@ -83,7 +83,7 @@ public class ConfirmService {
             // Step 2. A repeated or double-clicked confirm waited on step 1's locks; it returns the order (spec §5).
             Optional<TicketOrder> existing = orders.findByHoldGroupId(group);
             if (existing.isPresent()) {
-                return result(
+                return OrderResult.of(
                         existing.get(),
                         orderLines.findByOrderIdInSeatOrder(existing.get().getId()));
             }
@@ -136,19 +136,6 @@ public class ConfirmService {
             EventSeat seat = seats.get(seatId);
             lines.add(new OrderLine(order, seat, seat.getPriceCents()));
         }
-        return result(order, orderLines.saveAllAndFlush(lines));
-    }
-
-    private static OrderResult result(TicketOrder order, List<OrderLine> lines) {
-        return new OrderResult(
-                order.getId(),
-                order.getHoldGroupId(),
-                order.getEvent().getId(),
-                lines.stream()
-                        .map(line -> new OrderResult.Line(line.getEventSeat().getId(), line.getPriceCents()))
-                        .toList(),
-                order.getTotalCents(),
-                order.getCurrency(),
-                order.getCreatedAt());
+        return OrderResult.of(order, orderLines.saveAllAndFlush(lines));
     }
 }

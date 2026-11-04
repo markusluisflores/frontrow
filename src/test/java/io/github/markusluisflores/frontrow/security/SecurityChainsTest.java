@@ -48,8 +48,7 @@ class SecurityChainsTest {
 
     @Test
     void aBearerTokenIsRefusedOnAnonymousAndAuthenticatedApiEndpointsAlike() throws Exception {
-        for (MockHttpServletRequestBuilder request :
-                List.of(get("/api/events"), post(CONFIRM), get("/api/orders/x"), post("/api/events"))) {
+        for (MockHttpServletRequestBuilder request : List.of(get("/api/events"), post(CONFIRM), post("/api/events"))) {
             MockHttpServletResponse response =
                     perform(request.header(HttpHeaders.AUTHORIZATION, "Bearer " + TestCredentials.token("alice")));
             assertThat(response.getStatus()).isEqualTo(401);
@@ -114,25 +113,21 @@ class SecurityChainsTest {
                 () -> get("/api/me/orders"));
         for (Supplier<MockHttpServletRequestBuilder> request : buyerOnly) {
             assertThat(perform(request.get().with(as("olivia"))).getStatus()).isEqualTo(403);
-            assertThat(perform(request.get().with(as("adam"))).getStatus()).isEqualTo(403);
             assertThat(perform(request.get().with(as("alice"))).getStatus()).isNotIn(401, 403);
         }
-        // ORGANISER only: a buyer and an admin are both refused.
+        // ORGANISER only: a buyer is refused.
         for (Supplier<MockHttpServletRequestBuilder> request : List.<Supplier<MockHttpServletRequestBuilder>>of(
                 () -> patch("/api/events/1"), () -> post("/api/events"))) {
             assertThat(perform(request.get().with(as("alice"))).getStatus()).isEqualTo(403);
-            assertThat(perform(request.get().with(as("adam"))).getStatus()).isEqualTo(403);
             assertThat(perform(request.get().with(as("olivia"))).getStatus()).isNotIn(401, 403);
         }
-        // BUYER or ADMIN, and not an organiser.
-        assertThat(perform(get("/api/orders/x").with(as("alice"))).getStatus()).isNotIn(401, 403);
-        assertThat(perform(get("/api/orders/x").with(as("adam"))).getStatus()).isNotIn(401, 403);
-        assertThat(perform(get("/api/orders/x").with(as("olivia"))).getStatus()).isEqualTo(403);
     }
 
     @Test
     void anUnlistedApiPathIsDeniedEvenToAnAuthenticatedUser() throws Exception {
-        assertThat(perform(get("/api/admin").with(as("adam"))).getStatus()).isEqualTo(403);
+        assertThat(perform(get("/api/admin").with(as("alice"))).getStatus()).isEqualTo(403);
+        // Revision 2.7 cut GET /api/orders/{id}: with its rule gone, the path is unlisted and denied, not routed.
+        assertThat(perform(get("/api/orders/1").with(as("alice"))).getStatus()).isEqualTo(403);
     }
 
     @Test
@@ -185,7 +180,7 @@ class SecurityChainsTest {
                 get("/logout"))) {
             assertThat(perform(request).getStatus()).isEqualTo(401);
         }
-        assertThat(perform(get("/actuator/env").with(as("adam"))).getStatus()).isEqualTo(401);
+        assertThat(perform(get("/actuator/env").with(as("alice"))).getStatus()).isEqualTo(401);
         assertThat(perform(post("/api/logout")).getStatus()).isEqualTo(401);
         assertThat(perform(post("/api/logout").with(as("alice"))).getStatus()).isEqualTo(403);
     }

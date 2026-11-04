@@ -24,8 +24,7 @@ public final class TestCredentials {
             "alice", List.of("BUYER"),
             "bob", List.of("BUYER"),
             "carol", List.of("BUYER", "ORGANISER"),
-            "olivia", List.of("ORGANISER"),
-            "adam", List.of("ADMIN"));
+            "olivia", List.of("ORGANISER"));
 
     public static final List<String> TOKEN_HOLDERS = List.of("alice", "carol");
 

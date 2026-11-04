@@ -63,4 +63,13 @@ class DemoCredentialsTest {
         }
         return found;
     }
+
+    @Test
+    void theEnvFileHoldsOneRandomPostgresPassword() {
+        String first = DemoCredentials.envFile(new SecureRandom());
+        String second = DemoCredentials.envFile(new SecureRandom());
+
+        assertThat(first).containsPattern("(?m)^POSTGRES_PASSWORD=[A-Za-z0-9_-]{32}$");
+        assertThat(first).isNotEqualTo(second);
+    }
 }

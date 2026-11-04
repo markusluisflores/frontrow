@@ -51,8 +51,6 @@ public class SecurityConfig {
                         .hasRole("BUYER")
                         .requestMatchers(HttpMethod.GET, "/api/me/holds", "/api/me/orders")
                         .hasRole("BUYER")
-                        .requestMatchers(HttpMethod.GET, "/api/orders/*")
-                        .hasAnyRole("BUYER", "ADMIN")
                         // Any ORGANISER, for any event: Phase 1 has no per-event ownership (plan 4A decision 2).
                         .requestMatchers(HttpMethod.POST, "/api/events")
                         .hasRole("ORGANISER")

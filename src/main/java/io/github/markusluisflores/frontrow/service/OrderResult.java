@@ -1,5 +1,7 @@
 package io.github.markusluisflores.frontrow.service;
 
+import io.github.markusluisflores.frontrow.persistence.OrderLine;
+import io.github.markusluisflores.frontrow.persistence.TicketOrder;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -16,6 +18,20 @@ public record OrderResult(
 
     public OrderResult {
         lines = List.copyOf(lines);
+    }
+
+    /** One order as confirm and GET /api/me/orders both return it. */
+    static OrderResult of(TicketOrder order, List<OrderLine> lines) {
+        return new OrderResult(
+                order.getId(),
+                order.getHoldGroupId(),
+                order.getEvent().getId(),
+                lines.stream()
+                        .map(line -> new Line(line.getEventSeat().getId(), line.getPriceCents()))
+                        .toList(),
+                order.getTotalCents(),
+                order.getCurrency(),
+                order.getCreatedAt());
     }
 
     public record Line(long eventSeatId, long priceCents) {}
