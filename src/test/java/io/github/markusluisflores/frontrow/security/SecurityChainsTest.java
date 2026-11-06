@@ -15,6 +15,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
+import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -164,6 +165,44 @@ class SecurityChainsTest {
         assertThat(perform(mcpPing().header(HttpHeaders.AUTHORIZATION, "Bearer " + TestCredentials.token("alice")))
                         .getStatus())
                 .isNotIn(401, 403);
+    }
+
+    @Test
+    void mcpAdmitsExactlyOneAuthorizationHeaderCarryingAKnownBearer() throws Exception {
+        String alice = "Bearer " + TestCredentials.token("alice");
+        String carol = "Bearer " + TestCredentials.token("carol");
+        String basic = "Basic "
+                + Base64.getEncoder()
+                        .encodeToString(
+                                ("alice:" + TestCredentials.password("alice")).getBytes(StandardCharsets.UTF_8));
+
+        // Positive control: one known bearer is admitted, so each 401 below is the header rule and nothing else.
+        assertThat(perform(mcpPing().header(HttpHeaders.AUTHORIZATION, alice)).getStatus())
+                .isNotIn(401, 403);
+
+        SoftAssertions all = new SoftAssertions();
+        record Case(String name, String[] headers) {}
+        for (Case c : List.of(
+                new Case("basic then bearer", new String[] {basic, alice}),
+                new Case("bearer then basic", new String[] {alice, basic}),
+                new Case("two known tokens", new String[] {alice, carol}),
+                new Case("the same token twice", new String[] {alice, alice}),
+                new Case("no header", new String[] {}),
+                new Case("an unknown bearer", new String[] {"Bearer not-a-token"}),
+                new Case("a lone basic", new String[] {basic}),
+                new Case("a comma-joined single header", new String[] {alice + ", " + carol}))) {
+            MockHttpServletRequestBuilder request = mcpPing();
+            for (String header : c.headers()) {
+                request.header(HttpHeaders.AUTHORIZATION, header);
+            }
+            MockHttpServletResponse response = perform(request);
+            all.assertThat(response.getStatus()).as(c.name()).isEqualTo(401);
+            all.assertThat(response.getContentType()).as(c.name()).isEqualTo("application/problem+json");
+            all.assertThat(response.getHeader(HttpHeaders.WWW_AUTHENTICATE))
+                    .as(c.name())
+                    .isNull();
+        }
+        all.assertAll();
     }
 
     @Test
