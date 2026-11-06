@@ -8,7 +8,6 @@ import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.common.McpTransportContext;
-import io.modelcontextprotocol.json.jackson3.JacksonMcpJsonMapper;
 import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
@@ -16,14 +15,10 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.security.Principal;
 import java.time.Duration;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.mcp.annotation.McpTool;
-import org.springframework.ai.mcp.server.common.autoconfigure.properties.McpServerStreamableHttpProperties;
-import org.springframework.ai.mcp.server.webmvc.transport.WebMvcStreamableServerTransportProvider;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -31,10 +26,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.core.context.SecurityContextHolder;
-import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Spike (spec §3): how does an authenticated principal reach an {@code @McpTool} method over Streamable HTTP?
+ * Spike (spec §3; since plan 5 task 2 it runs on the production transport provider in McpConfig, whose extractor is mechanism B): how does an authenticated principal reach an {@code @McpTool} method over Streamable HTTP?
  * Real bearer token, real HTTP, real MCP client. Mechanism A is SecurityContextHolder, mechanism B is
  * McpTransportContext populated by a contextExtractor. Since plan 4A the token passes the application's own /mcp chain
  * (security/SecurityConfig), not a spike-only one.
@@ -47,7 +41,7 @@ class PrincipalPropagationSpikeTest {
     static final String SPIKE_TOKEN = TestCredentials.token("alice");
 
     static final String SPIKE_USER = "alice";
-    static final String PRINCIPAL_KEY = "frontrow.principal";
+    static final String PRINCIPAL_KEY = McpConfig.PRINCIPAL_KEY;
     static final String ANONYMOUS = "<anonymous>";
 
     @LocalServerPort
@@ -119,21 +113,6 @@ class PrincipalPropagationSpikeTest {
         @Bean
         WhoAmITools whoAmITools() {
             return new WhoAmITools();
-        }
-
-        /** Replaces the auto-configured provider (it is @ConditionalOnMissingBean) to add mechanism B. */
-        @Bean
-        WebMvcStreamableServerTransportProvider spikeTransportProvider(
-                @Qualifier("mcpServerJsonMapper") JsonMapper jsonMapper, McpServerStreamableHttpProperties properties) {
-            return WebMvcStreamableServerTransportProvider.builder()
-                    .jsonMapper(new JacksonMcpJsonMapper(jsonMapper))
-                    .mcpEndpoint(properties.getMcpEndpoint())
-                    .keepAliveInterval(properties.getKeepAliveInterval())
-                    .disallowDelete(properties.isDisallowDelete())
-                    .contextExtractor(request -> McpTransportContext.create(Map.of(
-                            PRINCIPAL_KEY,
-                            request.principal().map(Principal::getName).orElse(ANONYMOUS))))
-                    .build();
         }
     }
 
