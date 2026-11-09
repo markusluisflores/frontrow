@@ -1,6 +1,7 @@
 package io.github.markusluisflores.frontrow.mcp;
 
 import io.github.markusluisflores.frontrow.error.DomainException;
+import io.github.markusluisflores.frontrow.error.ErrorCode;
 import io.modelcontextprotocol.common.McpTransportContext;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.json.jackson3.JacksonMcpJsonMapper;
@@ -39,11 +40,30 @@ import tools.jackson.databind.json.JsonMapper;
  * never read, so nothing an agent sends can name an owner. A method that acts for a caller declares a
  * {@link McpTransportContext} parameter: the binding supplies the request's own context there (the schema generator
  * leaves that type out, so it is never a wire parameter) and the method reads the owner with {@link #owner}.
+ *
+ * <p>Logging (plan 5 decision 8): every call that reaches {@link #run} writes exactly one INFO line, on the logger named
+ * {@code frontrow.mcp.tools}, and nothing else is written on that logger. The line is four fields, in this order:
+ * the tool's name, the outcome ({@code ok}, or the error code of the failure, {@code invalid_request} for an argument
+ * that is missing or the wrong type and {@code internal_error} for anything unexpected), the duration in whole
+ * milliseconds and the owner (the token's username):
+ *
+ * <pre>tool=hold_seats outcome=seat_taken duration_ms=14 owner=alice</pre>
+ *
+ * <p>Arguments, results, the token, its hash, the Authorization value, the idempotency key and seat ids are never
+ * logged. A request whose token is unknown is refused by the /mcp chain before any tool runs and writes no such line.
+ * An unexpected failure also writes one ERROR line, apart from the tool line and on this class's own logger, that
+ * names the tool and the exception's class and nothing else: a driver's message can carry a key or a seat id.
  */
 @Component
 public class ToolCall {
 
+    /** The fixed name of the one-line-per-call logger; a test, or an operator's filter, can rely on it. */
+    static final String TOOL_LOGGER = "frontrow.mcp.tools";
+
+    private static final String INTERNAL_ERROR = "internal_error";
+
     private static final Logger log = LoggerFactory.getLogger(ToolCall.class);
+    private static final Logger toolLog = LoggerFactory.getLogger(TOOL_LOGGER);
 
     private final ToolResults results;
     private final McpJsonMapper schemaMapper;
@@ -66,12 +86,16 @@ public class ToolCall {
                 tool, (exchange, request) -> run(name, target, method, request, exchange.transportContext()));
     }
 
-    /** The whole call. Never throws: every outcome is a structured result. */
+    /** The whole call. Never throws: every outcome is a structured result, and each is logged once. */
     CallToolResult run(
             String tool, Object target, Method method, CallToolRequest request, McpTransportContext context) {
+        long started = System.nanoTime();
+        String owner = context.get(McpConfig.PRINCIPAL_KEY) instanceof String name && !name.isBlank() ? name : "none";
+        String outcome = "ok";
         try {
-            if (!(context.get(McpConfig.PRINCIPAL_KEY) instanceof String owner) || owner.isBlank()) {
+            if ("none".equals(owner)) {
                 // The /mcp chain makes this unreachable; refusing is defence in depth (ADR-004).
+                outcome = INTERNAL_ERROR;
                 log.error("tool {} refused: no authenticated principal in the transport context", tool);
                 return results.internalError();
             }
@@ -79,12 +103,22 @@ public class ToolCall {
             Object body = invoke(target, method, arguments);
             return results.success((Record) body);
         } catch (InvalidArgument invalid) {
+            outcome = ErrorCode.INVALID_REQUEST.code();
             return results.invalidParameter(invalid.parameter);
         } catch (DomainException failure) {
+            outcome = failure.errorCode().code();
             return results.error(failure);
         } catch (Throwable unexpected) {
-            log.error("tool {} failed unexpectedly", tool, unexpected);
+            outcome = INTERNAL_ERROR;
+            // The class alone: a driver's message can carry an idempotency key, a seat id or a connection string.
+            log.error(
+                    "tool {} failed unexpectedly: {}",
+                    tool,
+                    unexpected.getClass().getName());
             return results.internalError();
+        } finally {
+            long millis = (System.nanoTime() - started) / 1_000_000;
+            toolLog.info("tool={} outcome={} duration_ms={} owner={}", tool, outcome, millis, owner);
         }
     }
 

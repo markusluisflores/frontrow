@@ -337,7 +337,8 @@ class EventToolsTest {
             assertThat(JSON.writeValueAsString(result)).doesNotContain("secret-host", "hunter2", "IllegalState");
             assertThat(appender.list).anySatisfy(logged -> {
                 assertThat(logged.getLevel()).isEqualTo(Level.ERROR);
-                assertThat(logged.getThrowableProxy()).isNotNull();
+                assertThat(logged.getFormattedMessage()).contains("IllegalStateException");
+                assertThat(logged.getThrowableProxy()).isNull();
             });
         } finally {
             appender.stop();
