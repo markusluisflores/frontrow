@@ -40,9 +40,9 @@ class EvidenceHygieneTest {
 
     private static final Pattern AUTHORIZATION =
             Pattern.compile("(?i)\\bauthorization\\b[\"']?\\s*[:=]\\s*[\"']?(?:(?:bearer|basic)\\s+)?([^\\s\"']+)");
-    private static final Pattern BEARER = Pattern.compile("(?i)\\bbearer\\s+([A-Za-z0-9._~+/=$-]{16,})");
+    private static final Pattern BEARER = Pattern.compile("(?i)\\bbearer\\s+([A-Za-z0-9_._~+/=$-]{16,})");
     private static final Pattern BASIC =
-            Pattern.compile("\\bBasic\\s+((?=[A-Za-z0-9+/]*[0-9=+/])[A-Za-z0-9+/$]{8,}={0,2})");
+            Pattern.compile("(?i)\\bBasic\\s+((?=[A-Za-z0-9+/]*[0-9=+/])[A-Za-z0-9+/$]{8,}={0,2})");
     private static final Pattern PASSWORD =
             Pattern.compile("(?i)\\b\\w*(?:password|passwd|secret|token)\\w*[\"']?\\s*[:=]\\s*[\"']?([^\\s\"',;]+)");
     private static final Pattern CURL_USER = Pattern.compile("(?:\\s-u|\\s--user)\\s+[\"']?\\w+:([^\\s\"']+)");
@@ -51,7 +51,7 @@ class EvidenceHygieneTest {
     private static final List<Pattern> PATTERNS = List.of(AUTHORIZATION, BEARER, BASIC, PASSWORD, CURL_USER);
 
     private static final Set<String> TEXT_EXTENSIONS =
-            Set.of("txt", "md", "log", "json", "yml", "yaml", "sh", "text", "csv", "html");
+            Set.of("txt", "md", "log", "json", "yml", "yaml", "sh", "text", "csv", "html", "cast");
 
     /** What is wrong with {@code text}, one entry per hit, never quoting the matched value. */
     static List<String> violations(String where, String text) {
@@ -119,6 +119,8 @@ class EvidenceHygieneTest {
                 new Seeded("AUTHORIZATION", "\"Authorization\": \"Basic Ym9iOnN1cGVyc2VjcmV0\""),
                 new Seeded("BEARER", "the agent sent Bearer " + fake + " to /mcp"),
                 new Seeded("BASIC", "header Basic Ym9iOnN1cGVyc2VjcmV0 here"),
+                new Seeded("BEARER", "sent Bearer Zk3Vq9Lp_0Xw7Rt2Yb5Nc8Hd1Gm4Js6A to /mcp"),
+                new Seeded("BASIC", "header basic Ym9iOnN1cGVyc2VjcmV0 here"),
                 new Seeded("PASSWORD", "password=" + fake),
                 new Seeded("PASSWORD", "FRONTROW_BOB_PASSWORD: " + fake),
                 new Seeded("PASSWORD", "agent_token = '" + fake + "'"),

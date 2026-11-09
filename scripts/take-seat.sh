@@ -21,16 +21,20 @@ esac
 
 # A fresh key per run, so a rerun is a new request and not a replay (spec §5).
 key="take-seat-$(date +%s)-$RANDOM$RANDOM"
+case "$FRONTROW_BOB_PASSWORD" in
+  *$'\n'* | *$'\r'*) echo "FRONTROW_BOB_PASSWORD must not contain a line break" >&2; exit 2 ;;
+esac
 password="${FRONTROW_BOB_PASSWORD//\\/\\\\}"
 password="${password//\"/\\\"}"
 
 # printf is a shell builtin, so the config never appears as a process argument.
 response="$(printf 'user = "bob:%s"\n' "$password" | curl -sS --max-time 15 --config - \
-  -X POST "$base_url/api/events/$event_id/holds" \
+  -X POST \
   -H "Idempotency-Key: $key" \
   -H "Content-Type: application/json" \
   -d "{\"event_seat_ids\":[$seat_id]}" \
-  -w '\n%{http_code}')"
+  -w '\n%{http_code}' \
+  -- "$base_url/api/events/$event_id/holds")"
 status="${response##*$'\n'}"
 body="${response%$'\n'*}"
 group="$(printf '%s' "$body" | sed -n 's/.*"hold_group_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
