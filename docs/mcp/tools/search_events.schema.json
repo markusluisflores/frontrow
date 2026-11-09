@@ -1,0 +1,30 @@
+{
+  "description" : "Search events that are on sale, soonest first. Optional filters: a case-insensitive literal text match on the event name, and an inclusive UTC date range on the start.",
+  "inputSchema" : {
+    "$schema" : "https://json-schema.org/draft/2020-12/schema",
+    "properties" : {
+      "from_date" : {
+        "description" : "Earliest start date, ISO yyyy-MM-dd, inclusive (UTC)",
+        "format" : "date",
+        "type" : "string"
+      },
+      "limit" : {
+        "description" : "Most events to return, 1 to 50; default 10",
+        "format" : "int32",
+        "type" : "integer"
+      },
+      "query" : {
+        "description" : "Text to find in the event name, ignoring case",
+        "type" : "string"
+      },
+      "to_date" : {
+        "description" : "Latest start date, ISO yyyy-MM-dd, inclusive (UTC)",
+        "format" : "date",
+        "type" : "string"
+      }
+    },
+    "required" : [ ],
+    "type" : "object"
+  },
+  "name" : "search_events"
+}

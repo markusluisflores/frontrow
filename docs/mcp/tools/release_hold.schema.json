@@ -1,0 +1,16 @@
+{
+  "description" : "Release a hold you made, freeing its seats. Succeeds with zero counts when nothing in the group is live any more.",
+  "inputSchema" : {
+    "$schema" : "https://json-schema.org/draft/2020-12/schema",
+    "properties" : {
+      "hold_group_id" : {
+        "description" : "The hold_group_id that hold_seats returned",
+        "format" : "uuid",
+        "type" : "string"
+      }
+    },
+    "required" : [ "hold_group_id" ],
+    "type" : "object"
+  },
+  "name" : "release_hold"
+}
