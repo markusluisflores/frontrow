@@ -27,7 +27,7 @@ three security chains (`security/SecurityConfig`), hashed demo credentials, Prob
 16 KiB request-body bound (`rest/`), and four REST endpoints over those services: hold, release,
 confirm and the event PATCH. Plan 4B adds `POST /api/events`, the five `GET` endpoints over two read services (`EventReadService`, which plan 5's
 read tools will reuse, and `OwnerReadService`), the post-start window check, springdoc / Swagger UI, the demo seed and
-`docker compose` on loopback; it removed the cut `ADMIN` role. Plan 5 (built, on `feat/phase-1-mcp-tools-and-evidence`, PR pending) adds the five MCP
+`docker compose` on loopback; it removed the cut `ADMIN` role. Plan 5 (merged as PR #40, `1f575a7`) adds the five MCP
 tools in `mcp/` (`EventTools`, `HoldTools`, wired by `McpConfig`; `ToolCall` binds arguments strictly and resolves the
 owner only from the authenticated principal; `ToolResults` and `McpErrorBody` render the structured errors), the
 `/mcp` filters (`security/McpFormBodyFilter`, which bounds a form `POST`, and `mcp/McpRequestShapeFilter`, which answers
@@ -36,16 +36,16 @@ tool call, checked-in tool schemas (`docs/mcp/tools/`, `ToolSchemasTest`), the e
 `scripts/example-run.sh`, `scripts/take-seat.sh`, `EvidenceHygieneTest`), the README and the demo runbook
 (`docs/demo/README.md`); the demo recording is still Markus's to make.**
 420 runs, 0 failures, 1 skipped (the evidence hygiene exact-value check, which needs env vars); they include all seven spec §5 concurrency tests and a proof that test 1 fails without
-`uq_claimed_seat`. Plan 5's execution is complete except the recording; its plan is
+`uq_claimed_seat`. Plan 5 is merged except the recording (waived by Markus, still owed); its plan is
 `docs/superpowers/plans/2026-11-04-phase-1-plan-5-mcp-tools-and-evidence.md`.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
-`docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.7, the portfolio-scope change; 2.6
+`docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.7.2, the post-plan-5 sync; 2.7 is the portfolio-scope change; 2.6
 reviewed and merged 2026-09-18, 2.6.1 a wording fix, 2.6.2 a post-implementation
 sync, 2.6.3 a status sync plus two decisions — when `now` is read, and `DRAFT` as
 `not_found` — which plan 3B implements; 2.6.4 and 2.6.5 post-implementation syncs after plans 3B and 4A).
-Plan 3A's text carries dated errata at its top. Six ADRs are in `docs/adr/`: the three from spec §13; ADR-004, recorded
+Plan 3A's text carries dated errata at its top. Seven ADRs are in `docs/adr/`: the three from spec §13; ADR-004, recorded
 by plan 1's spike; ADR-005, the JPA-plus-JDBC persistence split behind the
-lock rule below; and ADR-006, the portfolio scope. Plan 1 was executed on `feat/phase-1-foundation`:
+lock rule below; ADR-006, the portfolio scope; and ADR-007, the hand-registered MCP tools. Plan 1 was executed on `feat/phase-1-foundation`:
 `docs/superpowers/plans/2026-09-18-phase-1-plan-1-foundation.md`. Plan 2 was
 executed on `feat/phase-1-domain-foundations` and merged as PR #10 (`e432c3c`,
 2026-10-05): `docs/superpowers/plans/2026-10-02-phase-1-plan-2-domain-foundations.md`.
@@ -86,7 +86,7 @@ bootstrap. The scaffold task must land all of them, not just the build:
   A match inside a comment counts too, so keep lock vocabulary out of comments elsewhere.
 - The `domain` package imports only `java.*`. Check with:
   `grep -rn "^import" src/main/java/io/github/markusluisflores/frontrow/domain/ | grep -v "import java\."`
-- MCP tools return structured errors (`{"code": ..., "hint": ...}`, same codes as REST). An
+- MCP tools return structured errors (`{"code": ..., "hint": ...}`, same codes as REST, plus `internal_error`, a twelfth code that only the MCP adapter has, spec §6). An
   unstructured string error is a review BLOCKER. As built, the `mcp/` package is the MCP adapter: a tool handler
   only binds arguments (`ToolCall`, strict: a fraction or numeric string is `invalid_request`), calls an existing
   service, and renders the result or a `DomainException` (`ToolResults`); the owner is the authenticated principal's

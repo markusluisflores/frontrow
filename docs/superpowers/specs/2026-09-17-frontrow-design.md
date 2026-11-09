@@ -1,8 +1,8 @@
 # FrontRow — Design Spec
 
-**Date:** 2026-09-17 · **Revised:** 2026-11-04 (revision 2.7.1 — see §14)
+**Date:** 2026-09-17 · **Revised:** 2026-11-09 (revision 2.7.2 — see §14)
 **Scope (revision 2.7):** FrontRow is a finished, local-only portfolio project. It is judged by reading the repo and README and watching a recorded demo, not by real use. Phase 1 is the whole project; the former Phases 2–4 are possible next steps, not commitments (§9). Work from here meets the portfolio quality bar (§9).
-**Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 is seven plans, and plans 1, 2, 3A, 3B, 4A and 4B are merged.
+**Status:** Reviewed by the user 2026-09-18. **Implementation in progress:** Phase 1 is seven plans, and plans 1, 2, 3A, 3B, 4A, 4B and 5 are merged. The demo recording (plan 5 Task 8) is waived by Markus and still owed.
 - Plan 1 (PR #5) built the build, CI, the V1 schema and the MCP spike.
 - Plan 2 (PR #10) built the domain core, the error contract, the JPA persistence model and the locking gateway (ADR-005).
 - Plan 3A (PR #18) built hold creation with idempotent replay, and §5 concurrency tests 1, 3, 4, 5 and 7.
@@ -10,15 +10,16 @@
 - Plan 4A (PR #29) built the security edge: the three security chains (§3), hashed demo credentials (§9), Problem Details errors and the request bounds (§6), and the transaction guard (§5). It also built four REST write endpoints: hold, release, confirm and the event `PATCH`.
 - Plan 4B (PR #36) built event creation (`POST /api/events`), the five `GET` endpoints over two read services (`EventReadService`, `OwnerReadService`), springdoc / Swagger UI, the demo seed on the `demo` profile, and `docker compose` on loopback with a generated Postgres password. It also applied revision 2.7's cut (`GET /api/orders/{id}` and `ADMIN`) and the post-start window check.
 
-Not yet built (spec §12 is the checklist):
-- **Plan 5:** the MCP tools, the evidence artifacts, and its defect fixes.
+- Plan 5 (PR #40, squash `1f575a7`, 420 test runs, 1 skipped) built the five MCP tools as hand-registered `SyncToolSpecification`s (§6), one structured log line per tool call, the exactly-one-`Authorization`-header rule and the transport-error fixes on `/mcp` (§3, §6), the checked-in tool schemas with a drift test, `logs/example_run.txt`, the README and the demo runbook.
 
-The `/mcp` chain authenticates agent tokens but serves no tool of its own yet. A run outside a container still needs a Postgres supplied through the `SPRING_DATASOURCE_*` environment variables (`CLAUDE.md`); `docker compose` supplies one.
+Not yet done (spec §12 is the checklist): the demo recording (plan 5 Task 8, waived by Markus and still owed), and the §12 boxes that wait on a human running the system: `docker compose up`, Swagger UI, and the five tools from Claude Code.
+
+A run outside a container still needs a Postgres supplied through the `SPRING_DATASOURCE_*` environment variables (`CLAUDE.md`); `docker compose` supplies one.
 
 **Tier:** Standard overall. The security slices — REST authorization, MCP
 caller authentication, and the agent-to-human hold handover (§6) — are
 **Mandatory** tier, since they are auth work behind a published tool contract.
-**Revisions 2.1–2.6.1** (same day) apply the review rounds; **2.6.2** (2026-10-05) is a post-implementation sync; **2.6.3** (2026-10-16) syncs the status and settles two questions from plan 3A's reviews; **2.6.4** (2026-10-19) is a post-implementation sync after plan 3B; **2.6.5** (2026-10-22) is a post-implementation sync after plan 4A; **2.7** (2026-10-27) narrows the scope to a portfolio project; **2.7.1** (2026-11-04) is a post-implementation sync after plan 4B — see §14.
+**Revisions 2.1–2.6.1** (same day) apply the review rounds; **2.6.2** (2026-10-05) is a post-implementation sync; **2.6.3** (2026-10-16) syncs the status and settles two questions from plan 3A's reviews; **2.6.4** (2026-10-19) is a post-implementation sync after plan 3B; **2.6.5** (2026-10-22) is a post-implementation sync after plan 4A; **2.7** (2026-10-27) narrows the scope to a portfolio project; **2.7.1** (2026-11-04) is a post-implementation sync after plan 4B; **2.7.2** (2026-11-09) is a post-implementation sync after plan 5 — see §14.
 
 ---
 
@@ -130,7 +131,7 @@ flowchart LR
 
     subgraph app[FrontRow service - one process]
         REST[REST adapter<br/>Spring MVC + OpenAPI<br/>HTTP Basic]
-        MCP[MCP adapter<br/>Spring AI McpTool<br/>Streamable HTTP + bearer token]
+        MCP[MCP adapter<br/>Spring AI MCP server<br/>Streamable HTTP + bearer token]
         SVC[Application services]
         DOM[Domain core<br/>no framework types]
     end
@@ -172,7 +173,7 @@ of its `Authorization` headers, on anonymous endpoints too. The `/mcp` chain
 installs no Basic filter, so a Basic header authenticates nothing there.
 `/mcp` reads only the first `Authorization` header, so a Basic header after a
 valid bearer is ignored rather than refused: the request is served as the agent,
-with only `AGENT`, and with the Basic header first it gets 401. Plan 5 makes
+with only `AGENT`, and with the Basic header first it gets 401. Plan 5 made
 `/mcp` answer 401 unless exactly one `Authorization` header is present and it
 carries a known bearer (PR #29 thread 4342413070; §12). That separation is what makes the threat model in §6
 enforceable rather than aspirational — an agent token cannot reach the purchase
@@ -256,7 +257,7 @@ a run that ignores the documented commands, or a browser without Fetch Metadata
 support: approved known limitation 3 (§9).
 
 **Scaffold spike — answered.** Spring AI's
-Streamable HTTP transport may run `@McpTool` methods on a thread where
+Streamable HTTP transport may run tool methods on a thread where
 `SecurityContextHolder` is empty. The first task after the scaffold proved how
 the authenticated principal reaches a tool method, with a real bearer
 token over real HTTP (ADR-004: tools get the caller from `McpTransportContext`). Every owner-scoped
@@ -736,8 +737,17 @@ genuinely fail if `uq_claimed_seat` is removed.
 
 ## 6. MCP tool design
 
-Five thin, single-responsibility tools. Implemented with Spring AI's `@McpTool`
-annotation, which generates the JSON schema from the method signature.
+Five thin, single-responsibility tools. Each is a typed method whose parameters
+carry Spring AI's `@McpToolParam`, but the tools are **hand-registered**
+`SyncToolSpecification`s, not `@McpTool` methods: `McpConfig` exposes one
+`List<SyncToolSpecification>` bean (ADR-007). Each tool's input schema is
+generated from the annotated method signature
+(`McpJsonSchemaGenerator#generateForMethodInput`), so names, types and
+descriptions still come from the declaration. The reason is that Spring AI
+converts arguments before an `@McpTool` method runs, so a conversion failure
+could not be answered as a structured `invalid_request` naming the offending
+parameter; the adapter binds arguments itself, strictly, and names the parameter
+on any failure.
 
 | Tool | Parameters | Access |
 |---|---|---|
@@ -758,6 +768,9 @@ annotation, which generates the JSON schema from the method signature.
   Best-adjacent-seat allocation is a real algorithm and a possible next step (§9).
   It returns `hold_group_id`, the held seats, the total, and `expires_at`, which
   the agent relays to its human.
+- **Every tool's structured content is a JSON object.** `search_events` returns
+  `{"events": [...]}`, where `GET /api/events` returns a top-level array. No tool
+  declares an `outputSchema`, and the text content equals the structured content.
 - **No tool takes an owner or buyer parameter.** Identity comes from the bearer
   token (§3).
 - **Reads show availability, never another owner's hold.** The read tools and
@@ -853,6 +866,13 @@ tool's structured error result.
 {"code": "seat_taken", "seat_ids": [412], "hint": "call check_availability for current seats"}
 ```
 
+MCP also has a twelfth wire code, `internal_error`, for any failure that is not a
+domain error: the generic content is
+`{"code":"internal_error","hint":"unexpected failure; retry, or tell the operator"}`,
+with no detail, and the cause is logged server-side. It is defined only in the
+MCP adapter; REST's equivalent stays a generic 500 with no `code`, and `ErrorCode`
+keeps its eleven domain codes (ADR-007).
+
 A tool call that fails MCP authentication never reaches a tool. It gets an
 HTTP 401 from the MCP filter chain.
 
@@ -895,7 +915,7 @@ a replay. A transport error on `/mcp` (malformed JSON, or a chunked body over
 the bound below) reaches only a caller with a valid agent token, because the
 chain requires `AGENT` before the body is read. It is rendered by the
 application's mapper, not the MCP server's, and its body includes a
-`stack_trace`. No tool is served yet; plan 5 removes it, and tests that no
+`stack_trace`. Plan 5 removed it, and tests show that no
 transport failure carries one: malformed JSON, a chunked body over the bound,
 and an over-cap form `POST` (§12).
 
@@ -919,7 +939,7 @@ signals.
   transport's body read does, so `server.tomcat.max-http-form-post-size` caps that
   at the same 16 KiB. No committed test proves the cap. In a throwaway check, a
   chunked form body over it on `/mcp`, with a valid token, got a 500 from the
-  transport, not a 413. Plan 5 adds a test that an over-cap form `POST` to `/mcp`
+  transport, not a 413. Plan 5 added a test that an over-cap form `POST` to `/mcp`
   gets 413 in the filter-error Problem Details shape written by `rest/Problems.write`
   (*Problem Details members* above), with no `code` and no `stack_trace` (PR #29
   thread 4342460506; §12).
@@ -1103,8 +1123,8 @@ security consequence makes it a candidate for the limitations list, not
 design. The approved list is for accepted gaps only. The items
 revision 2.6.5 left to plan 5 are not design decisions: the `/mcp`
 `stack_trace` (§6 *Error contracts*), `/mcp` reading only the first `Authorization` header (§3)
-and the untested Tomcat form-post cap (§6 *Request bounds*) are defects that
-plan 5 fixes.
+and the untested Tomcat form-post cap (§6 *Request bounds*) were defects that
+plan 5 fixed.
 
 **Approved known limitations** (approved by Markus, 2026-10-28; entry 3's
 widening to a browser without Fetch Metadata support was added by fix pass 4
@@ -1181,7 +1201,7 @@ the project's differentiating value.
 |---|---|---|
 | Language | Java 25 (LTS) | Current LTS; `pom.xml` pins `java.version` 25 |
 | Framework | Spring Boot 4.1 | Current; required by Spring AI 2.0 |
-| MCP | Spring AI 2.0, `@McpTool` | First-class MCP server support; schema generated from method signatures |
+| MCP | Spring AI 2.0, hand-registered `SyncToolSpecification`s (ADR-007) | First-class MCP server support; schema generated from the annotated method signatures, argument binding owned by the adapter |
 | Transport | **Streamable HTTP** — `spring-ai-starter-mcp-server-webmvc`, `spring.ai.mcp.server.protocol=STREAMABLE` | See below |
 | Database | Postgres + Flyway | Partial unique indexes are required by §5; versioned migrations are a named hygiene signal |
 | Build | Maven (wrapper) | More common than Gradle in enterprise Java shops, which is the target audience |
@@ -1247,41 +1267,41 @@ sections explain their own rules and point here.
 
 **Plan 5:**
 
-- [ ] The five MCP tools and the §7 evidence artifacts
-- [ ] Phase 1 tool logging: one structured line per tool call, the owner by username; a test shows no token is logged (§6 *Guardrails on the write path*)
-- [ ] Neither `logs/example_run.txt` nor the recording shows a raw password, token or `Authorization` header value, Basic or Bearer; the credentials used while recording are regenerated with `scripts/demo-credentials.sh` afterwards (§7)
-- [ ] `/mcp` answers 401 unless exactly one `Authorization` header is present and it carries a known bearer; tests cover Basic+Bearer in both orders, and Bearer+Bearer (§3)
-- [ ] No `/mcp` transport error carries a `stack_trace`; a test covers malformed JSON, a chunked body over the bound, and an over-cap form `POST` (§6 *Error contracts*)
-- [ ] An over-cap form `POST` to `/mcp` gets 413 in the filter-error Problem Details shape written by `rest/Problems.write`, with no `code` and no `stack_trace` (§6 *Request bounds*, *Problem Details members*)
+- [ ] The five MCP tools and the §7 evidence artifacts (the tools, schemas, run log and README are built; unticked because the demo recording is not made: Markus waived Task 8 and it is still owed)
+- [x] Phase 1 tool logging: one structured line per tool call, the owner by username; a test shows no token is logged (§6 *Guardrails on the write path*)
+- [ ] Neither `logs/example_run.txt` nor the recording shows a raw password, token or `Authorization` header value, Basic or Bearer; the credentials used while recording are regenerated with `scripts/demo-credentials.sh` afterwards (§7) (the run log is clean, per `EvidenceHygieneTest`; unticked because there is no recording to check and no recording credentials to regenerate)
+- [x] `/mcp` answers 401 unless exactly one `Authorization` header is present and it carries a known bearer; tests cover Basic+Bearer in both orders, and Bearer+Bearer (§3)
+- [x] No `/mcp` transport error carries a `stack_trace`; a test covers malformed JSON, a chunked body over the bound, and an over-cap form `POST` (§6 *Error contracts*)
+- [x] An over-cap form `POST` to `/mcp` gets 413 in the filter-error Problem Details shape written by `rest/Problems.write`, with no `code` and no `stack_trace` (§6 *Request bounds*, *Problem Details members*)
 
 **The whole project:**
 
-- [ ] `docker compose up` starts the service and Postgres; seeded demo data present
-- [ ] Swagger UI browsable; every endpoint in the §6 REST table exercised end to end
-- [ ] All 5 MCP tools callable from Claude Code over Streamable HTTP with a bearer token
+- [ ] `docker compose up` starts the service and Postgres; seeded demo data present (unticked: CI runs the test suite, and no committed artifact shows a compose run)
+- [ ] Swagger UI browsable; every endpoint in the §6 REST table exercised end to end (unticked: no test or artifact shows Swagger UI browsed, and the end-to-end walk is the recording)
+- [ ] All 5 MCP tools callable from Claude Code over Streamable HTTP with a bearer token (unticked: the tests and `logs/example_run.txt` use a scripted MCP client, not Claude Code)
 - [x] The concurrency tests in §5 pass against real Postgres; the hold-race test genuinely fails if `uq_claimed_seat` is removed (done on `main`)
 - [x] Security tests prove the chains are disjoint in both directions — an MCP token cannot reach the confirm endpoint, and Basic credentials cannot reach `/mcp` (done on `main`)
-- [ ] Every schema constraint in §5 has an integration test inserting a violating row
+- [x] Every schema constraint in §5 has an integration test inserting a violating row
 - [x] No raw token in the repository or committed config — only SHA-256 hashes (true on `main`; plans 4B and 5 keep it true)
-- [ ] `logs/example_run.txt` contains a real, reproduced failure-and-recovery run
-- [ ] Tool schemas checked in, and CI fails on schema drift
-- [ ] The README's architecture section has the Mermaid diagram and covers trust boundaries and why there is no `confirm_order`
-- [ ] A recording of the §7 buyer and agent story is in `docs/demo/` and linked from the README
-- [x] The §13 ADRs are recorded in `docs/adr/` (done: ADR-001 to ADR-003)
-- [ ] README states the no-`confirm_order` decision, the demo-grade security caveat, the §7 headline metrics, "Known limitations" (reproducing §9's approved list) and "Possible next steps"
-- [ ] README's threat model states what the two approved design decisions cost, as §6 states them: an agent can release its human's holds, fill their cap and replay their keys, and a prompt-injected agent can steer which hold the human confirms (§9 *Approved design decisions*)
-- [ ] README's threat model states the Docker Engine 28.3.3 or later (Linux) assumption behind "local only", and mentions DNS rebinding (§3, §9 limitation 4)
-- [ ] CI green on a clean checkout
+- [x] `logs/example_run.txt` contains a real, reproduced failure-and-recovery run (`ExampleRunTest` reproduces the scenario)
+- [x] Tool schemas checked in, and CI fails on schema drift
+- [x] The README's architecture section has the Mermaid diagram and covers trust boundaries and why there is no `confirm_order`
+- [ ] A recording of the §7 buyer and agent story is in `docs/demo/` and linked from the README (unticked: waived by Markus for now and still owed; the runbook is `docs/demo/README.md`)
+- [x] The §13 ADRs are recorded in `docs/adr/` (done: ADR-001 to ADR-003; ADR-004 to ADR-007 followed)
+- [x] README states the no-`confirm_order` decision, the demo-grade security caveat, the §7 headline metrics, "Known limitations" (reproducing §9's approved list) and "Possible next steps"
+- [x] README's threat model states what the two approved design decisions cost, as §6 states them: an agent can release its human's holds, fill their cap and replay their keys, and a prompt-injected agent can steer which hold the human confirms (§9 *Approved design decisions*)
+- [x] README's threat model states the Docker Engine 28.3.3 or later (Linux) assumption behind "local only", and mentions DNS rebinding (§3, §9 limitation 4)
+- [x] CI green on a clean checkout
 
 ---
 
 ## 13. Next steps
 
-*Status 2026-11-04: Steps 1 and 2 are done; step 3 is under way. This spec was
-reviewed and merged in PR #1, and ADRs 001-006 are in `docs/adr/` (ADR-006 records
+*Status 2026-11-09: Steps 1 and 2 are done; step 3 is under way. This spec was
+reviewed and merged in PR #1, and ADRs 001-007 are in `docs/adr/` (ADR-006 records
 revision 2.7's portfolio scope). Phase 1 was split into seven plans.
-Plans 1, 2, 3A, 3B, 4A and 4B are written, executed and merged (`docs/superpowers/plans/`); plan
-5 is not written yet, and is written against revision 2.7's scope.*
+Plans 1, 2, 3A, 3B, 4A, 4B and 5 are written, executed and merged (`docs/superpowers/plans/`); what
+remains is the demo recording and the §12 boxes that wait on a human run.*
 
 1. This revision is reviewed by the user and merged.
 2. Record ADRs in `docs/adr/` for: the schema-level claim invariant (§5), the
@@ -1320,3 +1340,4 @@ redundant and should not be merged.
 | 2.6.5 | 2026-10-22 | Post-implementation sync after plan 4A (PR #29), with no design change: most additions state what plan 4A decided where 2.6.4 was silent; the rest correct 2.6.4 where the code already differed (the §5 sweep wording and *Carried over*, below). All are checked against the code on `main`. **Status:** Phase 1 is seven plans; plans 1, 2, 3A, 3B and 4A are merged, and "Not yet built" now names plan 4B's work (event creation, the read services and `GET` endpoints, springdoc) and plan 5's, plus seed data, a datasource configuration and the `docker compose` setup; the header also says the `/mcp` chain serves no tool yet, and that a standalone run needs an external Postgres supplied through the environment while the golden path has run only in the test suite. **§3:** the owner is the Basic username for both credentials, with its username pattern (plan 4A decision 3); the chain table, with the catch-all chain (decision 10); the three cross-site layers and their stated gap for browsers that send no Fetch Metadata (decision 6); the bearer check covers every `Authorization` header, and `/mcp` reads only the first, left to plan 5 (PR #29 thread 4342413070); the spike is answered (ADR-004) and re-proved on the production chain. **§5:** the sweep, not the purge, is the idempotent `UPDATE`; every service entry point starts its own transaction, through `TransactionBoundary`, not `Propagation.NEVER` (decision 4); the `PATCH` bounds its instants (decision 8). **§6:** a shared owner widens what a compromised agent can do (decision 3); REST statuses and Problem Details members, and the failures that keep Spring's or Boot's own body (decision 7); snake_case on the wire, and the `/mcp` `stack_trace`, reachable only with a valid agent token, left to plan 5 (decision 9); a new *Request bounds* subsection (decision 8), whose Tomcat form-post cap no committed test proves yet, left to plan 5 (PR #29 thread 4342460506); any organiser may `PATCH` any event, so one compromised organiser account can cancel every event with nothing sold, close, open early, reopen or extend sales on any event not cancelled through the window `PATCH`, even after its `starts_at`, and put any `DRAFT` event on sale, but cannot cancel an event with a confirmed order (decision 2); which REST rows are built, and owner scoping lives in the services. **§9:** passwords are bcrypt hashes, no usable credential is committed, and startup needs at least one user but no token (decision 5); any bcrypt cost is accepted, so a hand-written hash at any cost other than 10 lets login timing reveal a username (deferred, PR #29 thread 4342380931). **Carried over** from the 2026-10-19 journal entry: hold creation checks the request and the per-request seat cap before step 1, not after the event lock; test 6 and the §12 item no longer wait on the `ORGANISER` endpoints; and with `frontrow.sweeper-enabled=false` no key is purged, so the 24-hour key life holds only while the schedule runs (PR #26 thread 4329608305). **Correction to the 2.6.4 row:** 2.6.4 also made the header's "Not yet built" name the event-creation service, which its row leaves out (PR #26 thread 4329923790); the row is left as merged |
 | 2.7 | 2026-10-27 | **Scope change**, decided by Markus and recorded as ADR-006, after Phase 1 had taken over five weeks against its one-week budget. FrontRow is a finished, local-only portfolio project, judged by its repo, README and a recorded demo. **Changed:** §1 and §2 (goals 3 and 4, the non-goals); §3 (the Fetch Metadata gap, and the all-interfaces defect plan 4B fixes); §5 and §6 (creation's instant bound and the post-start window check; `GET /api/orders/{id}` and `ADMIN` cut, `POST /api/events` kept); §7 (the evidence slimmed, the demo story and the recording); §8; §9 (Phase 1 is the whole project, Phases 2–4 become possible next steps, and the portfolio quality bar with its approved lists: see §9 itself); §10, §11 and §13; §12 (the single checklist of what plans 4B and 5 owe). Markus made the bar's further decisions on 2026-10-28 during PR #33's review; the journal records each. Fix pass 10 (fresh round 3): §7's credential rule for the run log and the recording, an organiser story §5 allows, the agent's worst case, read-tool exposure, and §12 boxes for each |
 | 2.7.1 | 2026-11-04 | Post-implementation sync after plan 4B (PR #36), with no design change. **Status:** the header and the §13 note are brought up to date (plans 1, 2, 3A, 3B, 4A and 4B merged; only plan 5 not built). **§12:** the thirteen Plan 4B boxes are ticked, per plan 4B's coverage table. **Docker Engine floor:** corrected from 28.0 to 28.3.3 in §3, the §12 README box and ADR-006, because engines before 28.3.3 reroute published ports again after a firewalld reload (CVE-2025-54388); approved by Markus 2026-11-04. |
+| 2.7.2 | 2026-11-09 | Post-implementation sync after plan 5 (PR #40, squash `1f575a7`, 420 test runs), with no design change beyond the two calls Markus accepted on 2026-11-05, which ADR-007 records. **Status:** plan 5 is built and merged; the demo recording (plan 5 Task 8) is waived by Markus and still owed. **§3, §6, §10:** the MCP tools are hand-registered `SyncToolSpecification`s (one `List<SyncToolSpecification>` bean in `McpConfig`) with no `@McpTool`; input schemas are generated from the annotated method signatures (`@McpToolParam`, `McpJsonSchemaGenerator#generateForMethodInput`), because Spring AI converts arguments before the tool method runs and a conversion failure could not then be structured with the offending parameter; every tool's structured content is a JSON object (`search_events` returns `{"events": [...]}`), no tool declares an `outputSchema`, and the text content equals the structured content. **§6:** `internal_error` is a twelfth MCP wire code, defined only in the MCP adapter; REST's equivalent stays a generic 500 and `ErrorCode` is unchanged. **Tense:** the sentences that said plan 5 would fix the `/mcp` header rule, the `stack_trace` and the form-post cap now say it did. **§12:** the Plan 5 boxes for tool logging, the `/mcp` header rule, the transport errors and the 413 are ticked, with the whole-project boxes for schema-constraint coverage, the run log, checked-in schemas, the README (architecture, the no-`confirm_order` decision, the threat model and the Docker floor) and CI; the recording box, the `docker compose`, Swagger UI and Claude Code boxes, the credentials-in-the-recording box and the "five tools and §7 artifacts" box stay unticked, each with its reason in the box. §9's approved lists are unchanged. |
