@@ -1,5 +1,6 @@
 package io.github.markusluisflores.frontrow.security;
 
+import io.github.markusluisflores.frontrow.mcp.McpRequestShapeFilter;
 import io.github.markusluisflores.frontrow.rest.Problems;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -72,7 +73,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth.anyRequest().hasAuthority(AgentTokenFilter.AGENT))
                 .addFilterBefore(new AgentTokenFilter(credentials), AnonymousAuthenticationFilter.class)
                 // After authorization: only a request with a known token makes the server read a form body.
-                .addFilterAfter(new McpFormBodyFilter(), AuthorizationFilter.class);
+                .addFilterAfter(new McpFormBodyFilter(), AuthorizationFilter.class)
+                .addFilterAfter(new McpRequestShapeFilter(), McpFormBodyFilter.class);
         return stateless(http).build();
     }
 
