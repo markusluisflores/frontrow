@@ -12,10 +12,15 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Parameter;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.math.BigInteger;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.mcp.annotation.McpToolParam;
@@ -31,7 +36,9 @@ import tools.jackson.databind.json.JsonMapper;
  * result. The binding here is the adapter's own and strict: each argument, looked up by the method's
  * {@code Parameter#getName()} (the name the schema is generated from, so the two stay tied), converts only to the
  * declared type, and anything else is invalid_request naming that parameter. An argument the method does not declare is
- * never read, so nothing an agent sends can name an owner.
+ * never read, so nothing an agent sends can name an owner. A method that acts for a caller declares a
+ * {@link McpTransportContext} parameter: the binding supplies the request's own context there (the schema generator
+ * leaves that type out, so it is never a wire parameter) and the method reads the owner with {@link #owner}.
  */
 @Component
 public class ToolCall {
@@ -68,7 +75,7 @@ public class ToolCall {
                 log.error("tool {} refused: no authenticated principal in the transport context", tool);
                 return results.internalError();
             }
-            Object[] arguments = bind(method, request.arguments());
+            Object[] arguments = bind(method, request.arguments(), context);
             Object body = invoke(target, method, arguments);
             return results.success((Record) body);
         } catch (InvalidArgument invalid) {
@@ -89,13 +96,28 @@ public class ToolCall {
         }
     }
 
+    /**
+     * The caller of a tool call: the principal's name from the transport context, which the /mcp chain authenticated
+     * and which no argument, header or session can set (ADR-004). {@link #run} has already refused a call with none.
+     */
+    public static String owner(McpTransportContext context) {
+        if (context.get(McpConfig.PRINCIPAL_KEY) instanceof String owner && !owner.isBlank()) {
+            return owner;
+        }
+        throw new IllegalStateException("no authenticated principal in the transport context");
+    }
+
     /** Every declared parameter in order, each converted to its declared type or named in the failure. */
-    static Object[] bind(Method method, Map<String, Object> raw) {
+    static Object[] bind(Method method, Map<String, Object> raw, McpTransportContext context) {
         Map<String, Object> given = raw == null ? Map.of() : raw;
         Parameter[] parameters = method.getParameters();
         Object[] bound = new Object[parameters.length];
         for (int i = 0; i < parameters.length; i++) {
             Parameter parameter = parameters[i];
+            if (parameter.getType() == McpTransportContext.class) {
+                bound[i] = context;
+                continue;
+            }
             String name = parameter.getName();
             McpToolParam declaration = parameter.getAnnotation(McpToolParam.class);
             boolean required = declaration == null || declaration.required();
@@ -106,13 +128,13 @@ public class ToolCall {
                 }
                 bound[i] = null;
             } else {
-                bound[i] = convert(name, parameter.getType(), value);
+                bound[i] = convert(name, parameter.getType(), parameter.getParameterizedType(), value);
             }
         }
         return bound;
     }
 
-    private static Object convert(String name, Class<?> type, Object value) {
+    private static Object convert(String name, Class<?> type, Type generic, Object value) {
         if (type == String.class && value instanceof String text) {
             return text;
         }
@@ -123,6 +145,24 @@ public class ToolCall {
                 throw new InvalidArgument(name);
             }
         }
+        if (type == UUID.class && value instanceof String text) {
+            try {
+                return UUID.fromString(text);
+            } catch (IllegalArgumentException malformed) {
+                throw new InvalidArgument(name);
+            }
+        }
+        if (type == List.class && value instanceof List<?> elements && isListOfLong(generic)) {
+            List<Long> longs = new ArrayList<>();
+            for (Object element : elements) {
+                if (integral(element) instanceof BigInteger whole && fits(whole, Long.MAX_VALUE)) {
+                    longs.add(whole.longValueExact());
+                } else {
+                    throw new InvalidArgument(name);
+                }
+            }
+            return longs;
+        }
         if (type == Long.class && integral(value) instanceof BigInteger whole && fits(whole, Long.MAX_VALUE)) {
             return whole.longValueExact();
         }
@@ -132,13 +172,19 @@ public class ToolCall {
         throw new InvalidArgument(name);
     }
 
+    private static boolean isListOfLong(Type generic) {
+        return generic instanceof ParameterizedType parameterized
+                && parameterized.getActualTypeArguments().length == 1
+                && parameterized.getActualTypeArguments()[0] == Long.class;
+    }
+
     /** A JSON integer, as Jackson parses it into a Map; a fraction, a string or a boolean is not one. */
     private static Object integral(Object value) {
         return switch (value) {
             case Integer i -> BigInteger.valueOf(i);
             case Long l -> BigInteger.valueOf(l);
             case BigInteger big -> big;
-            default -> null;
+            case null, default -> null;
         };
     }
 

@@ -4,6 +4,7 @@ import io.modelcontextprotocol.common.McpTransportContext;
 import io.modelcontextprotocol.json.jackson3.JacksonMcpJsonMapper;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
 import java.security.Principal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.springframework.ai.mcp.customizer.McpSyncServerCustomizer;
@@ -66,7 +67,9 @@ public class McpConfig {
     }
 
     @Bean
-    List<SyncToolSpecification> frontrowToolSpecifications(EventTools events) {
-        return events.specifications();
+    List<SyncToolSpecification> frontrowToolSpecifications(EventTools events, HoldTools holds) {
+        List<SyncToolSpecification> all = new ArrayList<>(events.specifications());
+        all.addAll(holds.specifications());
+        return List.copyOf(all);
     }
 }
