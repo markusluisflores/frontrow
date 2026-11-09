@@ -86,7 +86,7 @@ bootstrap. The scaffold task must land all of them, not just the build:
   A match inside a comment counts too, so keep lock vocabulary out of comments elsewhere.
 - The `domain` package imports only `java.*`. Check with:
   `grep -rn "^import" src/main/java/io/github/markusluisflores/frontrow/domain/ | grep -v "import java\."`
-- MCP tools return structured errors (`{"code": ..., "hint": ...}`, same codes as REST). An
+- MCP tools return structured errors (`{"code": ..., "hint": ...}`, same codes as REST, plus `internal_error`, a twelfth code that only the MCP adapter has, spec §6). An
   unstructured string error is a review BLOCKER. As built, the `mcp/` package is the MCP adapter: a tool handler
   only binds arguments (`ToolCall`, strict: a fraction or numeric string is `invalid_request`), calls an existing
   service, and renders the result or a `DomainException` (`ToolResults`); the owner is the authenticated principal's

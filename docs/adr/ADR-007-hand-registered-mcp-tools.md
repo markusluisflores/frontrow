@@ -20,8 +20,10 @@ a tool's own logic, and the plan read the first two from the jars:
    (`McpServer.SyncSpecification#validateToolInputs`, default `true`) and answers a plain-text error with no structured
    content.
 2. For an `@McpTool` method, Spring AI 2.0.1 converts each argument itself before the method runs
-   (`SyncMcpToolMethodCallback#apply`) and answers a failure with a plain-text error. The tool method never runs, so
-   nothing in the method, including a wrapper that every tool goes through, can see or shape that failure.
+   (`SyncMcpToolMethodCallback#apply`, via `buildTypedArgument`) and answers a failure with a plain-text error built
+   from the exception's message and its root cause's message (`createSyncErrorResult`), with no structured parameter
+   field. The tool method never runs, so nothing in the method, including a wrapper that every tool goes through, can
+   see or shape that failure.
 3. Only what the adapter's own handler receives is under the adapter's control.
 
 Can the tools keep `@McpTool` and still return a structured error that names the offending parameter?
@@ -77,8 +79,9 @@ Can the tools keep `@McpTool` and still return a structured error that names the
 
 * ✅ The annotation stays on the methods, as the spec said.
 * ❌ Layer 2 runs before the method, so a wrapper around the method never sees a conversion failure.
-* ❌ A wrapper around the handler Spring AI builds can catch the failure, but the plain-text error it receives never names
-  the parameter, so the result could not be `invalid_request` with a `parameter`. Rejected for that reason.
+* ❌ A wrapper around the handler Spring AI builds would see only the finished plain-text error (layer 2). It could report
+  `invalid_request` and log, but the text is whatever the exception messages say, so it could not reliably name the
+  offending parameter. The plan did not check which messages Spring AI produces. Rejected for that reason.
 * ❌ SDK validation (layer 1) would still answer first with plain text unless it is switched off anyway.
 
 ### B. Hand-registered specifications
