@@ -26,6 +26,19 @@ class McpUnanswerableRequestsTest {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
+    private static final java.util.Map<String, String> VALID_PARAMS = java.util.Map.of(
+            "ping", "{}",
+            "tools/list", "{}",
+            "tools/call", "{\"name\":\"search_events\",\"arguments\":{}}",
+            "resources/list", "{}",
+            "resources/templates/list", "{}",
+            "resources/read", "{\"uri\":\"x://y\"}",
+            "prompts/list", "{}",
+            "prompts/get", "{\"name\":\"x\"}",
+            "completion/complete",
+                    "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"x\"},\"argument\":{\"name\":\"a\",\"value\":\"b\"}}",
+            "logging/setLevel", "{\"level\":\"info\"}");
+
     @LocalServerPort
     int port;
 
@@ -59,7 +72,75 @@ class McpUnanswerableRequestsTest {
         assertAnswered("no/such", "{}");
     }
 
-    /** The filter's allow-list is the SDK's: every method it lets through completes with the SDK's own answer. */
+    @Test
+    void aToolsCallWithAStringParamsIsInvalidParams() throws Exception {
+        assertThat(assertAnswered("tools/call", "\"x\"")
+                        .get("error")
+                        .get("code")
+                        .asInt())
+                .isEqualTo(-32602);
+    }
+
+    @Test
+    void aToolsCallWithParamsAbsentIsAnswered() throws Exception {
+        assertAnswered("tools/call", null);
+    }
+
+    @Test
+    void anUnauthenticatedUnknownMethodIs401NotAMethodNotFound() throws Exception {
+        HttpClient http = HttpClient.newHttpClient();
+        try {
+            HttpResponse<String> response =
+                    send(http, null, null, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"no/such\",\"params\":{}}");
+            assertThat(response.statusCode()).isEqualTo(401);
+            assertThat(response.body()).doesNotContain("Method not found");
+        } finally {
+            http.shutdownNow();
+        }
+    }
+
+    @Test
+    void anOverCapChunkedJsonPostIs413() throws Exception {
+        byte[] body = ("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"" + " ".repeat(16 * 1024 + 1) + "}")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        HttpClient http = HttpClient.newHttpClient();
+        try {
+            HttpResponse<String> response = http.sendAsync(
+                            HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/mcp"))
+                                    .header("Content-Type", "application/json")
+                                    .header("Accept", "application/json, text/event-stream")
+                                    .header("Authorization", "Bearer " + TestCredentials.token("alice"))
+                                    .POST(HttpRequest.BodyPublishers.ofInputStream(
+                                            () -> new java.io.ByteArrayInputStream(body)))
+                                    .build(),
+                            HttpResponse.BodyHandlers.ofString())
+                    .get(5, TimeUnit.SECONDS);
+            assertThat(response.statusCode()).isEqualTo(413);
+        } finally {
+            http.shutdownNow();
+        }
+    }
+
+    /** A notification has no id, so it is no request: the filter hands it on and writes no error answer itself. */
+    @Test
+    void aNotificationWithAnUnknownMethodGetsNoErrorFromTheFilter() throws Exception {
+        HttpClient http = HttpClient.newHttpClient();
+        try {
+            String session = initialize(http);
+            HttpResponse<String> response =
+                    post(http, session, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/no/such\"}");
+            assertThat(response.statusCode()).isEqualTo(202);
+            assertThat(response.body()).isEmpty();
+        } finally {
+            http.shutdownNow();
+        }
+    }
+
+    /**
+     * Catches a method the SDK STOPS serving (the filter would still let it through and it would answer Method not found
+     * or hang), not one it starts serving: the allow-list needs a manual look on an SDK upgrade. Each call carries valid
+     * params, so a bare Problem Details 500 means the SDK failed to bind them.
+     */
     @Test
     void everyServedMethodStillGetsTheSdksOwnAnswer() throws Exception {
         HttpClient http = HttpClient.newHttpClient();
@@ -70,22 +151,29 @@ class McpUnanswerableRequestsTest {
                     continue;
                 }
                 HttpResponse<String> response = post(
-                        http, session, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"" + method + "\",\"params\":{}}");
-                assertThat(response.body()).as(method).isNotBlank().doesNotContain("Method not found");
+                        http,
+                        session,
+                        "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"" + method + "\",\"params\":"
+                                + VALID_PARAMS.get(method) + "}");
+                assertThat(response.body())
+                        .as(method)
+                        .isNotBlank()
+                        .doesNotContain("Method not found", "\"status\":500");
             }
         } finally {
             http.shutdownNow();
         }
     }
 
-    private void assertAnswered(String method, String params) throws Exception {
+    private JsonNode assertAnswered(String method, String params) throws Exception {
         HttpClient http = HttpClient.newHttpClient();
         try {
             String session = initialize(http);
             HttpResponse<String> response = post(
                     http,
                     session,
-                    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"" + method + "\",\"params\":" + params + "}");
+                    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"" + method + "\""
+                            + (params == null ? "" : ",\"params\":" + params) + "}");
             String body = response.body();
             assertThat(body)
                     .doesNotContain("stack_trace", "stackTrace", "StackTrace", "Exception", "at io.", "at org.");
@@ -94,6 +182,7 @@ class McpUnanswerableRequestsTest {
             assertThat(json.get("id").asInt()).as(body).isEqualTo(7);
             assertThat(json.get("error").get("code").isInt()).as(body).isTrue();
             assertThat(json.get("error").get("message").isString()).as(body).isTrue();
+            return json;
         } finally {
             http.shutdownNow();
         }
@@ -112,11 +201,17 @@ class McpUnanswerableRequestsTest {
     }
 
     private HttpResponse<String> post(HttpClient http, String session, String json) throws Exception {
+        return send(http, session, TestCredentials.token("alice"), json);
+    }
+
+    private HttpResponse<String> send(HttpClient http, String session, String token, String json) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/mcp"))
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json, text/event-stream")
-                .header("Authorization", "Bearer " + TestCredentials.token("alice"))
                 .POST(HttpRequest.BodyPublishers.ofString(json));
+        if (token != null) {
+            builder.header("Authorization", "Bearer " + token);
+        }
         if (session != null) {
             builder.header("Mcp-Session-Id", session).header("MCP-Protocol-Version", "2025-06-18");
         }

@@ -36,6 +36,7 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>A request whose {@code params} is present but is not a JSON object (an array, a string, a number): the
  *       transport fails to bind it while its SSE answer is being produced, and the failure surfaces as a bare 500
  *       Problem Details through RestExceptionHandler's catch-all, not as a JSON-RPC answer. Answered here with -32602.
+ *       A tools/call with no params member at all is the same failure and gets the same answer.
  *   <li>A request whose method the server does not serve: the SDK writes a "Method not found" event to the SSE stream
  *       and never closes it, so a client waiting for the answer to finish waits forever. Answered here with -32601 and
  *       a body that ends.
@@ -49,7 +50,7 @@ public final class McpRequestShapeFilter extends OncePerRequestFilter {
 
     /**
      * The client-to-server requests the SDK server registers a handler for. McpUnanswerableRequestsTest pins that each
-     * one still completes, so an SDK upgrade that drops or adds one is caught.
+     * one still completes (it catches a method the SDK drops, not one it adds: look at this list on an SDK upgrade).
      */
     static final Set<String> SERVED_METHODS = Set.of(
             "initialize",
@@ -87,10 +88,13 @@ public final class McpRequestShapeFilter extends OncePerRequestFilter {
             String method = message.get("method").asString();
             JsonNode params = message.get("params");
             if (!SERVED_METHODS.contains(method)) {
+                // HTTP 200: a JSON-RPC error is a reply to a delivered request, unlike this chain's 4xx transport
+                // errors.
                 answer(response, message.get("id"), METHOD_NOT_FOUND, "Method not found");
                 return;
             }
-            if (params != null && !params.isObject()) {
+            boolean callWithoutParams = method.equals("tools/call") && params == null;
+            if (callWithoutParams || (params != null && !params.isObject())) {
                 answer(response, message.get("id"), INVALID_PARAMS, "Invalid params: expected an object");
                 return;
             }
