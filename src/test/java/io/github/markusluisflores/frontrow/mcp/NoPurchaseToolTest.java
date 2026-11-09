@@ -29,7 +29,7 @@ class NoPurchaseToolTest {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final Pattern PURCHASE_WORDS =
-            Pattern.compile("(?i)confirm|buy|purchas|\bpay|checkout|order|sell|\bsold\b|charge");
+            Pattern.compile("(?i)confirm|buy|purchas|\\bpay|checkout|order|sell|\\bsold\\b|charge");
     private static final List<String> IDENTITY_PROPERTIES = List.of("owner", "user", "buyer", "username");
 
     @LocalServerPort
@@ -63,6 +63,22 @@ class NoPurchaseToolTest {
                     .forEach(name -> assertThat(IDENTITY_PROPERTIES)
                             .as("%s property %s", tool.name(), name)
                             .doesNotContain(name.toLowerCase()));
+        }
+    }
+
+    @Test
+    void theWriteToolsDeclareExactlyTheirWireParameters() {
+        // The McpTransportContext parameter of the Java methods is not a wire property.
+        for (Tool tool : served()) {
+            List<String> properties = JSON.valueToTree(tool.inputSchema()).path("properties").propertyNames().stream()
+                    .sorted()
+                    .toList();
+            switch (tool.name()) {
+                case "hold_seats" ->
+                    assertThat(properties).containsExactly("event_id", "event_seat_ids", "idempotency_key");
+                case "release_hold" -> assertThat(properties).containsExactly("hold_group_id");
+                default -> {}
+            }
         }
     }
 
