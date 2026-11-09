@@ -34,7 +34,8 @@ class ReadmeTest {
 
         assertThat(readme).contains("no `confirm_order` tool");
         assertThat(readme).contains("`POST /api/holds/{holdGroupId}/confirm`");
-        assertThat(readme).contains("Basic only");
+        assertThat(flat(readme)).contains("which accepts HTTP Basic only");
+        assertThat(flat(readme)).contains("it cannot buy");
     }
 
     @Test

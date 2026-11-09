@@ -149,7 +149,7 @@ class ToolLoggingTest {
         assertThat(lines.getFirst().group("outcome")).isEqualTo("internal_error");
         assertThat(lines.getFirst().group("tool")).isEqualTo("get_event");
 
-        List<ILoggingEvent> errors = everything.list.stream()
+        List<ILoggingEvent> errors = snapshot().stream()
                 .filter(e -> e.getLevel() == Level.ERROR)
                 .filter(e -> e.getFormattedMessage().contains("unexpected"))
                 .toList();
@@ -239,7 +239,9 @@ class ToolLoggingTest {
     // ---- helpers ----------------------------------------------------------------------------------------------------
 
     private void expectOne(Agent agent, String tool, Map<String, Object> arguments, String outcome) {
-        everything.list.clear();
+        synchronized (everything) {
+            everything.list.clear();
+        }
         agent.call(tool, arguments);
         List<ILoggingEvent> lines = toolLines();
         assertThat(lines).as("%s -> %s", tool, outcome).hasSize(1);
@@ -251,12 +253,17 @@ class ToolLoggingTest {
         assertThat(Long.parseLong(parsed.getFirst().group("ms"))).isGreaterThanOrEqualTo(0);
     }
 
-    private List<ILoggingEvent> toolLines() {
-        List<ILoggingEvent> copy;
-        synchronized (everything.list) {
-            copy = new ArrayList<>(everything.list);
+    /** Appends run under the appender's own monitor (AppenderBase.doAppend), so reads take the same lock. */
+    private List<ILoggingEvent> snapshot() {
+        synchronized (everything) {
+            return new ArrayList<>(everything.list);
         }
-        return copy.stream().filter(e -> TOOL_LOGGER.equals(e.getLoggerName())).toList();
+    }
+
+    private List<ILoggingEvent> toolLines() {
+        return snapshot().stream()
+                .filter(e -> TOOL_LOGGER.equals(e.getLoggerName()))
+                .toList();
     }
 
     private static List<Matcher> parsed(List<ILoggingEvent> lines) {
@@ -271,10 +278,7 @@ class ToolLoggingTest {
 
     private String everythingText() {
         StringBuilder text = new StringBuilder();
-        List<ILoggingEvent> copy;
-        synchronized (everything.list) {
-            copy = new ArrayList<>(everything.list);
-        }
+        List<ILoggingEvent> copy = snapshot();
         for (ILoggingEvent event : copy) {
             text.append(event.getLoggerName())
                     .append(' ')

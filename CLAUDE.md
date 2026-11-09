@@ -35,7 +35,7 @@ an unserved method or non-object params as a JSON-RPC error instead of a hang or
 tool call, checked-in tool schemas (`docs/mcp/tools/`, `ToolSchemasTest`), the evidence (`logs/example_run.txt`,
 `scripts/example-run.sh`, `scripts/take-seat.sh`, `EvidenceHygieneTest`), the README and the demo runbook
 (`docs/demo/README.md`); the demo recording is still Markus's to make.**
-416 test runs pass (1 skipped: the evidence hygiene exact-value check, which needs env vars), including all seven spec §5 concurrency tests and a proof that test 1 fails without
+420 runs, 0 failures, 1 skipped (the evidence hygiene exact-value check, which needs env vars); they include all seven spec §5 concurrency tests and a proof that test 1 fails without
 `uq_claimed_seat`. Plan 5's execution is complete except the recording; its plan is
 `docs/superpowers/plans/2026-11-04-phase-1-plan-5-mcp-tools-and-evidence.md`.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is

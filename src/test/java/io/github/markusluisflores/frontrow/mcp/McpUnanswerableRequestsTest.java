@@ -165,6 +165,47 @@ class McpUnanswerableRequestsTest {
         }
     }
 
+    // Residuals, pinned as observed (plan 5 task 10 fix wave; README hardening list): tools/call params that are an
+    // object but wrongly typed inside fail binding in the SDK, and RestExceptionHandler answers a bare 500 Problem
+    // Details (not JSON-RPC). No hang, no stack_trace. Not fixed on purpose; if one is fixed, flip its test.
+    @Test
+    void aToolsCallWithArrayArgumentsIsABareProblemDetails500() throws Exception {
+        assertBare500("{\"name\":\"search_events\",\"arguments\":[]}");
+    }
+
+    @Test
+    void aToolsCallWithStringArgumentsIsABareProblemDetails500() throws Exception {
+        assertBare500("{\"name\":\"search_events\",\"arguments\":\"x\"}");
+    }
+
+    @Test
+    void aToolsCallWithArrayNameIsABareProblemDetails500() throws Exception {
+        assertBare500("{\"name\":[\"a\"]}");
+    }
+
+    // A numeric name is coerced to text by the SDK and answered as an unknown tool: structured.
+    @Test
+    void aToolsCallWithNumericNameIsAnsweredWithAJsonRpcError() throws Exception {
+        JsonNode json = assertAnswered("tools/call", "{\"name\":5}");
+        assertThat(json.get("error").get("code").asInt()).isEqualTo(-32602);
+    }
+
+    private void assertBare500(String params) throws Exception {
+        HttpClient http = HttpClient.newHttpClient();
+        try {
+            String session = initialize(http);
+            HttpResponse<String> response = post(
+                    http,
+                    session,
+                    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":" + params + "}");
+            assertThat(response.statusCode()).as(response.body()).isEqualTo(500);
+            assertThat(response.body())
+                    .doesNotContain("stack_trace", "stackTrace", "Exception", "at io.", "at org.", "jsonrpc");
+        } finally {
+            http.shutdownNow();
+        }
+    }
+
     private JsonNode assertAnswered(String method, String params) throws Exception {
         HttpClient http = HttpClient.newHttpClient();
         try {
