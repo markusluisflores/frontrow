@@ -1,0 +1,16 @@
+{
+  "description" : "Get one event that is on sale: its venue, start and sales window.",
+  "inputSchema" : {
+    "$schema" : "https://json-schema.org/draft/2020-12/schema",
+    "properties" : {
+      "event_id" : {
+        "description" : "The event's id, from search_events",
+        "format" : "int64",
+        "type" : "integer"
+      }
+    },
+    "required" : [ "event_id" ],
+    "type" : "object"
+  },
+  "name" : "get_event"
+}

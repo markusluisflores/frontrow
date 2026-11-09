@@ -1,0 +1,20 @@
+{
+  "description" : "List an on-sale event's seats and whether each is free, optionally for one section. Use the event_seat_id values to hold seats.",
+  "inputSchema" : {
+    "$schema" : "https://json-schema.org/draft/2020-12/schema",
+    "properties" : {
+      "event_id" : {
+        "description" : "The event's id, from search_events",
+        "format" : "int64",
+        "type" : "integer"
+      },
+      "section" : {
+        "description" : "Only seats in this section, such as Floor",
+        "type" : "string"
+      }
+    },
+    "required" : [ "event_id" ],
+    "type" : "object"
+  },
+  "name" : "check_availability"
+}

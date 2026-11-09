@@ -241,6 +241,43 @@ class SchemaConstraintsTest {
                 "ck_ticket_order_status");
     }
 
+    // --- foreign keys: a row cannot point at a parent that does not exist ---
+
+    @Test
+    void seatMustBelongToAnExistingVenue() {
+        assertViolation(() -> db.seat(-1L, "Floor", "Z", 1), FOREIGN_KEY_VIOLATION, "fk_seat_venue");
+    }
+
+    @Test
+    void eventMustBelongToAnExistingVenue() {
+        assertViolation(() -> db.event(-1L, "DRAFT"), FOREIGN_KEY_VIOLATION, "fk_event_venue");
+    }
+
+    @Test
+    void holdMustPointAtAnExistingEventSeat() {
+        assertViolation(
+                () -> db.hold(-1L, UUID.randomUUID(), "alice", "ACTIVE"),
+                FOREIGN_KEY_VIOLATION,
+                "fk_seat_hold_event_seat");
+    }
+
+    @Test
+    void orderMustBelongToAnExistingEvent() {
+        assertViolation(
+                () -> db.order(-1L, UUID.randomUUID(), "alice"), FOREIGN_KEY_VIOLATION, "fk_ticket_order_event");
+    }
+
+    @Test
+    void orderLineMustBelongToAnExistingOrder() {
+        assertViolation(() -> db.orderLine(-1L, eventSeatId), FOREIGN_KEY_VIOLATION, "fk_order_line_order");
+    }
+
+    @Test
+    void orderLineMustPointAtAnExistingEventSeat() {
+        long orderId = db.order(eventId, UUID.randomUUID(), "alice");
+        assertViolation(() -> db.orderLine(orderId, -1L), FOREIGN_KEY_VIOLATION, "fk_order_line_event_seat");
+    }
+
     private void insertHoldRequest(String owner, String key) {
         jdbc.update(
                 "INSERT INTO hold_request (owner, idempotency_key, request_hash, created_at) VALUES (?, ?, 'h', ?)",
