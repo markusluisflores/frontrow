@@ -27,9 +27,17 @@ three security chains (`security/SecurityConfig`), hashed demo credentials, Prob
 16 KiB request-body bound (`rest/`), and four REST endpoints over those services: hold, release,
 confirm and the event PATCH. Plan 4B adds `POST /api/events`, the five `GET` endpoints over two read services (`EventReadService`, which plan 5's
 read tools will reuse, and `OwnerReadService`), the post-start window check, springdoc / Swagger UI, the demo seed and
-`docker compose` on loopback; it removed the cut `ADMIN` role. No MCP tool exists yet.**
-303 test runs pass, including all seven spec §5 concurrency tests and a proof that test 1 fails without
-`uq_claimed_seat`. Plan 5 (MCP tools and the evidence) remains.
+`docker compose` on loopback; it removed the cut `ADMIN` role. Plan 5 (built, on `feat/phase-1-mcp-tools-and-evidence`, PR pending) adds the five MCP
+tools in `mcp/` (`EventTools`, `HoldTools`, wired by `McpConfig`; `ToolCall` binds arguments strictly and resolves the
+owner only from the authenticated principal; `ToolResults` and `McpErrorBody` render the structured errors), the
+`/mcp` filters (`security/McpFormBodyFilter`, which bounds a form `POST`, and `mcp/McpRequestShapeFilter`, which answers
+an unserved method or non-object params as a JSON-RPC error instead of a hang or bare 500), one structured log line per
+tool call, checked-in tool schemas (`docs/mcp/tools/`, `ToolSchemasTest`), the evidence (`logs/example_run.txt`,
+`scripts/example-run.sh`, `scripts/take-seat.sh`, `EvidenceHygieneTest`), the README and the demo runbook
+(`docs/demo/README.md`); the demo recording is still Markus's to make.**
+416 test runs pass (1 skipped: the evidence hygiene exact-value check, which needs env vars), including all seven spec §5 concurrency tests and a proof that test 1 fails without
+`uq_claimed_seat`. Plan 5's execution is complete except the recording; its plan is
+`docs/superpowers/plans/2026-11-04-phase-1-plan-5-mcp-tools-and-evidence.md`.
 The migration itself is `src/main/resources/db/migration/V1__core_schema.sql`. The design spec is
 `docs/superpowers/specs/2026-09-17-frontrow-design.md` (revision 2.7, the portfolio-scope change; 2.6
 reviewed and merged 2026-09-18, 2.6.1 a wording fix, 2.6.2 a post-implementation
@@ -79,7 +87,12 @@ bootstrap. The scaffold task must land all of them, not just the build:
 - The `domain` package imports only `java.*`. Check with:
   `grep -rn "^import" src/main/java/io/github/markusluisflores/frontrow/domain/ | grep -v "import java\."`
 - MCP tools return structured errors (`{"code": ..., "hint": ...}`, same codes as REST). An
-  unstructured string error is a review BLOCKER.
+  unstructured string error is a review BLOCKER. As built, the `mcp/` package is the MCP adapter: a tool handler
+  only binds arguments (`ToolCall`, strict: a fraction or numeric string is `invalid_request`), calls an existing
+  service, and renders the result or a `DomainException` (`ToolResults`); the owner is the authenticated principal's
+  username from the transport context, never an argument or session state. The tool set is exactly the five in
+  `docs/mcp/tools/`, hand-registered in `McpConfig`, and `ToolSchemasTest` fails on schema drift. Domain code never
+  imports `mcp/`. `/mcp` transport errors carry no `stack_trace` (`McpErrorBody`).
 - No MCP tool may complete a purchase. Agents hold; humans buy. `/api/**` and
   `/mcp` are disjoint credential chains (ADR-002).
 - MCP is served over Streamable HTTP only — no stdio, no SSE (ADR-003).

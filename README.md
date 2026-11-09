@@ -156,8 +156,8 @@ surefire reports and the test constants.
 | Metric | Value |
 |---|---|
 | Hold-race test | 8 racers × 20 repetitions; exactly 1 winner per seat per run, and every loser gets `seat_taken` (`HoldConcurrencyTest`) |
-| Tests per layer | unit 130, service/integration 145, schema 32, REST 31, MCP 66; 404 in all, 1 skipped (see below) |
-| Integration suite runtime | 82 to 95 s over three runs (82 s in the last), summed over the database-backed test classes (Postgres in Testcontainers); a full `./mvnw verify` takes about 2 minutes |
+| Tests per layer | unit 130, service/integration 145, schema 32, REST 31, MCP 78; 416 in all, 1 skipped (see below) |
+| Integration suite runtime | 82 to 95 s over four runs (91 s in the last), summed over the database-backed test classes (Postgres in Testcontainers); a full `./mvnw verify` takes about 2 minutes |
 | Tools with checked-in schemas | 5, in [`docs/mcp/tools/`](docs/mcp/tools/) |
 
 A test is "unit" if it starts no Spring context and no Postgres. The skipped test is `EvidenceHygieneTest`'s exact-value
@@ -235,6 +235,15 @@ reason instead of being fixed.
 - **The OpenAPI document marks anonymous reads as needing Basic.** The document declares one Basic requirement for
   everything, while the three event reads need no credentials. Not fixed: the only effect is Swagger UI offering
   Authorize on calls that do not need it, and the REST table in the spec is the authority.
+- **Other JSON-RPC methods with wrongly shaped or absent params answer a bare 500 over `/mcp`.** `completion/complete`,
+  `prompts/get`, `resources/read` and `logging/setLevel` sent with malformed params get a 500 Problem Details and log
+  "Unhandled failure in a REST request". There is no hang and no `stack_trace`, and only an authenticated caller can
+  send one. Not fixed: the tools the project serves (`tools/call`, `tools/list`) are shaped by the `/mcp` request-shape
+  filter, and these methods serve nothing here, so the only effect is an unhelpful error for a hand-written client.
+- **The `/mcp` request-shape filter covers only part of the input.** It applies to `POST`s with a JSON content type and
+  to messages whose `id` is a string or a number. A non-JSON content type, an `id` that is `null` or an object, or a
+  batch array reaches the MCP SDK unchanged. Not fixed: each needs an authenticated caller sending a message no real MCP
+  client produces, and the filter's job is the common mis-shaped call, not a complete JSON-RPC validator.
 
 ## Possible next steps
 

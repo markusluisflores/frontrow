@@ -165,7 +165,8 @@ class ReadmeTest {
     }
 
     private static String readme() throws IOException {
-        return Files.readString(Path.of("README.md"), StandardCharsets.UTF_8);
+        // A Windows checkout with core.autocrlf turns the README's LF into CRLF; the heading asserts look for "\n".
+        return Files.readString(Path.of("README.md"), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     private static String flat(String text) {
