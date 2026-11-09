@@ -1,0 +1,39 @@
+# FrontRow example run (scenario: an agent loses a seat to another buyer and recovers)
+# Run at 2026-11-09T16:50:40.432436700Z against the local demo app, over MCP Streamable HTTP.
+# The agent is a scripted MCP client (src/test/.../evidence/ExampleRun.java); it is not an LLM.
+# The conflicting hold (the scripted step below) was scripted: scripts/take-seat.sh took one of the
+# agent's chosen seats as a second user (bob) between check_availability and hold_seats.
+# The conflict, the seat_taken error and the recovery are the server's real behaviour, unedited.
+# No credential appears here: the token is read from the environment and never printed.
+
+step 1: tool search_events
+  arguments: {"limit":1}
+  outcome:   ok
+  result:    {"events":[{"event_id":2,"venue_id":1,"venue_name":"Riverside Hall","name":"Night Owls Live","starts_at":"2030-06-14T19:00:00Z","sales_open_at":"2026-01-01T00:00:00Z","sales_close_at":"2030-06-14T17:00:00Z","status":"ON_SALE","currency":"CAD"}]}
+
+step 2: tool check_availability
+  arguments: {"event_id":2}
+  outcome:   ok
+  summary:   26 of 26 seats free (derived from the result below)
+  result:    {"event_id":2,"currency":"CAD","seats":[{"event_seat_id":27,"section":"Balcony","row_label":"A","seat_number":1,"price_cents":4500,"available":true},{"event_seat_id":28,"section":"Balcony","row_label":"A","seat_number":2,"price_cents":4500,"available":true},{"event_seat_id":29,"section":"Balcony","row_label":"A","seat_number":3,"price_cents":4500,"available":true},{"event_seat_id":30,"section":"Balcony","row_label":"A","seat_number":4,"price_cents":4500,"available":true},{"event_seat_id":31,"section":"Balcony","row_label":"A","seat_number":5,"price_cents":4500,"available":true},{"event_seat_id":32,"section":"Balcony","row_label":"A","seat_number":6,"price_cents":4500,"available":true},{"event_seat_id":33,"section":"Floor","row_label":"A","seat_number":1,"price_cents":6500,"available":true},{"event_seat_id":34,"section":"Floor","row_label":"A","seat_number":2,"price_cents":6500,"available":true},{"event_seat_id":35,"section":"Floor","row_label":"A","seat_number":3,"price_cents":6500,"available":true},{"event_seat_id":36,"section":"Floor","row_label":"A","seat_number":4,"price_cents":6500,"available":true},{"event_seat_id":37,"section":"Floor","row_label":"A","seat_number":5,"price_cents":6500,"available":true},{"event_seat_id":38,"section":"Floor","row_label":"A","seat_number":6,"price_cents":6500,"available":true},{"event_seat_id":39,"section":"Floor","row_label":"A","seat_number":7,"price_cents":6500,"available":true},{"event_seat_id":40,"section":"Floor","row_label":"A","seat_number":8,"price_cents":6500,"available":true},{"event_seat_id":41,"section":"Floor","row_label":"A","seat_number":9,"price_cents":6500,"available":true},{"event_seat_id":42,"section":"Floor","row_label":"A","seat_number":10,"price_cents":6500,"available":true},{"event_seat_id":43,"section":"Floor","row_label":"B","seat_number":1,"price_cents":6500,"available":true},{"event_seat_id":44,"section":"Floor","row_label":"B","seat_number":2,"price_cents":6500,"available":true},{"event_seat_id":45,"section":"Floor","row_label":"B","seat_number":3,"price_cents":6500,"available":true},{"event_seat_id":46,"section":"Floor","row_label":"B","seat_number":4,"price_cents":6500,"available":true},{"event_seat_id":47,"section":"Floor","row_label":"B","seat_number":5,"price_cents":6500,"available":true},{"event_seat_id":48,"section":"Floor","row_label":"B","seat_number":6,"price_cents":6500,"available":true},{"event_seat_id":49,"section":"Floor","row_label":"B","seat_number":7,"price_cents":6500,"available":true},{"event_seat_id":50,"section":"Floor","row_label":"B","seat_number":8,"price_cents":6500,"available":true},{"event_seat_id":51,"section":"Floor","row_label":"B","seat_number":9,"price_cents":6500,"available":true},{"event_seat_id":52,"section":"Floor","row_label":"B","seat_number":10,"price_cents":6500,"available":true}]}
+
+step 3: SCRIPTED conflicting hold (not an agent call)
+  scripts/take-seat.sh http://127.0.0.1:8080 2 27 (as bob) -> HTTP 201 hold_group_id=1fde894f-7436-4ac4-8658-7a1547b34b70
+
+step 4: tool hold_seats
+  arguments: {"event_id":2,"event_seat_ids":[27,28],"idempotency_key":"example-run-23ae80af-08b6-4e4f-9d5d-39fb4e6ad6a6"}
+  outcome:   ERROR seat_taken
+  result:    {"code":"seat_taken","hint":"call check_availability for current seats","seat_ids":[27]}
+
+step 5: tool check_availability
+  arguments: {"event_id":2}
+  outcome:   ok
+  summary:   25 of 26 seats free (derived from the result below)
+  result:    {"event_id":2,"currency":"CAD","seats":[{"event_seat_id":27,"section":"Balcony","row_label":"A","seat_number":1,"price_cents":4500,"available":false},{"event_seat_id":28,"section":"Balcony","row_label":"A","seat_number":2,"price_cents":4500,"available":true},{"event_seat_id":29,"section":"Balcony","row_label":"A","seat_number":3,"price_cents":4500,"available":true},{"event_seat_id":30,"section":"Balcony","row_label":"A","seat_number":4,"price_cents":4500,"available":true},{"event_seat_id":31,"section":"Balcony","row_label":"A","seat_number":5,"price_cents":4500,"available":true},{"event_seat_id":32,"section":"Balcony","row_label":"A","seat_number":6,"price_cents":4500,"available":true},{"event_seat_id":33,"section":"Floor","row_label":"A","seat_number":1,"price_cents":6500,"available":true},{"event_seat_id":34,"section":"Floor","row_label":"A","seat_number":2,"price_cents":6500,"available":true},{"event_seat_id":35,"section":"Floor","row_label":"A","seat_number":3,"price_cents":6500,"available":true},{"event_seat_id":36,"section":"Floor","row_label":"A","seat_number":4,"price_cents":6500,"available":true},{"event_seat_id":37,"section":"Floor","row_label":"A","seat_number":5,"price_cents":6500,"available":true},{"event_seat_id":38,"section":"Floor","row_label":"A","seat_number":6,"price_cents":6500,"available":true},{"event_seat_id":39,"section":"Floor","row_label":"A","seat_number":7,"price_cents":6500,"available":true},{"event_seat_id":40,"section":"Floor","row_label":"A","seat_number":8,"price_cents":6500,"available":true},{"event_seat_id":41,"section":"Floor","row_label":"A","seat_number":9,"price_cents":6500,"available":true},{"event_seat_id":42,"section":"Floor","row_label":"A","seat_number":10,"price_cents":6500,"available":true},{"event_seat_id":43,"section":"Floor","row_label":"B","seat_number":1,"price_cents":6500,"available":true},{"event_seat_id":44,"section":"Floor","row_label":"B","seat_number":2,"price_cents":6500,"available":true},{"event_seat_id":45,"section":"Floor","row_label":"B","seat_number":3,"price_cents":6500,"available":true},{"event_seat_id":46,"section":"Floor","row_label":"B","seat_number":4,"price_cents":6500,"available":true},{"event_seat_id":47,"section":"Floor","row_label":"B","seat_number":5,"price_cents":6500,"available":true},{"event_seat_id":48,"section":"Floor","row_label":"B","seat_number":6,"price_cents":6500,"available":true},{"event_seat_id":49,"section":"Floor","row_label":"B","seat_number":7,"price_cents":6500,"available":true},{"event_seat_id":50,"section":"Floor","row_label":"B","seat_number":8,"price_cents":6500,"available":true},{"event_seat_id":51,"section":"Floor","row_label":"B","seat_number":9,"price_cents":6500,"available":true},{"event_seat_id":52,"section":"Floor","row_label":"B","seat_number":10,"price_cents":6500,"available":true}]}
+
+step 6: tool hold_seats
+  arguments: {"event_id":2,"event_seat_ids":[28,29],"idempotency_key":"example-run-4f36c9cd-58a4-41f1-a77f-fdc396ffb078"}
+  outcome:   ok
+  result:    {"hold_group_id":"b2caef74-86e4-413d-a89d-e841a19e5510","event_id":2,"seats":[{"event_seat_id":28,"price_cents":4500},{"event_seat_id":29,"price_cents":4500}],"total_cents":9000,"currency":"CAD","expires_at":"2026-11-09T17:00:41.442836Z"}
+
+# recovered: the agent holds seats [28, 29] instead of [27, 28]
