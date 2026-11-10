@@ -27,7 +27,7 @@ sequenceDiagram
 3. **Human confirms.** `POST /api/holds/{holdGroupId}/confirm`. No MCP tool can buy; agents hold, humans buy.
 4. **Human sees the order.** `GET /api/me/orders`.
 5. *Optional, two buyers cannot share a seat.* As `bob`, try `POST /api/events/{eventId}/holds` (header
-   `Idempotency-Key`, body `eventSeatIds`) on a seat the agent holds: the answer is `seat_taken`. Or let the agent
+   `Idempotency-Key`, body `event_seat_ids`) on a seat the agent holds: the answer is `seat_taken`. Or let the agent
    call `release_hold` and show the seat free again.
 6. *Optional, organiser arc.* As `olivia`: `POST /api/events` creates a `DRAFT` event, then
    `PATCH /api/events/{id}` puts it `ON_SALE`.

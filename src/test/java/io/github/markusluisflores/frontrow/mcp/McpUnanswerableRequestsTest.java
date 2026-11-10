@@ -165,22 +165,44 @@ class McpUnanswerableRequestsTest {
         }
     }
 
-    // Residuals, pinned as observed (plan 5 task 10 fix wave; README hardening list): tools/call params that are an
-    // object but wrongly typed inside fail binding in the SDK, and RestExceptionHandler answers a bare 500 Problem
-    // Details (not JSON-RPC). No hang, no stack_trace. Not fixed on purpose; if one is fixed, flip its test.
+    // Wrongly shaped params the SDK would fail to bind (a bare Problem Details 500) are answered by the filter as
+    // JSON-RPC invalid params.
     @Test
-    void aToolsCallWithArrayArgumentsIsABareProblemDetails500() throws Exception {
-        assertBare500("{\"name\":\"search_events\",\"arguments\":[]}");
+    void aToolsCallWithArrayArgumentsIsInvalidParams() throws Exception {
+        assertInvalidParams("tools/call", "{\"name\":\"search_events\",\"arguments\":[]}");
     }
 
     @Test
-    void aToolsCallWithStringArgumentsIsABareProblemDetails500() throws Exception {
-        assertBare500("{\"name\":\"search_events\",\"arguments\":\"x\"}");
+    void aToolsCallWithStringArgumentsIsInvalidParams() throws Exception {
+        assertInvalidParams("tools/call", "{\"name\":\"search_events\",\"arguments\":\"x\"}");
     }
 
     @Test
-    void aToolsCallWithArrayNameIsABareProblemDetails500() throws Exception {
-        assertBare500("{\"name\":[\"a\"]}");
+    void aToolsCallWithArrayNameIsInvalidParams() throws Exception {
+        assertInvalidParams("tools/call", "{\"name\":[\"a\"]}");
+    }
+
+    @Test
+    void methodsWithRequiredMembersRejectAbsentOrMistypedParams() throws Exception {
+        for (String[] bad : new String[][] {
+            {"resources/read", "{}"},
+            {"resources/read", "{\"uri\":[]}"},
+            {"prompts/get", "{}"},
+            {"prompts/get", "{\"name\":{}}"},
+            {"logging/setLevel", "{}"},
+            {"completion/complete", "{}"},
+            {"completion/complete", "{\"ref\":\"x\",\"argument\":{}}"},
+        }) {
+            assertInvalidParams(bad[0], bad[1]);
+        }
+    }
+
+    private void assertInvalidParams(String method, String params) throws Exception {
+        JsonNode json = assertAnswered(method, params);
+        assertThat(json.get("error").get("code").asInt())
+                .as(method + " " + params)
+                .isEqualTo(-32602);
+        assertThat(json.toString()).doesNotContain("stack_trace", "stackTrace", "Exception", "at io.", "at org.");
     }
 
     // A numeric name is coerced to text by the SDK and answered as an unknown tool: structured.
@@ -188,22 +210,6 @@ class McpUnanswerableRequestsTest {
     void aToolsCallWithNumericNameIsAnsweredWithAJsonRpcError() throws Exception {
         JsonNode json = assertAnswered("tools/call", "{\"name\":5}");
         assertThat(json.get("error").get("code").asInt()).isEqualTo(-32602);
-    }
-
-    private void assertBare500(String params) throws Exception {
-        HttpClient http = HttpClient.newHttpClient();
-        try {
-            String session = initialize(http);
-            HttpResponse<String> response = post(
-                    http,
-                    session,
-                    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":" + params + "}");
-            assertThat(response.statusCode()).as(response.body()).isEqualTo(500);
-            assertThat(response.body())
-                    .doesNotContain("stack_trace", "stackTrace", "Exception", "at io.", "at org.", "jsonrpc");
-        } finally {
-            http.shutdownNow();
-        }
     }
 
     private JsonNode assertAnswered(String method, String params) throws Exception {

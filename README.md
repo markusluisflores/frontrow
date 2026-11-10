@@ -236,13 +236,12 @@ reason instead of being fixed.
 - **The OpenAPI document marks anonymous reads as needing Basic.** The document declares one Basic requirement for
   everything, while the three event reads need no credentials. Not fixed: the only effect is Swagger UI offering
   Authorize on calls that do not need it, and the REST table in the spec is the authority.
-- **Wrongly shaped params on `/mcp` can answer a bare 500.** This covers other JSON-RPC methods with malformed or absent
-  params (`completion/complete`, `prompts/get`, `resources/read`, `logging/setLevel`), and `tools/call` whose `arguments`
-  is an array or a string or whose `name` is an array. Each gets a 500 Problem Details and logs
-  "Unhandled failure in a REST request". There is no hang and no `stack_trace`, and only an authenticated caller can
-  send one. Not fixed: the request-shape filter handles the common mis-shaped call (unknown method, non-object
-  `params`), and validating every field of every method would duplicate the SDK; the only effect is an unhelpful error
-  for a hand-written client.
+- **Some wrongly shaped params on `/mcp` can still answer a bare 500.** The request-shape filter answers `-32602` for a
+  non-object `params`, a `tools/call` with no params, a non-object `arguments` or a container `name`, and for a missing
+  or mistyped required member of `resources/read`, `prompts/get`, `logging/setLevel` and `completion/complete`. Members
+  it does not check (the inside of `completion/complete`'s `ref` and `argument`, `initialize`'s params) can still fail
+  binding in the SDK and get a 500 Problem Details with no `stack_trace`. Not fixed: only an authenticated caller can
+  send one, and checking every field would duplicate the SDK.
 - **The `/mcp` request-shape filter covers only part of the input.** It applies to `POST`s with a JSON content type and
   to messages whose `id` is a string or a number. A non-JSON content type, an `id` that is `null` or an object, or a
   batch array reaches the MCP SDK unchanged. Not fixed: each needs an authenticated caller sending a message no real MCP
