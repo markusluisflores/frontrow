@@ -15,6 +15,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -36,7 +38,9 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>A request whose {@code params} is present but is not a JSON object (an array, a string, a number): the
  *       transport fails to bind it while its SSE answer is being produced, and the failure surfaces as a bare 500
  *       Problem Details through RestExceptionHandler's catch-all, not as a JSON-RPC answer. Answered here with -32602.
- *       A tools/call with no params member at all is the same failure and gets the same answer.
+ *       A tools/call with no params member at all is the same failure and gets the same answer, as does a
+ *       tools/call whose arguments is not an object or whose name is an array or object, and a missing or mistyped
+ *       required member of resources/read, prompts/get, logging/setLevel and completion/complete.
  *   <li>A request whose method the server does not serve: the SDK writes a "Method not found" event to the SSE stream
  *       and never closes it, so a client waiting for the answer to finish waits forever. Answered here with -32601 and
  *       a body that ends.
@@ -64,6 +68,16 @@ public final class McpRequestShapeFilter extends OncePerRequestFilter {
             "prompts/get",
             "completion/complete",
             "logging/setLevel");
+
+    /** Members the SDK requires as a string, per method. */
+    private static final Map<String, List<String>> REQUIRED_STRING_MEMBERS = Map.of(
+            "resources/read", List.of("uri"),
+            "prompts/get", List.of("name"),
+            "logging/setLevel", List.of("level"));
+
+    /** Members the SDK requires as an object, per method. */
+    private static final Map<String, List<String>> REQUIRED_OBJECT_MEMBERS =
+            Map.of("completion/complete", List.of("ref", "argument"));
 
     private static final int METHOD_NOT_FOUND = -32601;
     private static final int INVALID_PARAMS = -32602;
@@ -93,13 +107,52 @@ public final class McpRequestShapeFilter extends OncePerRequestFilter {
                 answer(response, message.get("id"), METHOD_NOT_FOUND, "Method not found");
                 return;
             }
-            boolean callWithoutParams = method.equals("tools/call") && params == null;
-            if (callWithoutParams || (params != null && !params.isObject())) {
+            if (!hasUsableParams(method, params)) {
                 answer(response, message.get("id"), INVALID_PARAMS, "Invalid params: expected an object");
                 return;
             }
         }
         chain.doFilter(new ReplayedBody(request, body), response);
+    }
+
+    /**
+     * True when the params carry the member types the SDK binds without failing. Absent params are fine for a method
+     * that takes none; a non-object params never is; and a method with required members needs each at the right type
+     * (a wrongly typed member would fail binding in the SDK and surface as a bare 500).
+     */
+    private static boolean hasUsableParams(String method, JsonNode params) {
+        boolean required = REQUIRED_STRING_MEMBERS.containsKey(method)
+                || REQUIRED_OBJECT_MEMBERS.containsKey(method)
+                || method.equals("tools/call");
+        if (params == null) {
+            return !required;
+        }
+        if (!params.isObject()) {
+            return false;
+        }
+        if (method.equals("tools/call")) {
+            JsonNode name = params.get("name");
+            JsonNode arguments = params.get("arguments");
+            if (name != null && (name.isArray() || name.isObject())) {
+                return false;
+            }
+            if (arguments != null && !arguments.isNull() && !arguments.isObject()) {
+                return false;
+            }
+        }
+        for (String member : REQUIRED_STRING_MEMBERS.getOrDefault(method, List.of())) {
+            JsonNode value = params.get(member);
+            if (value == null || !value.isString()) {
+                return false;
+            }
+        }
+        for (String member : REQUIRED_OBJECT_MEMBERS.getOrDefault(method, List.of())) {
+            JsonNode value = params.get(member);
+            if (value == null || !value.isObject()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** A JSON-RPC request: a string method and an id that is a string or a number (a notification has no id). */

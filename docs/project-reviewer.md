@@ -142,7 +142,7 @@ already covers the consumer side.
 |---|---|
 | Language | Java 25 (LTS) |
 | Framework | Spring Boot 4.1 |
-| MCP | Spring AI 2.0 (`@McpTool`), Streamable HTTP transport with bearer-token auth |
+| MCP | Spring AI 2.0 (hand-registered `SyncToolSpecification` tools; ADR-007), Streamable HTTP transport with bearer-token auth |
 | Database | Postgres + Flyway |
 | Persistence | Spring Data JPA (Hibernate 7.4.5) for ordinary reads/writes; explicit `JdbcClient` SQL for every lock and for lazy expiry *(built in plan 2)* |
 | Build | Maven |
@@ -766,7 +766,7 @@ a lock mode — a version-specific assumption that had already cost this project
 review round once.
 
 **The spike (shipped as a test; ADR-004).** Both candidate mechanisms carry the
-authenticated principal into an `@McpTool` method. `McpTransportContext` was
+authenticated principal into an MCP tool (the spike used `@McpTool`; plan 5 later hand-registered the tools, ADR-007). `McpTransportContext` was
 chosen anyway, because `SecurityContextHolder` works there only thanks to Spring
 AI setting `immediateExecution(true)` for servlet SYNC servers — a threading
 detail an upgrade could change silently.
