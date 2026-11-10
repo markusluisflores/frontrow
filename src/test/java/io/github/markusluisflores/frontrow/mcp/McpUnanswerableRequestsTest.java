@@ -192,8 +192,51 @@ class McpUnanswerableRequestsTest {
             {"logging/setLevel", "{}"},
             {"completion/complete", "{}"},
             {"completion/complete", "{\"ref\":\"x\",\"argument\":{}}"},
+            {"logging/setLevel", "{\"level\":1}"},
+            {"tools/call", "{\"name\":{}}"},
         }) {
             assertInvalidParams(bad[0], bad[1]);
+        }
+    }
+
+    // The new gates must still let valid requests through to the SDK.
+    @Test
+    void aToolsCallWithNullArgumentsReachesTheSdk() throws Exception {
+        assertReachesSdk("tools/call", "{\"name\":\"search_events\",\"arguments\":null}");
+    }
+
+    @Test
+    void aToolsCallWithArgumentsAbsentReachesTheSdk() throws Exception {
+        assertReachesSdk("tools/call", "{\"name\":\"search_events\"}");
+    }
+
+    @Test
+    void aResourcesReadWithAUriReachesTheSdk() throws Exception {
+        assertReachesSdk("resources/read", VALID_PARAMS.get("resources/read"));
+    }
+
+    @Test
+    void aCompletionWithObjectRefAndArgumentReachesTheSdk() throws Exception {
+        assertReachesSdk("completion/complete", VALID_PARAMS.get("completion/complete"));
+    }
+
+    private void assertReachesSdk(String method, String params) throws Exception {
+        HttpClient http = HttpClient.newHttpClient();
+        try {
+            String session = initialize(http);
+            HttpResponse<String> response = post(
+                    http,
+                    session,
+                    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"" + method + "\",\"params\":" + params + "}");
+            String body = response.body();
+            assertThat(body).as(method + " " + params).isNotBlank().doesNotContain("\"status\":500");
+            JsonNode error = JSON.readTree(payload(body)).get("error");
+            if (error != null) {
+                // The SDK may itself answer -32602 (for example an unknown prompt); only the filter's text is wrong.
+                assertThat(error.get("message").asString()).as(body).doesNotStartWith("Invalid params");
+            }
+        } finally {
+            http.shutdownNow();
         }
     }
 
